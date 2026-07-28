@@ -1,0 +1,162 @@
+#include "settings.h"
+
+#include <Windows.h>
+#include <algorithm>
+#include <string>
+
+#include "screens.h"
+#include "scs_logging.h"
+#include "sources/window.h"
+#include "sources/wgc_window.h"
+
+using namespace scs_logging;
+
+namespace {
+    std::string config_path()
+    {
+        char localAppData[MAX_PATH]{};
+        const auto localAppDataLength = GetEnvironmentVariableA("LOCALAPPDATA", localAppData, MAX_PATH);
+        if (localAppDataLength > 0 && localAppDataLength < MAX_PATH)
+        {
+            std::string directory(localAppData);
+            directory += "\\PrismTextureStreamerFB";
+            CreateDirectoryA(directory.c_str(), nullptr);
+            return directory + "\\config.ini";
+        }
+
+        // Fallback for unusual environments without LOCALAPPDATA.
+        static int moduleAnchor{};
+        HMODULE module{};
+        GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&moduleAnchor),
+            &module);
+
+        char path[MAX_PATH]{};
+        GetModuleFileNameA(module, path, MAX_PATH);
+        std::string result(path);
+        const auto slash = result.find_last_of("\\/");
+        if (slash != std::string::npos)
+            result.resize(slash + 1);
+        else
+            result.clear();
+        result += "PrismTextureStreamerFB.ini";
+        return result;
+    }
+
+    std::string read_string(const std::string& path, const char* section, const char* key)
+    {
+        char value[2048]{};
+        GetPrivateProfileStringA(section, key, "", value, static_cast<DWORD>(sizeof(value)), path.c_str());
+        return value;
+    }
+
+    void write_number(const std::string& path, const char* section, const char* key, uint32_t value)
+    {
+        const auto text = std::to_string(value);
+        WritePrivateProfileStringA(section, key, text.c_str(), path.c_str());
+    }
+}
+
+namespace settings {
+    bool load()
+    {
+        const auto path = config_path();
+        const int count = (std::min)(GetPrivateProfileIntA("General", "ScreenCount", 0, path.c_str()), 16U);
+        if (count <= 0)
+            return true;
+
+        std::vector<screen_t> loaded;
+        loaded.reserve(count);
+
+        for (int i = 0; i < count; ++i)
+        {
+            const std::string section = "Screen" + std::to_string(i);
+            const int type = GetPrivateProfileIntA(section.c_str(), "Type", 0, path.c_str());
+            if (type < static_cast<int>(screen_type_t::GPS) ||
+                type > static_cast<int>(screen_type_t::CUSTOM))
+                continue;
+
+            screen_t screen;
+            screen.type = static_cast<screen_type_t>(type);
+            screen.original_texture = read_string(path, section.c_str(), "OriginalTexture");
+            screen.override_texture = read_string(path, section.c_str(), "OverrideTexture");
+            screen.override_texture_size_w = GetPrivateProfileIntA(section.c_str(), "OverrideWidth", 0, path.c_str());
+            screen.override_texture_size_h = GetPrivateProfileIntA(section.c_str(), "OverrideHeight", 0, path.c_str());
+            screen.targetLiveTextureWidth = (std::clamp)(
+                GetPrivateProfileIntA(section.c_str(), "TargetWidth", 1280, path.c_str()), 64U, 7680U);
+            screen.targetLiveTextureHeight = (std::clamp)(
+                GetPrivateProfileIntA(section.c_str(), "TargetHeight", 720, path.c_str()), 64U, 4320U);
+            screen.framerate = static_cast<uint8_t>((std::clamp)(
+                GetPrivateProfileIntA(section.c_str(), "Framerate", 30, path.c_str()), 1U, 120U));
+            screen.legacyCapture = GetPrivateProfileIntA(section.c_str(), "LegacyCapture", 0, path.c_str()) != 0;
+            screen.flipVertical = GetPrivateProfileIntA(section.c_str(), "FlipVertical", 1, path.c_str()) != 0;
+            screen.source_application_name = read_string(path, section.c_str(), "SourceApplication");
+            screen.source_application_display_name = read_string(path, section.c_str(), "SourceTitle");
+
+            if (!screen.source_application_name.empty())
+            {
+                g_screen_source_creation_in_progress = true;
+                if (screen.legacyCapture)
+                    screen.source = sources::CreateWindowSource(
+                        screen.source_application_name.c_str(),
+                        screen.source_application_display_name.empty() ? nullptr : screen.source_application_display_name.c_str(),
+                        screen.framerate);
+                else
+                    screen.source = sources::CreateWgcWindowSource(
+                        screen.source_application_name.c_str(),
+                        screen.source_application_display_name.empty() ? nullptr : screen.source_application_display_name.c_str(),
+                        screen.framerate);
+                g_screen_source_creation_in_progress = false;
+            }
+
+            loaded.push_back(std::move(screen));
+        }
+
+        const auto loadedCount = loaded.size();
+        {
+            std::lock_guard<std::mutex> lock(g_screens_mutex);
+            g_screens = std::move(loaded);
+        }
+        scs_log(0, "[Settings] Loaded %u saved screen(s)", static_cast<unsigned>(loadedCount));
+        return true;
+    }
+
+    bool save()
+    {
+        const auto path = config_path();
+        const auto temporaryPath = path + ".tmp";
+        DeleteFileA(temporaryPath.c_str());
+
+        std::lock_guard<std::mutex> lock(g_screens_mutex);
+        write_number(temporaryPath, "General", "Version", 1);
+        write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
+
+        for (size_t i = 0; i < g_screens.size(); ++i)
+        {
+            const auto& screen = g_screens[i];
+            const std::string section = "Screen" + std::to_string(i);
+            write_number(temporaryPath, section.c_str(), "Type", static_cast<uint32_t>(screen.type));
+            WritePrivateProfileStringA(section.c_str(), "OriginalTexture", screen.original_texture.c_str(), temporaryPath.c_str());
+            WritePrivateProfileStringA(section.c_str(), "OverrideTexture", screen.override_texture.c_str(), temporaryPath.c_str());
+            write_number(temporaryPath, section.c_str(), "OverrideWidth", screen.override_texture_size_w);
+            write_number(temporaryPath, section.c_str(), "OverrideHeight", screen.override_texture_size_h);
+            write_number(temporaryPath, section.c_str(), "TargetWidth", screen.targetLiveTextureWidth);
+            write_number(temporaryPath, section.c_str(), "TargetHeight", screen.targetLiveTextureHeight);
+            write_number(temporaryPath, section.c_str(), "Framerate", screen.framerate);
+            write_number(temporaryPath, section.c_str(), "LegacyCapture", screen.legacyCapture ? 1 : 0);
+            write_number(temporaryPath, section.c_str(), "FlipVertical", screen.flipVertical ? 1 : 0);
+            WritePrivateProfileStringA(section.c_str(), "SourceApplication", screen.source_application_name.c_str(), temporaryPath.c_str());
+            WritePrivateProfileStringA(section.c_str(), "SourceTitle", screen.source_application_display_name.c_str(), temporaryPath.c_str());
+        }
+
+        WritePrivateProfileStringA(nullptr, nullptr, nullptr, temporaryPath.c_str());
+        if (!MoveFileExA(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        {
+            scs_log(2, "[Settings] Failed to save configuration, err=%lu", GetLastError());
+            return false;
+        }
+        scs_log(0, "[Settings] Configuration saved");
+        return true;
+    }
+}

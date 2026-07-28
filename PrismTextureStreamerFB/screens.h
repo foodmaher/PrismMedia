@@ -8,8 +8,8 @@
 
 #include "sources/content_source.h"
 
-class ID3D11Texture2D;
-class ID3D11DeviceContext;
+struct ID3D11Texture2D;
+struct ID3D11DeviceContext;
 
 enum class screen_type_t : uint8_t {
 	GPS = 1,

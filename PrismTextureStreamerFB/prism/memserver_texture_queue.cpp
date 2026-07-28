@@ -32,7 +32,8 @@ char memserver_texture_queue_processor(uint8_t* memserver)
                     memcpy(tobj->m_file_path.m_string, screen.override_texture.data(), screen.override_texture.size());
                     tobj->m_file_path.m_string[screen.override_texture.size()] = '\0';
 
-                    tobj->m_file_path.m_size = screen.override_texture.size();
+                    tobj->m_file_path.m_size =
+                        static_cast<uint32_t>(screen.override_texture.size());
 
                     scs_log(0, "[prism::memserver_texture_queue] Replaced '%s' with '%s'", screen.original_texture.c_str(), screen.override_texture.c_str());
                 }

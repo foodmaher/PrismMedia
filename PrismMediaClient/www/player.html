@@ -26,12 +26,39 @@
     let youtubePlayer = null;
     let youtubeReady = false;
     let pendingUrl = "";
+    let userWantsPlayback = true;
+    let vehiclePowered = true;
     const direct = document.getElementById("direct");
     const status = document.getElementById("status");
 
     function showStatus(text) {
       status.textContent = text;
       status.style.display = text ? "block" : "none";
+    }
+
+    function shouldPlay() {
+      return userWantsPlayback && vehiclePowered;
+    }
+
+    function applyPlaybackState() {
+      const youtubeVisible = direct.style.display === "none";
+      if (youtubeVisible && youtubeReady && youtubePlayer) {
+        const state = youtubePlayer.getPlayerState();
+        if (shouldPlay()) {
+          if (state !== YT.PlayerState.PLAYING &&
+              state !== YT.PlayerState.BUFFERING)
+            youtubePlayer.playVideo();
+        } else if (state === YT.PlayerState.PLAYING ||
+                   state === YT.PlayerState.BUFFERING) {
+          youtubePlayer.pauseVideo();
+        }
+      } else if (direct.src) {
+        if (shouldPlay())
+          direct.play().catch(error =>
+            showStatus("Unable to play media: " + error.message));
+        else
+          direct.pause();
+      }
     }
 
     function youtubeInfo(value) {
@@ -53,6 +80,7 @@
     }
 
     function loadMedia(value) {
+      userWantsPlayback = true;
       const info = youtubeInfo(value);
       if (info) {
         direct.pause();
@@ -63,23 +91,30 @@
           showStatus("Loading YouTube player…");
           return;
         }
-        if (info.list)
-          youtubePlayer.loadPlaylist({ list: info.list, listType: "playlist" });
-        else if (info.video)
-          youtubePlayer.loadVideoById(info.video);
+        if (info.list) {
+          const options = { list: info.list, listType: "playlist" };
+          if (shouldPlay()) youtubePlayer.loadPlaylist(options);
+          else youtubePlayer.cuePlaylist(options);
+        } else if (info.video) {
+          if (shouldPlay()) youtubePlayer.loadVideoById(info.video);
+          else youtubePlayer.cueVideoById(info.video);
+        }
         else {
           showStatus("This YouTube URL does not contain a video or playlist.");
           return;
         }
         showStatus("");
+        applyPlaybackState();
         return;
       }
 
+      if (youtubeReady && youtubePlayer)
+        youtubePlayer.pauseVideo();
       document.getElementById("youtube").style.display = "none";
       direct.style.display = "block";
       direct.src = value;
-      direct.play().catch(error => showStatus("Unable to play media: " + error.message));
       showStatus("");
+      applyPlaybackState();
     }
 
     window.onYouTubeIframeAPIReady = function () {
@@ -97,6 +132,13 @@
               pendingUrl = "";
               loadMedia(value);
             }
+            applyPlaybackState();
+          },
+          onStateChange: function (event) {
+            if (!shouldPlay() &&
+                (event.data === YT.PlayerState.PLAYING ||
+                 event.data === YT.PlayerState.BUFFERING))
+              youtubePlayer.pauseVideo();
           },
           onError: function (event) {
             showStatus("YouTube playback error " + event.data);
@@ -114,17 +156,17 @@
       if (command === "load") {
         loadMedia(argument);
       } else if (command === "playpause") {
-        if (youtubeVisible && youtubeReady) {
-          const state = youtubePlayer.getPlayerState();
-          if (state === YT.PlayerState.PLAYING)
-            youtubePlayer.pauseVideo();
-          else
-            youtubePlayer.playVideo();
-        } else if (direct.paused) {
-          direct.play();
-        } else {
-          direct.pause();
-        }
+        userWantsPlayback = !userWantsPlayback;
+        applyPlaybackState();
+      } else if (command === "play") {
+        userWantsPlayback = true;
+        applyPlaybackState();
+      } else if (command === "pause") {
+        userWantsPlayback = false;
+        applyPlaybackState();
+      } else if (command === "vehiclepower") {
+        vehiclePowered = argument === "1";
+        applyPlaybackState();
       } else if (command === "next") {
         if (youtubeVisible && youtubeReady)
           youtubePlayer.nextVideo();

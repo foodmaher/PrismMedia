@@ -1,8 +1,8 @@
-# PrismTextureStreamerFB 2.1 — Build, Install, and Use
+# PrismTextureStreamerFB 2.3 — Build, Install, and Use
 
 ## A. Update the GitHub repository
 
-1. Extract `PrismTextureStreamerFB-2.1.1-adaptive-source.zip`.
+1. Extract `PrismTextureStreamerFB-2.3.0-adaptive-source.zip`.
 2. Open your `PrismTextureStreamerFB-Performance` repository on GitHub.
 3. Upload the extracted files and folders into the repository root, preserving
    the folder structure. Allow GitHub to replace files with the same names.
@@ -19,7 +19,7 @@ previous “dumpbin is not recognized” failure cannot occur.
 4. Wait for the run to turn green. A normal build is usually about 2–5 minutes;
    the first NuGet restore can take a little longer.
 5. Open the finished run.
-6. Download the `PrismTextureStreamerFB-2.1.1-adaptive` artifact.
+6. Download the `PrismTextureStreamerFB-2.3.0-adaptive` artifact.
 7. Extract the downloaded ZIP.
 
 ## C. Install
@@ -99,14 +99,36 @@ stage and normally has the lowest cost.
 2. Open **Adaptive Cabin Audio**.
 3. Enable **head-position adaptive sound**.
 4. Start with Spatial strength `0.85`, Speaker direction `0`, Volume facing
-   away `0.05`, Outside-cab distance `0.85 m`, and Volume when outside `0`.
+   away `0.05`, Outside-cab distance `0.85 m`, Volume when outside `0`, and
+   Volume in menus / before driving `50%`.
 5. Turn the in-game camera left/right and adjust Speaker direction until the
    sound appears fixed near the truck screen.
+6. Open the pause/menu UI and confirm the volume changes to the configured
+   menu level.
+7. Select an external camera and confirm the menu reports **external camera**
+   instead of retaining the last interior head position.
+8. Enable **Play media only while truck engine is running**. Stop the engine;
+   playback should pause. Start it; playback should resume.
 
 This feature changes only the Integrated Media Client audio session. Native
 Direct Media remains unprocessed because it shares the game process audio path.
 
-## H. Configure the reverse mirror
+## H. Adjust screen brightness
+
+Use **Screen Brightness** in the target screen panel:
+
+- `100%` keeps the captured image unchanged and retains the fastest copy path.
+- Below `100%` darkens the GPS/dashboard screen.
+- Above `100%` brightens it, up to `200%`.
+
+Brightness is saved per screen. Non-default values use a small lookup-table
+cost during texture upload.
+
+Set **Edge Colour-Bleed Guard** to `2 px` to prevent full-screen video colours
+from tinting the surrounding GPS bezel. Set it to `0` only if a particular
+custom screen does not require the guard.
+
+## I. Configure the reverse mirror
 
 1. Press **F2** in ETS2/ATS until the fixed virtual mirror is visible.
 2. Open the plugin screen and expand **Automatic Reverse Mirror**.

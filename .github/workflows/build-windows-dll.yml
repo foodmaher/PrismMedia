@@ -68,10 +68,10 @@ jobs:
           Copy-Item "x64\Release\PrismTextureStreamerFB.dll" $Package
           Copy-Item "$Client\*" $Package -Recurse
           Copy-Item "PERFORMANCE-NOTES.md" $Package
-          Copy-Item "V2.1-ADAPTIVE-TESTING.md" $Package
+          Copy-Item "V2.3-ADAPTIVE-TESTING.md" $Package
 
           @"
-          PrismTextureStreamerFB 2.1.1
+          PrismTextureStreamerFB 2.3.0
 
           Copy every file and folder in this package into:
           <ETS2 or ATS>\bin\win_x64\plugins
@@ -85,7 +85,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-2.1.1-adaptive
+          name: PrismTextureStreamerFB-2.3.0-adaptive
           path: package
           if-no-files-found: error
           retention-days: 30

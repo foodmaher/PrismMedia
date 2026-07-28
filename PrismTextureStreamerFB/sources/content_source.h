@@ -44,6 +44,8 @@ public:
     virtual bool SupportsMediaControls() const { return false; }
     virtual bool LoadMedia(const std::string&) { return false; }
     virtual bool SendMediaCommand(media_command_t) { return false; }
+    virtual bool SupportsVehiclePowerControl() const { return false; }
+    virtual void SetVehiclePowered(bool) {}
     virtual bool SupportsSpatialAudio() const { return false; }
     virtual void SetSpatialAudio(float, float, bool) {}
     virtual void SetCaptureRegion(float, float, float, float) {}

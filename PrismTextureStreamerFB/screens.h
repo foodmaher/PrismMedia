@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -63,12 +64,14 @@ struct screen_t
 	bool flipVertical = true;
 	bool paused = false;
 	bool hotkeyTarget = false;
+	bool followTruckEngine = true;
 	bool adaptiveAudioEnabled = false;
 	float adaptiveAudioStrength = 0.85f;
 	float adaptiveAudioSpeakerAzimuth = 0.0f;
 	float adaptiveAudioFacingAwayVolume = 0.05f;
 	float adaptiveAudioOutsideDistance = 0.85f;
 	float adaptiveAudioOutsideVolume = 0.0f;
+	float adaptiveAudioMenuVolume = 0.50f;
 	bool reverseCameraEnabled = false;
 	bool reversePreview = false;
 	bool reverseZeroForwardImpact = true;
@@ -80,6 +83,10 @@ struct screen_t
 	float reverseCropHeight = 0.22f;
 	std::unique_ptr<IContentSource> reverseSource;
 	scale_mode_t scaleMode = scale_mode_t::FIT;
+	float brightness = 1.0f;
+	float brightnessLutScale = -1.0f;
+	std::array<uint8_t, 256> brightnessLut{};
+	uint8_t edgeBleedGuard = 2;
 	performance_profile_t performanceProfile = performance_profile_t::BALANCED;
 	content_mode_t contentMode = content_mode_t::WINDOW_CAPTURE;
 

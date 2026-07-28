@@ -1,6 +1,7 @@
 #include "menu.h"
 #include <d3d11.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <map>
 
@@ -29,7 +30,7 @@ using namespace scs_logging;
 #include "../sources/wgc_window.h"
 
 
-static bool menu_visible{};
+static std::atomic<bool> menu_visible{};
 static int hotkey_binding_index = -1;
 
 static bool rebuild_source(screen_t& screen)
@@ -606,6 +607,50 @@ void on_frame()
 						saveConfiguration = true;
 					}
 
+					float brightnessPercent = screen.brightness * 100.0f;
+					if (ImGui::SliderFloat(
+						"Screen Brightness",
+						&brightnessPercent,
+						10.0f, 200.0f, "%.0f%%",
+						ImGuiSliderFlags_AlwaysClamp))
+					{
+						screen.brightness = brightnessPercent / 100.0f;
+						// Reprocess the cached image immediately, including when
+						// capture is paused.
+						screen.hasUploadedFrame = false;
+						saveConfiguration = true;
+					}
+					if (ImGui::IsItemHovered())
+					{
+						ImGui::BeginTooltip();
+						ImGui::TextWrapped(
+							"100%% preserves the source. Other values use a small "
+							"colour lookup cost during texture upload.");
+						ImGui::EndTooltip();
+					}
+
+					uint8_t guardMinimum = 0;
+					uint8_t guardMaximum = 16;
+					if (ImGui::SliderScalar(
+						"Edge Colour-Bleed Guard",
+						ImGuiDataType_U8,
+						&screen.edgeBleedGuard,
+						&guardMinimum,
+						&guardMaximum,
+						"%u px"))
+					{
+						screen.hasUploadedFrame = false;
+						saveConfiguration = true;
+					}
+					if (ImGui::IsItemHovered())
+					{
+						ImGui::BeginTooltip();
+						ImGui::TextWrapped(
+							"Prevents the outer video colour from leaking into the "
+							"truck GPS bezel. 2 px is recommended; 0 disables it.");
+						ImGui::EndTooltip();
+					}
+
 					if (ImGui::Checkbox("Pause / Freeze", &screen.paused))
 					{
 						if (screen.source)
@@ -743,6 +788,49 @@ void on_frame()
 							}
 						}
 
+						const bool supportsVehiclePower =
+							screen.source &&
+							screen.source->SupportsVehiclePowerControl();
+						ImGui::BeginDisabled(!supportsVehiclePower);
+						if (ImGui::Checkbox(
+							"Play media only while truck engine is running",
+							&screen.followTruckEngine))
+						{
+							if (screen.source)
+							{
+								const bool powered =
+									!screen.followTruckEngine ||
+									!g_telemetry_driving.load() ||
+									g_engine_enabled.load();
+								screen.source->SetVehiclePowered(powered);
+							}
+							saveConfiguration = true;
+						}
+						ImGui::EndDisabled();
+						if (!supportsVehiclePower)
+						{
+							ImGui::TextDisabled(
+								"Engine-follow playback is available for integrated "
+								"and native media.");
+						}
+						else if (!g_telemetry_driving.load())
+						{
+							ImGui::TextDisabled(
+								"Engine control inactive in menus / before driving.");
+						}
+						else
+						{
+							ImGui::TextColored(
+								g_engine_enabled.load()
+									? ImVec4(0.35f, 0.85f, 0.40f, 1.0f)
+									: ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+								"Truck engine: %s | Media power: %s",
+								g_engine_enabled.load() ? "running" : "off",
+								(!screen.followTruckEngine ||
+									g_engine_enabled.load())
+									? "on" : "paused");
+						}
+
 						if (ImGui::TreeNode("Adaptive Cabin Audio"))
 						{
 							const bool supported =
@@ -803,22 +891,71 @@ void on_frame()
 									0.0f, 1.0f, "%.2f",
 									ImGuiSliderFlags_AlwaysClamp))
 									saveConfiguration = true;
+								float menuVolumePercent =
+									screen.adaptiveAudioMenuVolume * 100.0f;
+								if (ImGui::SliderFloat(
+									"Volume in menus / before driving",
+									&menuVolumePercent,
+									0.0f, 100.0f, "%.0f%%",
+									ImGuiSliderFlags_AlwaysClamp))
+								{
+									screen.adaptiveAudioMenuVolume =
+										menuVolumePercent / 100.0f;
+									saveConfiguration = true;
+								}
 
-								const float headDistance = std::sqrt(
-									g_head_offset_x.load() *
-										g_head_offset_x.load() +
-									g_head_offset_y.load() *
-										g_head_offset_y.load() +
-									g_head_offset_z.load() *
-										g_head_offset_z.load());
-								ImGui::Text(
-									"Live head offset: %.2f m | heading: %.0f deg",
-									headDistance,
-									g_head_heading.load() * 360.0f);
+								const bool driving =
+									g_telemetry_driving.load();
+								const uint64_t now = GetTickCount64();
+								const uint64_t lastHeadUpdate =
+									g_last_head_update_tick.load();
+								const bool headTelemetryFresh =
+									driving && lastHeadUpdate != 0 &&
+									now >= lastHeadUpdate &&
+									now - lastHeadUpdate <= 500;
+								const bool externalCamera =
+									driving &&
+									(!g_camera_interior_hint.load() ||
+										!headTelemetryFresh);
+
+								if (!driving)
+								{
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+										"Detected state: menu / paused (%.0f%% volume)",
+										menuVolumePercent);
+								}
+								else if (externalCamera)
+								{
+									ImGui::TextColored(
+										ImVec4(0.35f, 0.75f, 1.0f, 1.0f),
+										"Detected state: external camera (outside volume)");
+									ImGui::Text(
+										"Live head offset: unavailable outside the cab");
+								}
+								else
+								{
+									const float headDistance = std::sqrt(
+										g_head_offset_x.load() *
+											g_head_offset_x.load() +
+										g_head_offset_y.load() *
+											g_head_offset_y.load() +
+										g_head_offset_z.load() *
+											g_head_offset_z.load());
+									ImGui::TextColored(
+										ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
+										"Detected state: interior camera");
+									ImGui::Text(
+										"Live head offset: %.2f m | heading: %.0f deg",
+										headDistance,
+										g_head_heading.load() * 360.0f);
+								}
 								ImGui::TextWrapped(
 									"Speaker direction: negative is left, positive is "
-								"right. Set Outside volume to 0 for full silence "
-									"when the camera leaves the cab.");
+									"right. Set Outside volume to 0 for full silence "
+									"when the camera leaves the cab. External-camera "
+									"detection uses telemetry freshness plus the default "
+									"1-9/0 camera keys.");
 							}
 							ImGui::EndDisabled();
 							ImGui::TreePop();
@@ -1082,6 +1219,11 @@ void on_frame()
 }
 
 namespace Gui {
+	bool is_visible()
+	{
+		return menu_visible.load();
+	}
+
 	bool init()
 	{
 		dx11::present::on_frame(on_frame);

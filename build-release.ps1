@@ -32,7 +32,7 @@ if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-2.1.1'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-2.3.0'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }
@@ -40,7 +40,7 @@ New-Item -ItemType Directory -Path $Package | Out-Null
 Copy-Item $Dll $Package
 Copy-Item (Join-Path $ClientDirectory '*') $Package -Recurse
 Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Package
-Copy-Item (Join-Path $ProjectRoot 'V2.1-ADAPTIVE-TESTING.md') $Package
+Copy-Item (Join-Path $ProjectRoot 'V2.3-ADAPTIVE-TESTING.md') $Package
 
 Write-Host ''
 Write-Host "Build succeeded: $Dll" -ForegroundColor Green

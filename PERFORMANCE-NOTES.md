@@ -1,4 +1,4 @@
-# PrismTextureStreamerFB 2.1.1 Performance and Adaptive Features Guide
+# PrismTextureStreamerFB 2.3.0 Performance and Adaptive Features Guide
 
 ## Choose the playback method
 
@@ -39,6 +39,11 @@ This is normally sufficient for a GPS or dashboard-sized display.
 - **Fit** preserves the source aspect ratio and adds bars where necessary.
 - **Crop** preserves aspect ratio and fills the texture by cropping the centre.
 - **Stretch** is the least visually accurate but fills the entire texture.
+- **Screen Brightness** is saved per screen. At `100%` the existing fast copy
+  path is unchanged; other values add a small colour lookup during upload.
+- **Edge Colour-Bleed Guard** writes only the outer 0–16 pixels after upload.
+  The recommended `2 px` prevents clamp-sampled video colours from tinting the
+  truck GPS bezel and has negligible cost.
 - Leave **Legacy Capture** disabled unless Windows Graphics Capture fails for a
   specific application.
 - The **Live Performance Monitor** reports measured game-thread upload time,
@@ -71,11 +76,30 @@ Adaptive audio is available for the Integrated Media Client. It uses
 - move the media sound left/right as the driver turns;
 - reduce sound when the driver faces away from the dashboard speaker;
 - fade or mute media when the camera moves outside the cab.
+- reduce media to a configurable level before driving or while the game is in
+  a menu/paused state.
 
 The effect controls only the WebView2 media audio sessions. It does not modify
 engine, navigation, traffic, radio, or other game sounds. Use **Speaker
 direction** to place the apparent dashboard source, **Spatial strength** to
-blend the effect, and **Volume when outside** = `0` for silence outside.
+blend the effect, **Volume when outside** = `0` for silence outside, and
+**Volume in menus / before driving** for the game UI.
+
+External cameras no longer reuse a frozen head value. The plugin combines head
+telemetry freshness with the default `1` interior and `2-9/0` external camera
+keys. When it detects an external camera, panning is centred and the configured
+outside volume is applied.
+
+## Engine-powered media
+
+For Integrated Media Client and Native Direct Media, enable **Play media only
+while truck engine is running**. Inside gameplay, `truck.engine.enabled`
+telemetry temporarily pauses playback while the engine is off and resumes it
+when the engine starts. The user's own Play/Pause choice is preserved. The
+Integrated Media Client capture worker also sleeps while engine-paused.
+
+Engine control is inactive in game menus and before the driving session starts,
+so **Volume in menus / before driving** continues to control that state.
 
 ## Automatic reverse mirror
 

@@ -151,6 +151,7 @@ namespace sources {
         std::atomic<uint32_t> m_height{};
         std::atomic<bool> m_paused{};
         std::atomic<bool> m_playbackPaused{};
+        std::atomic<bool> m_vehiclePowered{ true };
         std::atomic<bool> m_stopRequested{};
         std::atomic<bool> m_canPlay{};
         std::atomic<bool> m_failed{};
@@ -221,7 +222,8 @@ namespace sources {
             }
 
             const bool shouldPause =
-                m_paused.load() || m_playbackPaused.load();
+                m_paused.load() || m_playbackPaused.load() ||
+                !m_vehiclePowered.load();
             if (shouldPause && !engine->IsPaused())
                 engine->Pause();
             else if (!shouldPause && m_canPlay.load() && engine->IsPaused())
@@ -492,6 +494,7 @@ namespace sources {
 
                 LONGLONG presentationTime{};
                 if (!m_paused.load() && !m_playbackPaused.load() &&
+                    m_vehiclePowered.load() &&
                     engine->OnVideoStreamTick(&presentationTime) == S_OK)
                 {
                     MFVideoNormalizedRect sourceRect{ 0.0f, 0.0f, 1.0f, 1.0f };
@@ -606,6 +609,11 @@ namespace sources {
         }
 
         bool SupportsMediaControls() const override { return true; }
+        bool SupportsVehiclePowerControl() const override { return true; }
+        void SetVehiclePowered(bool powered) override
+        {
+            m_vehiclePowered = powered;
+        }
         bool SendMediaCommand(media_command_t command) override
         {
             std::lock_guard<std::mutex> lock(m_commandMutex);
@@ -630,7 +638,8 @@ namespace sources {
                 return "Media error: unsupported URL/codec or network failure";
             if (!m_canPlay.load())
                 return "Loading native media...";
-            return m_playbackPaused.load() || m_paused.load()
+            return m_playbackPaused.load() || m_paused.load() ||
+                !m_vehiclePowered.load()
                 ? "Native media paused" : "Native media playing";
         }
     };

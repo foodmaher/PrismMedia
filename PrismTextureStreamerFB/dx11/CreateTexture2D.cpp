@@ -2,6 +2,7 @@
 #include <d3d11.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 #include <MinHook/MinHook.h>
 
@@ -201,6 +202,24 @@ void new_frame()
             screen.scaleXDestinationWidth = renderWidth;
         }
 
+        const float brightness = (std::clamp)(
+            screen.brightness, 0.10f, 2.0f);
+        const bool adjustBrightness =
+            std::fabs(brightness - 1.0f) > 0.001f;
+        if (adjustBrightness &&
+            std::fabs(screen.brightnessLutScale - brightness) > 0.0001f)
+        {
+            for (size_t value = 0;
+                value < screen.brightnessLut.size(); ++value)
+            {
+                screen.brightnessLut[value] =
+                    static_cast<uint8_t>((std::min)(
+                        255L,
+                        std::lround(
+                            static_cast<float>(value) * brightness)));
+            }
+            screen.brightnessLutScale = brightness;
+        }
 
         D3D11_MAPPED_SUBRESOURCE mapped;
         if (FAILED(screen.immediateContext->Map(screen.liveTexture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
@@ -231,7 +250,9 @@ void new_frame()
                 dstBase + static_cast<size_t>(destinationRow) * mapped.RowPitch +
                 static_cast<size_t>(dstX) * 4;
 
-            if (srcX == 0 && srcSpanWidth == renderWidth) {
+            const bool directHorizontalCopy =
+                srcX == 0 && srcSpanWidth == renderWidth;
+            if (directHorizontalCopy && !adjustBrightness) {
                 memcpy(dstRowPtr, srcRow, static_cast<size_t>(renderWidth) * 4);
                 continue;
             }
@@ -239,7 +260,51 @@ void new_frame()
             const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(srcRow);
             uint32_t* dstPixels = reinterpret_cast<uint32_t*>(dstRowPtr);
             for (UINT x = 0; x < renderWidth; ++x) {
-                dstPixels[x] = srcPixels[screen.scaleX[x]];
+                const uint32_t pixel = srcPixels[
+                    directHorizontalCopy ? x : screen.scaleX[x]];
+                if (!adjustBrightness)
+                {
+                    dstPixels[x] = pixel;
+                    continue;
+                }
+
+                dstPixels[x] =
+                    (pixel & 0xFF000000u) |
+                    static_cast<uint32_t>(
+                        screen.brightnessLut[pixel & 0xFFu]) |
+                    (static_cast<uint32_t>(
+                        screen.brightnessLut[(pixel >> 8) & 0xFFu]) << 8) |
+                    (static_cast<uint32_t>(
+                        screen.brightnessLut[(pixel >> 16) & 0xFFu]) << 16);
+            }
+        }
+
+        // Some truck GPS materials sample slightly beyond the visible UV
+        // rectangle. With clamp sampling, a bright video edge can then tint
+        // the surrounding bezel. A tiny opaque-black guard makes all
+        // out-of-range samples black without adding a visible thick frame.
+        const UINT edgeGuard = (std::min)(
+            static_cast<UINT>(screen.edgeBleedGuard),
+            (std::min)(dstWidth / 2, dstHeight / 2));
+        if (edgeGuard > 0)
+        {
+            constexpr uint32_t opaqueBlack = 0xFF000000u;
+            for (UINT y = 0; y < dstHeight; ++y)
+            {
+                auto* row = reinterpret_cast<uint32_t*>(
+                    dstBase + static_cast<size_t>(y) * mapped.RowPitch);
+                if (y < edgeGuard || y >= dstHeight - edgeGuard)
+                {
+                    std::fill_n(row, dstWidth, opaqueBlack);
+                }
+                else
+                {
+                    std::fill_n(row, edgeGuard, opaqueBlack);
+                    std::fill_n(
+                        row + dstWidth - edgeGuard,
+                        edgeGuard,
+                        opaqueBlack);
+                }
             }
         }
 

@@ -6,6 +6,7 @@
 
 #include <Windows.h>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -109,6 +110,8 @@ namespace {
         {
             if (m_spatialEnabled)
                 send_payload("spatial|0|1.0000|0.0000", 30);
+            if (!m_vehiclePowered.load())
+                send_payload("vehiclepower|1", 30);
         }
 
         uint32_t GetWidth() const override { return m_capture->GetWidth(); }
@@ -117,7 +120,13 @@ namespace {
         {
             m_capture->SetFramerate(framerate);
         }
-        void SetPaused(bool paused) override { m_capture->SetPaused(paused); }
+        void SetPaused(bool paused) override
+        {
+            m_userCapturePaused = paused;
+            m_capture->SetPaused(
+                m_userCapturePaused.load() ||
+                !m_vehiclePowered.load());
+        }
         void SetOutputSize(uint32_t width, uint32_t height) override
         {
             m_capture->SetOutputSize(width, height);
@@ -134,6 +143,21 @@ namespace {
         }
 
         bool SupportsMediaControls() const override { return true; }
+        bool SupportsVehiclePowerControl() const override { return true; }
+        void SetVehiclePowered(bool powered) override
+        {
+            if (powered == m_vehiclePowered.load())
+                return;
+
+            if (send_payload(
+                powered ? "vehiclepower|1" : "vehiclepower|0", 30))
+            {
+                m_vehiclePowered = powered;
+                m_capture->SetPaused(
+                    m_userCapturePaused.load() ||
+                    !m_vehiclePowered.load());
+            }
+        }
         bool SupportsSpatialAudio() const override { return true; }
         bool LoadMedia(const std::string& url) override
         {
@@ -193,6 +217,8 @@ namespace {
 
     private:
         std::unique_ptr<IContentSource> m_capture;
+        std::atomic<bool> m_userCapturePaused{};
+        std::atomic<bool> m_vehiclePowered{ true };
         bool m_spatialEnabled{};
         float m_lastSpatialGain{ 1.0f };
         float m_lastSpatialPan{};

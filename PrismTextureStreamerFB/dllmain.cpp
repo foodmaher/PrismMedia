@@ -39,10 +39,38 @@ SCSAPI_VOID head_offset_changed(
     if (!value || value->type != SCS_VALUE_TYPE_fplacement)
         return;
 
+    const uint64_t now = GetTickCount64();
+    const uint64_t previousUpdate = g_last_head_update_tick.load();
+    if (previousUpdate == 0 || now < previousUpdate ||
+        now - previousUpdate > 500)
+    {
+        // A head stream resuming after an outside-camera gap means the
+        // player returned to a cab camera, including with controller or
+        // custom camera bindings.
+        g_camera_interior_hint = true;
+    }
+
     g_head_offset_x = value->value_fplacement.position.x;
     g_head_offset_y = value->value_fplacement.position.y;
     g_head_offset_z = value->value_fplacement.position.z;
     g_head_heading = value->value_fplacement.orientation.heading;
+    g_last_head_update_tick = now;
+}
+
+SCSAPI_VOID driving_state_changed(
+    const scs_event_t event,
+    const void* const,
+    scs_context_t)
+{
+    const bool driving = event == SCS_TELEMETRY_EVENT_started;
+    g_telemetry_driving = driving;
+    if (driving)
+    {
+        // The normal camera after loading a truck is the interior camera.
+        // A fresh head sample or a camera key will refine this immediately.
+        g_camera_interior_hint = true;
+        g_last_head_update_tick = 0;
+    }
 }
 
 SCSAPI_VOID selected_gear_changed(
@@ -57,6 +85,18 @@ SCSAPI_VOID selected_gear_changed(
     g_selected_gear = value->value_s32.value;
     g_reverse_active =
         value->value_s32.value < 0 || g_reverse_light.load();
+}
+
+SCSAPI_VOID engine_enabled_changed(
+    const scs_string_t,
+    const scs_u32_t,
+    const scs_value_t* const value,
+    const scs_context_t)
+{
+    if (!value || value->type != SCS_VALUE_TYPE_bool)
+        return;
+
+    g_engine_enabled = value->value_bool.value != 0;
 }
 
 SCSAPI_VOID reverse_light_changed(
@@ -87,6 +127,31 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
     screen_t* spatialAudioScreen{};
     const bool reverseActive = g_reverse_active.load();
 
+    if (g_telemetry_driving.load() && !Gui::is_visible())
+    {
+        // ETS2/ATS use 1 for the interior camera and 2-9/0 for outside
+        // cameras by default. Head telemetry freshness below remains the
+        // fallback for controller users and custom bindings.
+        if ((GetAsyncKeyState('1') & 1) != 0 ||
+            (GetAsyncKeyState(VK_NUMPAD1) & 1) != 0)
+        {
+            g_camera_interior_hint = true;
+        }
+        for (int key = '2'; key <= '9'; ++key)
+        {
+            if ((GetAsyncKeyState(key) & 1) != 0)
+                g_camera_interior_hint = false;
+        }
+        if ((GetAsyncKeyState('0') & 1) != 0)
+            g_camera_interior_hint = false;
+        for (int key = VK_NUMPAD0; key <= VK_NUMPAD9; ++key)
+        {
+            if (key != VK_NUMPAD1 &&
+                (GetAsyncKeyState(key) & 1) != 0)
+                g_camera_interior_hint = false;
+        }
+    }
+
     {
         std::lock_guard<std::mutex> lock(g_screens_mutex);
         for (auto& screen : g_screens)
@@ -116,57 +181,105 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                     spatialAudioScreen = &screen;
                 }
             }
+
+            if (screen.source &&
+                screen.source->SupportsVehiclePowerControl())
+            {
+                const bool powered =
+                    !screen.followTruckEngine ||
+                    !g_telemetry_driving.load() ||
+                    g_engine_enabled.load();
+                screen.source->SetVehiclePowered(powered);
+            }
         }
 
         if (spatialAudioTarget && spatialAudioScreen)
         {
-            float heading = g_head_heading.load();
-            if (heading > 0.5f)
-                heading -= 1.0f;
-            else if (heading < -0.5f)
-                heading += 1.0f;
+            const bool driving = g_telemetry_driving.load();
+            const uint64_t now = GetTickCount64();
+            const uint64_t lastHeadUpdate =
+                g_last_head_update_tick.load();
+            const bool headTelemetryFresh =
+                driving && lastHeadUpdate != 0 &&
+                now >= lastHeadUpdate &&
+                now - lastHeadUpdate <= 500;
+            const bool externalCamera =
+                driving &&
+                (!g_camera_interior_hint.load() ||
+                    !headTelemetryFresh);
 
-            float relativeDegrees =
-                -spatialAudioScreen->adaptiveAudioSpeakerAzimuth -
-                heading * 360.0f;
-            while (relativeDegrees > 180.0f)
-                relativeDegrees -= 360.0f;
-            while (relativeDegrees < -180.0f)
-                relativeDegrees += 360.0f;
+            if (!driving)
+            {
+                const float menuVolume = (std::clamp)(
+                    spatialAudioScreen->adaptiveAudioMenuVolume,
+                    0.0f, 1.0f);
+                spatialAudioTarget->SetSpatialAudio(
+                    menuVolume, 0.0f, true);
+            }
+            else if (externalCamera)
+            {
+                const float outsideVolume = (std::clamp)(
+                    spatialAudioScreen->adaptiveAudioOutsideVolume,
+                    0.0f, 1.0f);
+                spatialAudioTarget->SetSpatialAudio(
+                    outsideVolume, 0.0f, true);
+            }
+            else
+            {
+                float heading = g_head_heading.load();
+                if (heading > 0.5f)
+                    heading -= 1.0f;
+                else if (heading < -0.5f)
+                    heading += 1.0f;
 
-            constexpr float kPi = 3.14159265358979323846f;
-            const float relativeRadians = relativeDegrees * kPi / 180.0f;
-            const float strength = (std::clamp)(
-                spatialAudioScreen->adaptiveAudioStrength, 0.0f, 1.0f);
-            const float pan = (std::clamp)(
-                -std::sin(relativeRadians) * strength, -1.0f, 1.0f);
-            const float frontAmount =
-                (std::cos(relativeRadians) + 1.0f) * 0.5f;
-            const float facingAwayVolume = (std::clamp)(
-                spatialAudioScreen->adaptiveAudioFacingAwayVolume,
-                0.0f, 1.0f);
-            const float directionalGain =
-                facingAwayVolume +
-                (1.0f - facingAwayVolume) * frontAmount;
-            float gain = 1.0f -
-                strength * (1.0f - directionalGain);
+                float relativeDegrees =
+                    -spatialAudioScreen->adaptiveAudioSpeakerAzimuth -
+                    heading * 360.0f;
+                while (relativeDegrees > 180.0f)
+                    relativeDegrees -= 360.0f;
+                while (relativeDegrees < -180.0f)
+                    relativeDegrees += 360.0f;
 
-            const float x = g_head_offset_x.load();
-            const float y = g_head_offset_y.load();
-            const float z = g_head_offset_z.load();
-            const float distance = std::sqrt(x * x + y * y + z * z);
-            const float outsideDistance = (std::clamp)(
-                spatialAudioScreen->adaptiveAudioOutsideDistance,
-                0.25f, 5.0f);
-            const float outsideBlend = (std::clamp)(
-                (distance - outsideDistance) / 0.35f, 0.0f, 1.0f);
-            const float outsideVolume = (std::clamp)(
-                spatialAudioScreen->adaptiveAudioOutsideVolume,
-                0.0f, 1.0f);
-            gain *= 1.0f -
-                outsideBlend * (1.0f - outsideVolume);
+                constexpr float kPi = 3.14159265358979323846f;
+                const float relativeRadians =
+                    relativeDegrees * kPi / 180.0f;
+                const float strength = (std::clamp)(
+                    spatialAudioScreen->adaptiveAudioStrength,
+                    0.0f, 1.0f);
+                const float pan = (std::clamp)(
+                    -std::sin(relativeRadians) * strength,
+                    -1.0f, 1.0f);
+                const float frontAmount =
+                    (std::cos(relativeRadians) + 1.0f) * 0.5f;
+                const float facingAwayVolume = (std::clamp)(
+                    spatialAudioScreen->adaptiveAudioFacingAwayVolume,
+                    0.0f, 1.0f);
+                const float directionalGain =
+                    facingAwayVolume +
+                    (1.0f - facingAwayVolume) * frontAmount;
+                float gain = 1.0f -
+                    strength * (1.0f - directionalGain);
 
-            spatialAudioTarget->SetSpatialAudio(gain, pan, true);
+                const float x = g_head_offset_x.load();
+                const float y = g_head_offset_y.load();
+                const float z = g_head_offset_z.load();
+                const float distance =
+                    std::sqrt(x * x + y * y + z * z);
+                const float outsideDistance = (std::clamp)(
+                    spatialAudioScreen->adaptiveAudioOutsideDistance,
+                    0.25f, 5.0f);
+                const float outsideBlend = (std::clamp)(
+                    (distance - outsideDistance) / 0.35f,
+                    0.0f, 1.0f);
+                const float outsideVolume = (std::clamp)(
+                    spatialAudioScreen->adaptiveAudioOutsideVolume,
+                    0.0f, 1.0f);
+                gain *= 1.0f -
+                    outsideBlend * (1.0f - outsideVolume);
+
+                spatialAudioTarget->SetSpatialAudio(
+                    gain, pan, true);
+            }
         }
         else if (spatialAudioFallback)
         {
@@ -261,12 +374,27 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 
     const scs_telemetry_init_params_v101_t* version_params = reinterpret_cast<const scs_telemetry_init_params_v101_t*>(params);
     version_params->register_for_event(SCS_TELEMETRY_EVENT_frame_start, telemetry_tick, nullptr);
+    version_params->register_for_event(
+        SCS_TELEMETRY_EVENT_paused,
+        driving_state_changed,
+        nullptr);
+    version_params->register_for_event(
+        SCS_TELEMETRY_EVENT_started,
+        driving_state_changed,
+        nullptr);
     version_params->register_for_channel(
         SCS_TELEMETRY_TRUCK_CHANNEL_head_offset,
         SCS_U32_NIL,
         SCS_VALUE_TYPE_fplacement,
         SCS_TELEMETRY_CHANNEL_FLAG_each_frame,
         head_offset_changed,
+        nullptr);
+    version_params->register_for_channel(
+        SCS_TELEMETRY_TRUCK_CHANNEL_engine_enabled,
+        SCS_U32_NIL,
+        SCS_VALUE_TYPE_bool,
+        SCS_TELEMETRY_CHANNEL_FLAG_each_frame,
+        engine_enabled_changed,
         nullptr);
     version_params->register_for_channel(
         SCS_TELEMETRY_TRUCK_CHANNEL_engine_gear,

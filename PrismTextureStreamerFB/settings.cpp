@@ -142,6 +142,13 @@ namespace settings {
             screen.scaleMode = static_cast<scale_mode_t>((std::clamp)(
                 GetPrivateProfileIntA(section.c_str(), "ScaleMode", static_cast<UINT>(scale_mode_t::FIT), path.c_str()),
                 0U, static_cast<UINT>(scale_mode_t::CROP)));
+            screen.brightness = (std::clamp)(
+                read_float(path, section.c_str(), "Brightness", 1.0f),
+                0.10f, 2.0f);
+            screen.edgeBleedGuard = static_cast<uint8_t>((std::clamp)(
+                GetPrivateProfileIntA(
+                    section.c_str(), "EdgeBleedGuard", 2, path.c_str()),
+                0U, 16U));
             screen.performanceProfile = static_cast<performance_profile_t>((std::clamp)(
                 GetPrivateProfileIntA(section.c_str(), "PerformanceProfile", static_cast<UINT>(performance_profile_t::CUSTOM), path.c_str()),
                 0U, static_cast<UINT>(performance_profile_t::SMOOTH)));
@@ -154,6 +161,8 @@ namespace settings {
                 0U, static_cast<UINT>(content_mode_t::NATIVE_DIRECT_MEDIA)));
             screen.hotkeyTarget = GetPrivateProfileIntA(
                 section.c_str(), "HotkeyTarget", 0, path.c_str()) != 0;
+            screen.followTruckEngine = GetPrivateProfileIntA(
+                section.c_str(), "FollowTruckEngine", 1, path.c_str()) != 0;
             screen.adaptiveAudioEnabled = GetPrivateProfileIntA(
                 section.c_str(), "AdaptiveAudioEnabled", 0, path.c_str()) != 0;
             screen.adaptiveAudioStrength = (std::clamp)(
@@ -170,6 +179,9 @@ namespace settings {
                 0.25f, 5.0f);
             screen.adaptiveAudioOutsideVolume = (std::clamp)(
                 read_float(path, section.c_str(), "AdaptiveAudioOutsideVolume", 0.0f),
+                0.0f, 1.0f);
+            screen.adaptiveAudioMenuVolume = (std::clamp)(
+                read_float(path, section.c_str(), "AdaptiveAudioMenuVolume", 0.50f),
                 0.0f, 1.0f);
             screen.reverseCameraEnabled = GetPrivateProfileIntA(
                 section.c_str(), "ReverseCameraEnabled", 0, path.c_str()) != 0;
@@ -273,7 +285,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 4);
+        write_number(temporaryPath, "General", "Version", 6);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
@@ -302,15 +314,19 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "FlipVertical", screen.flipVertical ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "Paused", screen.paused ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "ScaleMode", static_cast<uint32_t>(screen.scaleMode));
+            write_float(temporaryPath, section.c_str(), "Brightness", screen.brightness);
+            write_number(temporaryPath, section.c_str(), "EdgeBleedGuard", screen.edgeBleedGuard);
             write_number(temporaryPath, section.c_str(), "PerformanceProfile", static_cast<uint32_t>(screen.performanceProfile));
             write_number(temporaryPath, section.c_str(), "ContentMode", static_cast<uint32_t>(screen.contentMode));
             write_number(temporaryPath, section.c_str(), "HotkeyTarget", screen.hotkeyTarget ? 1 : 0);
+            write_number(temporaryPath, section.c_str(), "FollowTruckEngine", screen.followTruckEngine ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "AdaptiveAudioEnabled", screen.adaptiveAudioEnabled ? 1 : 0);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioStrength", screen.adaptiveAudioStrength);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioSpeakerAzimuth", screen.adaptiveAudioSpeakerAzimuth);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioFacingAwayVolume", screen.adaptiveAudioFacingAwayVolume);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioOutsideDistance", screen.adaptiveAudioOutsideDistance);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioOutsideVolume", screen.adaptiveAudioOutsideVolume);
+            write_float(temporaryPath, section.c_str(), "AdaptiveAudioMenuVolume", screen.adaptiveAudioMenuVolume);
             write_number(temporaryPath, section.c_str(), "ReverseCameraEnabled", screen.reverseCameraEnabled ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "ReverseZeroForwardImpact", screen.reverseZeroForwardImpact ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "ReverseFramerate", screen.reverseFramerate);

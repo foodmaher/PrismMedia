@@ -17,6 +17,10 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Play local files or direct stream URLs through Windows Media Foundation
 - Control media and assign keys for Play/Pause, Next, Previous, Mute and Volume
 - Spatialize Integrated Media Client sound from the driver's live head pose
+- Apply separate media volume in menus and detect external cameras reliably
+- Adjust and save brightness independently for every streamed screen
+- Pause and resume media automatically with the truck engine
+- Prevent full-screen video colours from bleeding into the GPS bezel
 - Automatically replace media with a calibrated reverse-mirror view in reverse
 - See live measured plugin CPU/readback cost and estimated FPS loss
 - Adjust target resolution and framerate
@@ -116,9 +120,9 @@ Version `2.0.0-performance` includes:
 - Stretch, aspect-correct Fit, and centre Crop scaling modes
 - Persistent settings for performance profile, pause state, and scaling mode
 
-## Version 2.1 adaptive audio and reverse view
+## Version 2.3 engine-powered media and GPS edge fix
 
-Version `2.1.1-adaptive` adds:
+Version `2.3.0-adaptive` includes:
 
 - Head-orientation stereo panning and directional attenuation for the
   Integrated Media Client
@@ -130,6 +134,12 @@ Version `2.1.1-adaptive` adds:
   rectangle and sleeps while driving forward
 - In-game reverse-feed preview, crop calibration and framerate control
 - Persistence for every adaptive-audio and reverse-view setting
+- Configurable media volume in game menus and before entering the truck
+- External-camera detection that avoids reusing stale head telemetry
+- A saved 10–200% brightness scale for each GPS, dashboard, or custom screen
+- Optional engine-follow playback using `truck.engine.enabled` telemetry
+- A configurable opaque edge guard that stops video-colour bleed around GPS
+  displays
 
 The reverse feature deliberately reuses the game's virtual mirror instead of
 creating an undocumented extra world camera. This lets the game handle truck
@@ -142,7 +152,7 @@ Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-2.1.1-adaptive` artifact. This cloud build requires
+`PrismTextureStreamerFB-2.3.0-adaptive` artifact. This cloud build requires
 no local Visual Studio installation.
 
 ## Contributing

@@ -65,6 +65,9 @@
     <ClCompile Include="sources\wgc_window.cpp">
       <Filter>Source Files\sources</Filter>
     </ClCompile>
+    <ClCompile Include="sources\reverse_camera.cpp">
+      <Filter>Source Files\sources</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="scs_logging.h">
@@ -120,6 +123,12 @@
     </ClInclude>
     <ClInclude Include="version.h">
       <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="telemetry_state.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sources\reverse_camera.h">
+      <Filter>Source Files\sources</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

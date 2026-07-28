@@ -1,8 +1,8 @@
-# PrismTextureStreamerFB 2.0 — Build, Install, and Use
+# PrismTextureStreamerFB 2.1 — Build, Install, and Use
 
 ## A. Update the GitHub repository
 
-1. Extract `PrismTextureStreamerFB-2.0.0-GitHub-update.zip`.
+1. Extract `PrismTextureStreamerFB-2.1.0-adaptive-source.zip`.
 2. Open your `PrismTextureStreamerFB-Performance` repository on GitHub.
 3. Upload the extracted files and folders into the repository root, preserving
    the folder structure. Allow GitHub to replace files with the same names.
@@ -19,7 +19,7 @@ previous “dumpbin is not recognized” failure cannot occur.
 4. Wait for the run to turn green. A normal build is usually about 2–5 minutes;
    the first NuGet restore can take a little longer.
 5. Open the finished run.
-6. Download the `PrismTextureStreamerFB-2.0.0-performance` artifact.
+6. Download the `PrismTextureStreamerFB-2.1.0-adaptive` artifact.
 7. Extract the downloaded ZIP.
 
 ## C. Install
@@ -92,3 +92,29 @@ The estimate is most useful for comparing methods and profiles on the same PC.
 No moving video path can have literally zero cost: decoding and a texture
 update are always required. Native Direct Media removes the window-capture
 stage and normally has the lowest cost.
+
+## G. Configure adaptive cabin sound
+
+1. Use **Integrated Media Client** and start the video.
+2. Open **Adaptive Cabin Audio**.
+3. Enable **head-position adaptive sound**.
+4. Start with Spatial strength `0.85`, Speaker direction `0`, Volume facing
+   away `0.05`, Outside-cab distance `0.85 m`, and Volume when outside `0`.
+5. Turn the in-game camera left/right and adjust Speaker direction until the
+   sound appears fixed near the truck screen.
+
+This feature changes only the Integrated Media Client audio session. Native
+Direct Media remains unprocessed because it shares the game process audio path.
+
+## H. Configure the reverse mirror
+
+1. Press **F2** in ETS2/ATS until the fixed virtual mirror is visible.
+2. Open the plugin screen and expand **Automatic Reverse Mirror**.
+3. Enable **Show reverse view on this screen**.
+4. Enable **Preview / calibrate now**.
+5. Adjust Mirror left/top/width/height until the target screen shows only the
+   virtual mirror.
+6. Disable preview and select reverse gear. The screen switches automatically.
+
+The reverse capture sleeps while driving forward. It uses the game's mirror
+render, which already follows the current truck, trailer and articulation.

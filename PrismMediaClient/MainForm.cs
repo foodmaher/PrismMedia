@@ -3,6 +3,7 @@ using Microsoft.Web.WebView2.WinForms;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
@@ -26,6 +27,8 @@ namespace PrismMediaClient
         private readonly WebView2 webView = new WebView2();
         private readonly Queue<string> pendingCommands =
             new Queue<string>();
+        private readonly AdaptiveAudioController adaptiveAudio =
+            new AdaptiveAudioController();
         private bool ready;
 
         internal MainForm(string initialUrl)
@@ -61,6 +64,8 @@ namespace PrismMediaClient
                 webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
                 webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
                 webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
+                adaptiveAudio.SetBrowserProcessId(
+                    webView.CoreWebView2.BrowserProcessId);
 
                 string contentFolder = Path.Combine(
                     AppDomain.CurrentDomain.BaseDirectory, "www");
@@ -126,6 +131,23 @@ namespace PrismMediaClient
 
         private async Task ApplyCommandAsync(string command)
         {
+            if (command.StartsWith("spatial|", StringComparison.Ordinal))
+            {
+                string[] parts = command.Split('|');
+                if (parts.Length == 4 &&
+                    int.TryParse(parts[1], out int spatialEnabled) &&
+                    float.TryParse(
+                        parts[2], NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out float gain) &&
+                    float.TryParse(
+                        parts[3], NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out float pan))
+                {
+                    adaptiveAudio.SetDesired(
+                        spatialEnabled != 0, gain, pan);
+                }
+                return;
+            }
             if (command.StartsWith("resize|", StringComparison.Ordinal))
             {
                 string[] dimensions = command.Substring(7).Split('x');
@@ -140,6 +162,12 @@ namespace PrismMediaClient
                 return;
             }
             await ExecuteCommandAsync(command);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            adaptiveAudio.Dispose();
+            base.OnFormClosed(e);
         }
     }
 }

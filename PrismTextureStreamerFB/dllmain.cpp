@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include <scs_sdk/scssdk_telemetry.h>
+#include <scs_sdk/common/scssdk_telemetry_truck_common_channels.h>
 #include "scs_logging.h"
 
 #include "version.h"
@@ -14,7 +15,10 @@
 #include "prism/prism.h"
 #include "menu/menu.h"
 #include "settings.h"
+#include "telemetry_state.h"
 
+#include <algorithm>
+#include <cmath>
 using namespace scs_logging;
 #pragma comment(lib, "minhook.x64.lib")
 
@@ -26,6 +30,49 @@ using namespace scs_logging;
 
 
 
+SCSAPI_VOID head_offset_changed(
+    const scs_string_t,
+    const scs_u32_t,
+    const scs_value_t* const value,
+    const scs_context_t)
+{
+    if (!value || value->type != SCS_VALUE_TYPE_fplacement)
+        return;
+
+    g_head_offset_x = value->value_fplacement.position.x;
+    g_head_offset_y = value->value_fplacement.position.y;
+    g_head_offset_z = value->value_fplacement.position.z;
+    g_head_heading = value->value_fplacement.orientation.heading;
+}
+
+SCSAPI_VOID selected_gear_changed(
+    const scs_string_t,
+    const scs_u32_t,
+    const scs_value_t* const value,
+    const scs_context_t)
+{
+    if (!value || value->type != SCS_VALUE_TYPE_s32)
+        return;
+
+    g_selected_gear = value->value_s32.value;
+    g_reverse_active =
+        value->value_s32.value < 0 || g_reverse_light.load();
+}
+
+SCSAPI_VOID reverse_light_changed(
+    const scs_string_t,
+    const scs_u32_t,
+    const scs_value_t* const value,
+    const scs_context_t)
+{
+    if (!value || value->type != SCS_VALUE_TYPE_bool)
+        return;
+
+    const bool lightOn = value->value_bool.value != 0;
+    g_reverse_light = lightOn;
+    g_reverse_active = lightOn || g_selected_gear.load() < 0;
+}
+
 SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info, scs_context_t context)
 {
     static bool gps_patched{};
@@ -35,19 +82,95 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
     bool has_gps{};
     bool has_dash{};
     bool has_custom{};
+    IContentSource* spatialAudioTarget{};
+    IContentSource* spatialAudioFallback{};
+    screen_t* spatialAudioScreen{};
+    const bool reverseActive = g_reverse_active.load();
 
     {
         std::lock_guard<std::mutex> lock(g_screens_mutex);
         for (auto& screen : g_screens)
         {
-            if (!screen.source)
+            if (!screen.source && !screen.reverseSource &&
+                !screen.reverseCameraEnabled)
                 continue;
+
+            if (screen.reverseSource)
+                screen.reverseSource->SetPaused(
+                    !(reverseActive || screen.reversePreview));
+
             if (screen.type == screen_type_t::GPS)
                 has_gps = true;
             else if (screen.type == screen_type_t::DASHBOARD)
                 has_dash = true;
             else if (screen.type == screen_type_t::CUSTOM)
                 has_custom = true;
+
+            if (screen.source && screen.source->SupportsSpatialAudio())
+            {
+                if (!spatialAudioFallback)
+                    spatialAudioFallback = screen.source.get();
+                if (!spatialAudioTarget && screen.adaptiveAudioEnabled)
+                {
+                    spatialAudioTarget = screen.source.get();
+                    spatialAudioScreen = &screen;
+                }
+            }
+        }
+
+        if (spatialAudioTarget && spatialAudioScreen)
+        {
+            float heading = g_head_heading.load();
+            if (heading > 0.5f)
+                heading -= 1.0f;
+            else if (heading < -0.5f)
+                heading += 1.0f;
+
+            float relativeDegrees =
+                -spatialAudioScreen->adaptiveAudioSpeakerAzimuth -
+                heading * 360.0f;
+            while (relativeDegrees > 180.0f)
+                relativeDegrees -= 360.0f;
+            while (relativeDegrees < -180.0f)
+                relativeDegrees += 360.0f;
+
+            constexpr float kPi = 3.14159265358979323846f;
+            const float relativeRadians = relativeDegrees * kPi / 180.0f;
+            const float strength = (std::clamp)(
+                spatialAudioScreen->adaptiveAudioStrength, 0.0f, 1.0f);
+            const float pan = (std::clamp)(
+                -std::sin(relativeRadians) * strength, -1.0f, 1.0f);
+            const float frontAmount =
+                (std::cos(relativeRadians) + 1.0f) * 0.5f;
+            const float facingAwayVolume = (std::clamp)(
+                spatialAudioScreen->adaptiveAudioFacingAwayVolume,
+                0.0f, 1.0f);
+            const float directionalGain =
+                facingAwayVolume +
+                (1.0f - facingAwayVolume) * frontAmount;
+            float gain = 1.0f -
+                strength * (1.0f - directionalGain);
+
+            const float x = g_head_offset_x.load();
+            const float y = g_head_offset_y.load();
+            const float z = g_head_offset_z.load();
+            const float distance = std::sqrt(x * x + y * y + z * z);
+            const float outsideDistance = (std::clamp)(
+                spatialAudioScreen->adaptiveAudioOutsideDistance,
+                0.25f, 5.0f);
+            const float outsideBlend = (std::clamp)(
+                (distance - outsideDistance) / 0.35f, 0.0f, 1.0f);
+            const float outsideVolume = (std::clamp)(
+                spatialAudioScreen->adaptiveAudioOutsideVolume,
+                0.0f, 1.0f);
+            gain *= 1.0f -
+                outsideBlend * (1.0f - outsideVolume);
+
+            spatialAudioTarget->SetSpatialAudio(gain, pan, true);
+        }
+        else if (spatialAudioFallback)
+        {
+            spatialAudioFallback->SetSpatialAudio(1.0f, 0.0f, false);
         }
     }
 
@@ -138,6 +261,27 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 
     const scs_telemetry_init_params_v101_t* version_params = reinterpret_cast<const scs_telemetry_init_params_v101_t*>(params);
     version_params->register_for_event(SCS_TELEMETRY_EVENT_frame_start, telemetry_tick, nullptr);
+    version_params->register_for_channel(
+        SCS_TELEMETRY_TRUCK_CHANNEL_head_offset,
+        SCS_U32_NIL,
+        SCS_VALUE_TYPE_fplacement,
+        SCS_TELEMETRY_CHANNEL_FLAG_each_frame,
+        head_offset_changed,
+        nullptr);
+    version_params->register_for_channel(
+        SCS_TELEMETRY_TRUCK_CHANNEL_engine_gear,
+        SCS_U32_NIL,
+        SCS_VALUE_TYPE_s32,
+        SCS_TELEMETRY_CHANNEL_FLAG_each_frame,
+        selected_gear_changed,
+        nullptr);
+    version_params->register_for_channel(
+        SCS_TELEMETRY_TRUCK_CHANNEL_light_reverse,
+        SCS_U32_NIL,
+        SCS_VALUE_TYPE_bool,
+        SCS_TELEMETRY_CHANNEL_FLAG_each_frame,
+        reverse_light_changed,
+        nullptr);
 
     if (MH_Initialize() != MH_OK) {
         scs_log(0, "Failed to initialize MinHook!");
@@ -171,6 +315,8 @@ SCSAPI_VOID scs_telemetry_shutdown()
         {
             if (screen.liveTexture) screen.liveTexture->Release();
             if (screen.immediateContext) screen.immediateContext->Release();
+            if (screen.source && screen.source->SupportsSpatialAudio())
+                screen.source->SetSpatialAudio(1.0f, 0.0f, false);
         }
         g_screens.clear(); // Stops the sources
     }

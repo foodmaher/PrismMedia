@@ -44,6 +44,9 @@ public:
     virtual bool SupportsMediaControls() const { return false; }
     virtual bool LoadMedia(const std::string&) { return false; }
     virtual bool SendMediaCommand(media_command_t) { return false; }
+    virtual bool SupportsSpatialAudio() const { return false; }
+    virtual void SetSpatialAudio(float, float, bool) {}
+    virtual void SetCaptureRegion(float, float, float, float) {}
     virtual source_performance_stats_t GetPerformanceStats() const { return {}; }
     virtual std::string GetStatusText() const { return "Capturing"; }
 };

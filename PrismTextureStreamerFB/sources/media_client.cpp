@@ -7,6 +7,8 @@
 #include <Windows.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <string>
 #include <thread>
 #include <utility>
@@ -42,7 +44,7 @@ namespace {
         return FindWindowA(nullptr, sources::kMediaClientWindowTitle);
     }
 
-    bool send_payload(const std::string& payload)
+    bool send_payload(const std::string& payload, DWORD timeout_ms = 1000)
     {
         const HWND window = find_media_client();
         if (!window)
@@ -55,7 +57,7 @@ namespace {
         DWORD_PTR ignored{};
         return SendMessageTimeoutA(
             window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&data),
-            SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &ignored) != 0;
+            SMTO_ABORTIFHUNG | SMTO_BLOCK, timeout_ms, &ignored) != 0;
     }
 
     bool launch_media_client()
@@ -103,6 +105,11 @@ namespace {
             : m_capture(std::move(capture))
         {
         }
+        ~MediaClientSource() override
+        {
+            if (m_spatialEnabled)
+                send_payload("spatial|0|1.0000|0.0000", 30);
+        }
 
         uint32_t GetWidth() const override { return m_capture->GetWidth(); }
         uint32_t GetHeight() const override { return m_capture->GetHeight(); }
@@ -127,6 +134,7 @@ namespace {
         }
 
         bool SupportsMediaControls() const override { return true; }
+        bool SupportsSpatialAudio() const override { return true; }
         bool LoadMedia(const std::string& url) override
         {
             return send_payload("load|" + url);
@@ -145,6 +153,33 @@ namespace {
             }
             return name && send_payload(name);
         }
+        void SetSpatialAudio(float gain, float pan, bool enabled) override
+        {
+            gain = (std::clamp)(gain, 0.0f, 1.0f);
+            pan = (std::clamp)(pan, -1.0f, 1.0f);
+
+            const uint64_t now = GetTickCount64();
+            const bool stateChanged = enabled != m_spatialEnabled;
+            const bool valueChanged =
+                std::fabs(gain - m_lastSpatialGain) >= 0.01f ||
+                std::fabs(pan - m_lastSpatialPan) >= 0.01f;
+            if (!stateChanged && !valueChanged)
+                return;
+            if (!stateChanged && now - m_lastSpatialSendTick < 45)
+                return;
+
+            char payload[96]{};
+            std::snprintf(
+                payload, sizeof(payload), "spatial|%d|%.4f|%.4f",
+                enabled ? 1 : 0, gain, pan);
+            if (send_payload(payload, 30))
+            {
+                m_spatialEnabled = enabled;
+                m_lastSpatialGain = gain;
+                m_lastSpatialPan = pan;
+                m_lastSpatialSendTick = now;
+            }
+        }
         source_performance_stats_t GetPerformanceStats() const override
         {
             auto result = m_capture->GetPerformanceStats();
@@ -158,6 +193,10 @@ namespace {
 
     private:
         std::unique_ptr<IContentSource> m_capture;
+        bool m_spatialEnabled{};
+        float m_lastSpatialGain{ 1.0f };
+        float m_lastSpatialPan{};
+        uint64_t m_lastSpatialSendTick{};
     };
 }
 

@@ -179,8 +179,13 @@ namespace sources {
         std::atomic<uint32_t> m_height{};
         std::atomic<uint8_t> m_framerate{ 30 };
         std::atomic<bool> m_paused{};
-        std::atomic<uint32_t> m_outputWidth{ 1280 };
-        std::atomic<uint32_t> m_outputHeight{ 720 };
+	        std::atomic<uint32_t> m_outputWidth{ 1280 };
+	        std::atomic<uint32_t> m_outputHeight{ 720 };
+	        std::atomic<bool> m_cropEnabled{};
+	        std::atomic<float> m_cropLeft{};
+	        std::atomic<float> m_cropTop{};
+	        std::atomic<float> m_cropWidth{ 1.0f };
+	        std::atomic<float> m_cropHeight{ 1.0f };
 
         winrt::com_ptr < ID3D11Device> m_d3dDevice{};
         Graphics::DirectX::Direct3D11::IDirect3DDevice m_wgcDevice{ nullptr };
@@ -400,25 +405,60 @@ namespace sources {
                 winrt::com_ptr<ID3D11Texture2D> gpuTexture;
                 access->GetInterface(IID_PPV_ARGS(gpuTexture.put()));
 
-                D3D11_TEXTURE2D_DESC desc;
-                gpuTexture->GetDesc(&desc);
-                desc.Usage = D3D11_USAGE_STAGING;
-                desc.BindFlags = 0;
-                desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-                desc.MiscFlags = 0;
+	                D3D11_TEXTURE2D_DESC desc;
+	                gpuTexture->GetDesc(&desc);
+	                D3D11_BOX sourceBox{};
+	                sourceBox.front = 0;
+	                sourceBox.back = 1;
+	                sourceBox.left = 0;
+	                sourceBox.top = 0;
+	                sourceBox.right = desc.Width;
+	                sourceBox.bottom = desc.Height;
+
+	                if (m_cropEnabled.load())
+	                {
+	                    const float left = (std::clamp)(m_cropLeft.load(), 0.0f, 0.98f);
+	                    const float top = (std::clamp)(m_cropTop.load(), 0.0f, 0.98f);
+	                    const float width = (std::clamp)(m_cropWidth.load(), 0.02f, 1.0f);
+	                    const float height = (std::clamp)(m_cropHeight.load(), 0.02f, 1.0f);
+
+	                    sourceBox.left = (std::min)(
+	                        desc.Width - 2,
+	                        static_cast<UINT>(left * static_cast<float>(desc.Width)));
+	                    sourceBox.top = (std::min)(
+	                        desc.Height - 2,
+	                        static_cast<UINT>(top * static_cast<float>(desc.Height)));
+	                    sourceBox.right = (std::clamp)(
+	                        sourceBox.left + static_cast<UINT>(
+	                            width * static_cast<float>(desc.Width)),
+	                        sourceBox.left + 2, desc.Width);
+	                    sourceBox.bottom = (std::clamp)(
+	                        sourceBox.top + static_cast<UINT>(
+	                            height * static_cast<float>(desc.Height)),
+	                        sourceBox.top + 2, desc.Height);
+	                }
+
+	                D3D11_TEXTURE2D_DESC stagingDesc = desc;
+	                stagingDesc.Width = sourceBox.right - sourceBox.left;
+	                stagingDesc.Height = sourceBox.bottom - sourceBox.top;
+	                stagingDesc.Usage = D3D11_USAGE_STAGING;
+	                stagingDesc.BindFlags = 0;
+	                stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	                stagingDesc.MiscFlags = 0;
 
                 winrt::com_ptr<ID3D11DeviceContext> ctx;
                 m_d3dDevice->GetImmediateContext(ctx.put());
 
-                if (!m_stagingSlots[0].texture ||
-                    m_stagingWidth != desc.Width || m_stagingHeight != desc.Height)
-                {
-                    RecreateStagingResources(desc);
-                }
+	                if (!m_stagingSlots[0].texture ||
+	                    m_stagingWidth != stagingDesc.Width ||
+	                    m_stagingHeight != stagingDesc.Height)
+	                {
+	                    RecreateStagingResources(stagingDesc);
+	                }
 
                 // Read a completed older copy without making the CPU wait for
                 // the GPU, then queue the newest capture into a free slot.
-                TryReadCompletedFrame(ctx.get(), desc);
+	                TryReadCompletedFrame(ctx.get(), stagingDesc);
 
                 bool queued = false;
                 for (size_t attempt = 0; attempt < m_stagingSlots.size(); ++attempt)
@@ -428,7 +468,9 @@ namespace sources {
                     if (slot.pending)
                         continue;
 
-                    ctx->CopyResource(slot.texture.get(), gpuTexture.get());
+	                    ctx->CopySubresourceRegion(
+	                        slot.texture.get(), 0, 0, 0, 0,
+	                        gpuTexture.get(), 0, &sourceBox);
                     ctx->End(slot.completion.get());
                     slot.pending = true;
                     m_nextStagingSlot = (index + 1) % m_stagingSlots.size();
@@ -450,15 +492,22 @@ namespace sources {
         }
 
     public:
-        explicit WgcWindowSource(
-            const char* application_name,
-            const char* application_title,
-            uint8_t framerate,
-            uint32_t output_width,
-            uint32_t output_height)
-        {
-            m_framerate = (std::max)(static_cast<uint8_t>(1), framerate);
-            SetOutputSize(output_width, output_height);
+	        explicit WgcWindowSource(
+	            const char* application_name,
+	            const char* application_title,
+	            uint8_t framerate,
+	            uint32_t output_width,
+	            uint32_t output_height,
+	            bool crop_enabled,
+	            float crop_left,
+	            float crop_top,
+	            float crop_width,
+	            float crop_height)
+	        {
+	            m_framerate = (std::max)(static_cast<uint8_t>(1), framerate);
+	            SetOutputSize(output_width, output_height);
+	            m_cropEnabled = crop_enabled;
+	            SetCaptureRegion(crop_left, crop_top, crop_width, crop_height);
             // Create our own ownership
             m_appname = new char[strlen(application_name) + 1] {};
             strcpy(m_appname, application_name);
@@ -537,11 +586,19 @@ namespace sources {
             m_framerate = (std::max)(static_cast<uint8_t>(1), framerate);
         }
         void SetPaused(bool paused) override { m_paused = paused; }
-        void SetOutputSize(uint32_t width, uint32_t height) override
-        {
-            m_outputWidth = (std::max)(1U, width);
-            m_outputHeight = (std::max)(1U, height);
-        }
+	        void SetOutputSize(uint32_t width, uint32_t height) override
+	        {
+	            m_outputWidth = (std::max)(1U, width);
+	            m_outputHeight = (std::max)(1U, height);
+	        }
+	        void SetCaptureRegion(
+	            float left, float top, float width, float height) override
+	        {
+	            m_cropLeft = (std::clamp)(left, 0.0f, 0.98f);
+	            m_cropTop = (std::clamp)(top, 0.0f, 0.98f);
+	            m_cropWidth = (std::clamp)(width, 0.02f, 1.0f);
+	            m_cropHeight = (std::clamp)(height, 0.02f, 1.0f);
+	        }
 
         bool CopyLatestFrame(std::vector<uint8_t>& dst, uint32_t& width, uint32_t& height) override
         {
@@ -571,22 +628,34 @@ namespace sources {
 
     std::unique_ptr<IContentSource> CreateWgcWindowSource(
         const char* application_name,
-        const char* window_title,
-        uint8_t framerate,
-        uint32_t output_width,
-        uint32_t output_height)
-    {
+	        const char* window_title,
+	        uint8_t framerate,
+	        uint32_t output_width,
+	        uint32_t output_height,
+	        bool crop_enabled,
+	        float crop_left,
+	        float crop_top,
+	        float crop_width,
+	        float crop_height)
+	    {
         std::string appname(application_name);
         std::string apptitle = window_title ? window_title : std::string();
 
         return WgcDispatcher::Instance().PostResult(
-            [appname, apptitle, framerate, output_width, output_height]() -> std::unique_ptr<IContentSource> {
-            auto src = std::make_unique<WgcWindowSource>(
-                appname.c_str(),
-                apptitle.empty() ? nullptr : apptitle.c_str(),
-                framerate,
-                output_width,
-                output_height);
+	            [appname, apptitle, framerate, output_width, output_height,
+	                crop_enabled, crop_left, crop_top, crop_width, crop_height]()
+	                -> std::unique_ptr<IContentSource> {
+	            auto src = std::make_unique<WgcWindowSource>(
+	                appname.c_str(),
+	                apptitle.empty() ? nullptr : apptitle.c_str(),
+	                framerate,
+	                output_width,
+	                output_height,
+	                crop_enabled,
+	                crop_left,
+	                crop_top,
+	                crop_width,
+	                crop_height);
             if (!src->Start()) return nullptr;
             return src;
         });

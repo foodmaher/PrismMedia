@@ -152,6 +152,7 @@
     <ClCompile Include="settings.cpp" />
     <ClCompile Include="sources\media_client.cpp" />
     <ClCompile Include="sources\native_media.cpp" />
+    <ClCompile Include="sources\reverse_camera.cpp" />
     <ClCompile Include="sources\wgc_window.cpp" />
     <ClCompile Include="sources\window.cpp" />
     <ClCompile Include="win32\win32.cpp" />
@@ -171,9 +172,11 @@
     <ClInclude Include="screens.h" />
     <ClInclude Include="scs_logging.h" />
     <ClInclude Include="settings.h" />
+    <ClInclude Include="telemetry_state.h" />
     <ClInclude Include="sources\content_source.h" />
     <ClInclude Include="sources\media_client.h" />
     <ClInclude Include="sources\native_media.h" />
+    <ClInclude Include="sources\reverse_camera.h" />
     <ClInclude Include="sources\wgc_dispatcher.h" />
     <ClInclude Include="sources\wgc_window.h" />
     <ClInclude Include="sources\window.h" />

@@ -16,6 +16,8 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Play YouTube videos/playlists without running a full browser
 - Play local files or direct stream URLs through Windows Media Foundation
 - Control media and assign keys for Play/Pause, Next, Previous, Mute and Volume
+- Spatialize Integrated Media Client sound from the driver's live head pose
+- Automatically replace media with a calibrated reverse-mirror view in reverse
 - See live measured plugin CPU/readback cost and estimated FPS loss
 - Adjust target resolution and framerate
 - Apply changes 
@@ -114,12 +116,33 @@ Version `2.0.0-performance` includes:
 - Stretch, aspect-correct Fit, and centre Crop scaling modes
 - Persistent settings for performance profile, pause state, and scaling mode
 
+## Version 2.1 adaptive audio and reverse view
+
+Version `2.1.0-adaptive` adds:
+
+- Head-orientation stereo panning and directional attenuation for the
+  Integrated Media Client
+- Configurable outside-cab fade/mute based on the driver's telemetry head offset
+- Original Windows mixer levels are preserved and restored when the effect is
+  disabled or the media source closes
+- Automatic reverse detection from selected gear and reverse-light telemetry
+- A low-overhead reverse mirror that captures only the configured virtual-mirror
+  rectangle and sleeps while driving forward
+- In-game reverse-feed preview, crop calibration and framerate control
+- Persistence for every adaptive-audio and reverse-view setting
+
+The reverse feature deliberately reuses the game's virtual mirror instead of
+creating an undocumented extra world camera. This lets the game handle truck
+models, connected trailers and articulation. Enable the virtual mirror with
+**F2**, then use **Preview / calibrate now** if its rectangle differs at your
+resolution or UI scale.
+
 Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 **Desktop development with C++** workload to produce the x64 release DLL.
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-2.0.0-performance` artifact. This cloud build requires
+`PrismTextureStreamerFB-2.1.0-adaptive` artifact. This cloud build requires
 no local Visual Studio installation.
 
 ## Contributing

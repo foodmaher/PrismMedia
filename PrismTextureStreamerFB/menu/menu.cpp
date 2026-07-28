@@ -1,6 +1,7 @@
 #include "menu.h"
 #include <d3d11.h>
 #include <algorithm>
+#include <cmath>
 #include <map>
 
 #include "../version.h"
@@ -20,8 +21,10 @@ using namespace scs_logging;
 #include "../screens.h"
 #include "../hotkeys.h"
 #include "../settings.h"
+#include "../telemetry_state.h"
 #include "../sources/media_client.h"
 #include "../sources/native_media.h"
+#include "../sources/reverse_camera.h"
 #include "../sources/window.h"
 #include "../sources/wgc_window.h"
 
@@ -87,6 +90,37 @@ static bool rebuild_source(screen_t& screen)
 		screen.source->SetPaused(screen.paused);
 	g_screen_source_creation_in_progress = false;
 	return screen.source != nullptr;
+}
+
+static bool rebuild_reverse_source(screen_t& screen)
+{
+	g_screen_source_creation_in_progress = true;
+	screen.reverseSource.reset();
+	screen.reverseLastStartAttemptTick = 0;
+
+	if (screen.reverseCameraEnabled &&
+		(!screen.reverseZeroForwardImpact ||
+			g_reverse_active.load() || screen.reversePreview))
+	{
+		screen.reverseLastStartAttemptTick = GetTickCount64();
+		screen.reverseSource = sources::CreateReverseCameraSource(
+			screen.reverseFramerate,
+			screen.targetLiveTextureWidth,
+			screen.targetLiveTextureHeight,
+			screen.reverseCropLeft,
+			screen.reverseCropTop,
+			screen.reverseCropWidth,
+			screen.reverseCropHeight);
+	}
+
+	if (screen.reverseSource)
+		screen.reverseSource->SetPaused(
+			!(g_reverse_active.load() || screen.reversePreview));
+	g_screen_source_creation_in_progress = false;
+	return !screen.reverseCameraEnabled ||
+		(screen.reverseZeroForwardImpact &&
+			!g_reverse_active.load() && !screen.reversePreview) ||
+		screen.reverseSource != nullptr;
 }
 
 static bool capture_hotkey(hotkey_binding_t& binding)
@@ -162,6 +196,14 @@ void on_frame()
 		{
 			hotkey_binding_index = -1;
 			g_is_binding_hotkey = false;
+			std::lock_guard<std::mutex> lock(g_screens_mutex);
+			for (auto& screen : g_screens)
+			{
+				screen.reversePreview = false;
+				if (screen.reverseSource)
+					screen.reverseSource->SetPaused(
+						!g_reverse_active.load());
+			}
 		}
 		dinput8::set_mouse(menu_visible);
 
@@ -266,6 +308,19 @@ void on_frame()
 						screen.source->SetOutputSize(
 							screen.targetLiveTextureWidth,
 							screen.targetLiveTextureHeight);
+					}
+					if (screen.reverseSource)
+					{
+						screen.reverseSource->SetFramerate(
+							screen.reverseFramerate);
+						screen.reverseSource->SetOutputSize(
+							screen.targetLiveTextureWidth,
+							screen.targetLiveTextureHeight);
+						screen.reverseSource->SetCaptureRegion(
+							screen.reverseCropLeft,
+							screen.reverseCropTop,
+							screen.reverseCropWidth,
+							screen.reverseCropHeight);
 					}
 				}
 			}
@@ -645,7 +700,7 @@ void on_frame()
 						saveConfiguration = true;
 					}
 
-					if (screen.source && screen.source->SupportsMediaControls())
+						if (screen.source && screen.source->SupportsMediaControls())
 					{
 						ImGui::Text("Status: %s",
 							screen.source->GetStatusText().c_str());
@@ -685,13 +740,233 @@ void on_frame()
 							}
 							screen.hotkeyTarget = isHotkeyTarget;
 							saveConfiguration = true;
+							}
 						}
-					}
+
+						if (ImGui::TreeNode("Adaptive Cabin Audio"))
+						{
+							const bool supported =
+								screen.source &&
+								screen.source->SupportsSpatialAudio();
+							if (!supported)
+							{
+								ImGui::TextColored(
+									ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+									"Available with Integrated Media Client");
+								ImGui::TextWrapped(
+									"Spatializing Native Direct Media inside the plugin "
+									"would also change the game's engine/audio session, so "
+									"that unsafe path is intentionally disabled.");
+							}
+
+							ImGui::BeginDisabled(!supported);
+							if (ImGui::Checkbox(
+								"Enable head-position adaptive sound",
+								&screen.adaptiveAudioEnabled))
+							{
+								if (!screen.adaptiveAudioEnabled &&
+									screen.source)
+									screen.source->SetSpatialAudio(
+										1.0f, 0.0f, false);
+								saveConfiguration = true;
+							}
+
+							if (screen.adaptiveAudioEnabled)
+							{
+								if (ImGui::SliderFloat(
+									"Spatial strength",
+									&screen.adaptiveAudioStrength,
+									0.0f, 1.0f, "%.2f",
+									ImGuiSliderFlags_AlwaysClamp))
+									saveConfiguration = true;
+								if (ImGui::SliderFloat(
+									"Speaker direction",
+									&screen.adaptiveAudioSpeakerAzimuth,
+									-90.0f, 90.0f, "%.0f deg",
+									ImGuiSliderFlags_AlwaysClamp))
+									saveConfiguration = true;
+								if (ImGui::SliderFloat(
+									"Volume facing away",
+									&screen.adaptiveAudioFacingAwayVolume,
+									0.0f, 1.0f, "%.2f",
+									ImGuiSliderFlags_AlwaysClamp))
+									saveConfiguration = true;
+								if (ImGui::SliderFloat(
+									"Outside-cab distance",
+									&screen.adaptiveAudioOutsideDistance,
+									0.25f, 2.5f, "%.2f m",
+									ImGuiSliderFlags_AlwaysClamp))
+									saveConfiguration = true;
+								if (ImGui::SliderFloat(
+									"Volume when outside",
+									&screen.adaptiveAudioOutsideVolume,
+									0.0f, 1.0f, "%.2f",
+									ImGuiSliderFlags_AlwaysClamp))
+									saveConfiguration = true;
+
+								const float headDistance = std::sqrt(
+									g_head_offset_x.load() *
+										g_head_offset_x.load() +
+									g_head_offset_y.load() *
+										g_head_offset_y.load() +
+									g_head_offset_z.load() *
+										g_head_offset_z.load());
+								ImGui::Text(
+									"Live head offset: %.2f m | heading: %.0f deg",
+									headDistance,
+									g_head_heading.load() * 360.0f);
+								ImGui::TextWrapped(
+									"Speaker direction: negative is left, positive is "
+								"right. Set Outside volume to 0 for full silence "
+									"when the camera leaves the cab.");
+							}
+							ImGui::EndDisabled();
+							ImGui::TreePop();
+						}
+
+						if (ImGui::TreeNode("Automatic Reverse Mirror"))
+						{
+							ImGui::TextColored(
+								ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
+								"Expected impact: none forward; low while reversing");
+							ImGui::TextWrapped(
+								"Reuses the game's fixed virtual-mirror picture, so the "
+								"game handles every truck, trailer and articulation angle. "
+								"Enable the virtual mirror with F2 first.");
+
+							if (ImGui::Checkbox(
+								"Show reverse view on this screen",
+								&screen.reverseCameraEnabled))
+							{
+								if (!rebuild_reverse_source(screen))
+									ImGui::OpenPopup("Reverse Source Error");
+								saveConfiguration = true;
+							}
+
+							if (screen.reverseCameraEnabled)
+							{
+								ImGui::Text(
+									"Reverse detected: %s",
+									g_reverse_active.load() ? "Yes" : "No");
+								if (ImGui::Checkbox(
+									"Preview / calibrate now",
+									&screen.reversePreview))
+								{
+									if (screen.reversePreview &&
+										!screen.reverseSource)
+									{
+										if (!rebuild_reverse_source(screen))
+											ImGui::OpenPopup(
+												"Reverse Source Error");
+									}
+									if (screen.reverseSource)
+										screen.reverseSource->SetPaused(
+											!(g_reverse_active.load() ||
+												screen.reversePreview));
+								}
+
+								if (ImGui::Checkbox(
+									"Zero forward impact",
+									&screen.reverseZeroForwardImpact))
+								{
+									if (!rebuild_reverse_source(screen))
+										ImGui::OpenPopup(
+											"Reverse Source Error");
+									saveConfiguration = true;
+								}
+								if (ImGui::IsItemHovered())
+								{
+									ImGui::BeginTooltip();
+									ImGui::Text(
+										"Closes capture while driving forward; "
+										"reverse may take a moment to appear");
+									ImGui::EndTooltip();
+								}
+
+								uint8_t reverseFpsMin = 5;
+								uint8_t reverseFpsMax = 60;
+								if (ImGui::SliderScalar(
+									"Reverse view FPS",
+									ImGuiDataType_U8,
+									&screen.reverseFramerate,
+									&reverseFpsMin,
+									&reverseFpsMax))
+								{
+									if (screen.reverseSource)
+										screen.reverseSource->SetFramerate(
+											screen.reverseFramerate);
+									saveConfiguration = true;
+								}
+
+								bool cropChanged = false;
+								cropChanged |= ImGui::SliderFloat(
+									"Mirror left",
+									&screen.reverseCropLeft,
+									0.0f, 0.98f, "%.3f",
+									ImGuiSliderFlags_AlwaysClamp);
+								cropChanged |= ImGui::SliderFloat(
+									"Mirror top",
+									&screen.reverseCropTop,
+									0.0f, 0.98f, "%.3f",
+									ImGuiSliderFlags_AlwaysClamp);
+								cropChanged |= ImGui::SliderFloat(
+									"Mirror width",
+									&screen.reverseCropWidth,
+									0.02f, 1.0f, "%.3f",
+									ImGuiSliderFlags_AlwaysClamp);
+								cropChanged |= ImGui::SliderFloat(
+									"Mirror height",
+									&screen.reverseCropHeight,
+									0.02f, 1.0f, "%.3f",
+									ImGuiSliderFlags_AlwaysClamp);
+								if (cropChanged)
+								{
+									if (screen.reverseSource)
+										screen.reverseSource->SetCaptureRegion(
+											screen.reverseCropLeft,
+											screen.reverseCropTop,
+											screen.reverseCropWidth,
+											screen.reverseCropHeight);
+									saveConfiguration = true;
+								}
+
+								const bool reverseDormant =
+									screen.reverseZeroForwardImpact &&
+									!g_reverse_active.load() &&
+									!screen.reversePreview;
+								if (reverseDormant)
+								{
+									ImGui::TextColored(
+										ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
+										"Capture is closed until reverse is selected.");
+								}
+								else if (!screen.reverseSource)
+								{
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+										"Reverse source is not running.");
+									if (ImGui::Button("Start Reverse Source"))
+									{
+										if (!rebuild_reverse_source(screen))
+											ImGui::OpenPopup(
+												"Reverse Source Error");
+									}
+								}
+							}
+							ImGui::TreePop();
+						}
 
 					if (ImGui::TreeNode("Live Performance Monitor"))
 					{
-						const auto sourceStats = screen.source
-							? screen.source->GetPerformanceStats()
+							IContentSource* monitoredSource =
+								screen.reverseCameraEnabled &&
+								(g_reverse_active.load() ||
+									screen.reversePreview) &&
+								screen.reverseSource
+								? screen.reverseSource.get()
+								: screen.source.get();
+							const auto sourceStats = monitoredSource
+								? monitoredSource->GetPerformanceStats()
 							: source_performance_stats_t{};
 						const double gameFps = ImGui::GetIO().Framerate;
 						const double observedFrameMs =
@@ -753,10 +1028,19 @@ void on_frame()
 						ImGui::TreePop();
 					}
 
-					if (ImGui::BeginPopupModal("Source Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+						if (ImGui::BeginPopupModal("Source Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
 						ImGui::TextWrapped("Failed to use source, check the console for more details");
 						if (ImGui::Button("OK", ImVec2(120, 0))) {
 							ImGui::CloseCurrentPopup();
+						}
+						if (ImGui::BeginPopupModal("Reverse Source Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+							ImGui::TextWrapped(
+								"Failed to capture the game window for the reverse "
+								"mirror. Use DX11 windowed/borderless mode and check "
+								"the plugin log.");
+							if (ImGui::Button("OK", ImVec2(120, 0)))
+								ImGui::CloseCurrentPopup();
+							ImGui::EndPopup();
 						}
 						ImGui::EndPopup();
 					}

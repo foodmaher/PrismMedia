@@ -9,6 +9,8 @@
 using namespace scs_logging;
 
 #include "../screens.h"
+#include "../telemetry_state.h"
+#include "../sources/reverse_camera.h"
 
 
 typedef HRESULT(__stdcall* CreateTexture2D_t)(ID3D11Device*, const D3D11_TEXTURE2D_DESC*, const D3D11_SUBRESOURCE_DATA*, ID3D11Texture2D**);
@@ -21,7 +23,9 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 
         for (screen_t& screen : g_screens)
         {
-            if (!screen.source.get()) continue; // no source, cant use this
+	            if (!screen.source && !screen.reverseSource &&
+	                !screen.reverseCameraEnabled)
+	                continue;
 
             if (!pDesc) continue;
             if (pDesc->Width != screen.override_texture_size_w) continue;
@@ -71,22 +75,59 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 void new_frame()
 {
     std::lock_guard<std::mutex> lock(g_screens_mutex);
-    for (auto& screen : g_screens)
-    {
-        const auto workStarted = std::chrono::steady_clock::now();
-        if (!screen.source.get())
-            continue;
+	    for (auto& screen : g_screens)
+	    {
+	        const auto workStarted = std::chrono::steady_clock::now();
+	        const bool reverseRequested =
+	            screen.reverseCameraEnabled &&
+	            (g_reverse_active.load() || screen.reversePreview);
+
+	        const uint64_t reverseNowTick = GetTickCount64();
+	        if (reverseRequested && !screen.reverseSource &&
+	            (screen.reverseLastStartAttemptTick == 0 ||
+	                reverseNowTick - screen.reverseLastStartAttemptTick >= 2000))
+	        {
+	            g_screen_source_creation_in_progress = true;
+	            screen.reverseLastStartAttemptTick = reverseNowTick;
+	            screen.reverseSource = sources::CreateReverseCameraSource(
+	                screen.reverseFramerate,
+	                screen.targetLiveTextureWidth,
+	                screen.targetLiveTextureHeight,
+	                screen.reverseCropLeft,
+	                screen.reverseCropTop,
+	                screen.reverseCropWidth,
+	                screen.reverseCropHeight);
+	            g_screen_source_creation_in_progress = false;
+	        }
+	        else if (!reverseRequested &&
+	            screen.reverseZeroForwardImpact &&
+	            screen.reverseSource)
+	        {
+	            g_screen_source_creation_in_progress = true;
+	            screen.reverseSource.reset();
+	            screen.reverseLastStartAttemptTick = 0;
+	            g_screen_source_creation_in_progress = false;
+	        }
+
+	        const bool reverseActive =
+	            reverseRequested && screen.reverseSource;
+	        IContentSource* activeSource = reverseActive
+	            ? screen.reverseSource.get()
+	            : screen.source.get();
+	        if (!activeSource)
+	            continue;
 
         if (!screen.liveTexture || !screen.immediateContext)
             continue;
 
-        if (screen.paused && screen.hasUploadedFrame)
-            continue;
+	        if (screen.paused && !reverseActive && screen.hasUploadedFrame)
+	            continue;
 
         uint32_t srcWidth = screen.frameScratchWidth;
         uint32_t srcHeight = screen.frameScratchHeight;
         const bool hasNewFrame =
-            screen.source->CopyLatestFrame(screen.frameScratch, srcWidth, srcHeight);
+	            activeSource->CopyLatestFrame(
+	                screen.frameScratch, srcWidth, srcHeight);
         if (hasNewFrame)
         {
             screen.frameScratchWidth = srcWidth;
@@ -223,7 +264,7 @@ void new_frame()
         }
         screen.lastUploadTick = nowTick;
 
-        const auto sourceStats = screen.source->GetPerformanceStats();
+	        const auto sourceStats = activeSource->GetPerformanceStats();
         screen.totalPluginCpuMs =
             screen.uploadCpuMs + sourceStats.workerCpuMs;
     }

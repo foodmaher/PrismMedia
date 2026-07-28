@@ -1,4 +1,4 @@
-# PrismTextureStreamerFB 2.0.0 Performance Guide
+# PrismTextureStreamerFB 2.1.0 Performance and Adaptive Features Guide
 
 ## Choose the playback method
 
@@ -62,3 +62,33 @@ texture. Version 2.0.0 offers a direct Media Foundation path that avoids window
 capture, plus a small WebView2-based YouTube client that avoids running a full
 browser. The existing capture path still limits resolution, skips duplicates,
 uses non-blocking triple-buffered GPU readback, and caches scaling data.
+
+## Adaptive cabin audio
+
+Adaptive audio is available for the Integrated Media Client. It uses
+`truck.head.offset` telemetry to:
+
+- move the media sound left/right as the driver turns;
+- reduce sound when the driver faces away from the dashboard speaker;
+- fade or mute media when the camera moves outside the cab.
+
+The effect controls only the WebView2 media audio sessions. It does not modify
+engine, navigation, traffic, radio, or other game sounds. Use **Speaker
+direction** to place the apparent dashboard source, **Spatial strength** to
+blend the effect, and **Volume when outside** = `0` for silence outside.
+
+## Automatic reverse mirror
+
+The reverse view captures only the game's fixed virtual-mirror rectangle and is
+paused outside reverse gear. This is intentionally cheaper and more compatible
+than creating another 3D scene render.
+
+1. Enable the game's virtual mirror with **F2**.
+2. Open **Automatic Reverse Mirror** on the target plugin screen.
+3. Enable **Show reverse view on this screen**.
+4. Use **Preview / calibrate now**.
+5. Adjust left, top, width, and height until only the mirror is visible.
+6. Disable preview. The source now wakes automatically in reverse.
+
+Use 15–20 FPS for the smallest impact. The mirror view is truck/trailer aware
+because ETS2/ATS renders it; it is not a physically mounted trailer-tail camera.

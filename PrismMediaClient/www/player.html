@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Prism Media Client</title>
+  <style>
+    html, body, #youtube, #direct {
+      width: 100%; height: 100%; margin: 0; padding: 0;
+      border: 0; overflow: hidden; background: #000;
+    }
+    #direct { display: none; object-fit: contain; }
+    #status {
+      position: fixed; left: 16px; bottom: 12px; z-index: 5;
+      color: #ddd; background: rgba(0,0,0,.65); padding: 6px 9px;
+      border-radius: 4px; font: 13px "Segoe UI", sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="youtube"></div>
+  <video id="direct" playsinline></video>
+  <div id="status">Enter a YouTube, playlist, local file, or direct media URL in the in-game menu.</div>
+  <script>
+    "use strict";
+    let youtubePlayer = null;
+    let youtubeReady = false;
+    let pendingUrl = "";
+    const direct = document.getElementById("direct");
+    const status = document.getElementById("status");
+
+    function showStatus(text) {
+      status.textContent = text;
+      status.style.display = text ? "block" : "none";
+    }
+
+    function youtubeInfo(value) {
+      try {
+        const url = new URL(value);
+        const host = url.hostname.replace(/^www\./, "");
+        if (host === "youtu.be")
+          return { video: url.pathname.slice(1), list: url.searchParams.get("list") };
+        if (host === "youtube.com" || host === "m.youtube.com" ||
+            host === "music.youtube.com") {
+          let video = url.searchParams.get("v");
+          const parts = url.pathname.split("/").filter(Boolean);
+          if (!video && (parts[0] === "embed" || parts[0] === "shorts"))
+            video = parts[1];
+          return { video, list: url.searchParams.get("list") };
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    function loadMedia(value) {
+      const info = youtubeInfo(value);
+      if (info) {
+        direct.pause();
+        direct.style.display = "none";
+        document.getElementById("youtube").style.display = "block";
+        if (!youtubeReady) {
+          pendingUrl = value;
+          showStatus("Loading YouTube player…");
+          return;
+        }
+        if (info.list)
+          youtubePlayer.loadPlaylist({ list: info.list, listType: "playlist" });
+        else if (info.video)
+          youtubePlayer.loadVideoById(info.video);
+        else {
+          showStatus("This YouTube URL does not contain a video or playlist.");
+          return;
+        }
+        showStatus("");
+        return;
+      }
+
+      document.getElementById("youtube").style.display = "none";
+      direct.style.display = "block";
+      direct.src = value;
+      direct.play().catch(error => showStatus("Unable to play media: " + error.message));
+      showStatus("");
+    }
+
+    window.onYouTubeIframeAPIReady = function () {
+      youtubePlayer = new YT.Player("youtube", {
+        width: "100%", height: "100%",
+        playerVars: {
+          autoplay: 1, controls: 0, disablekb: 1,
+          enablejsapi: 1, playsinline: 1, rel: 0
+        },
+        events: {
+          onReady: function () {
+            youtubeReady = true;
+            if (pendingUrl) {
+              const value = pendingUrl;
+              pendingUrl = "";
+              loadMedia(value);
+            }
+          },
+          onError: function (event) {
+            showStatus("YouTube playback error " + event.data);
+          }
+        }
+      });
+    };
+
+    window.prismCommand = function (payload) {
+      const separator = payload.indexOf("|");
+      const command = separator < 0 ? payload : payload.slice(0, separator);
+      const argument = separator < 0 ? "" : payload.slice(separator + 1);
+      const youtubeVisible = direct.style.display === "none";
+
+      if (command === "load") {
+        loadMedia(argument);
+      } else if (command === "playpause") {
+        if (youtubeVisible && youtubeReady) {
+          const state = youtubePlayer.getPlayerState();
+          if (state === YT.PlayerState.PLAYING)
+            youtubePlayer.pauseVideo();
+          else
+            youtubePlayer.playVideo();
+        } else if (direct.paused) {
+          direct.play();
+        } else {
+          direct.pause();
+        }
+      } else if (command === "next") {
+        if (youtubeVisible && youtubeReady)
+          youtubePlayer.nextVideo();
+        else
+          direct.currentTime = Math.min(direct.duration || Infinity, direct.currentTime + 30);
+      } else if (command === "previous") {
+        if (youtubeVisible && youtubeReady)
+          youtubePlayer.previousVideo();
+        else
+          direct.currentTime = Math.max(0, direct.currentTime - 30);
+      } else if (command === "mute") {
+        if (youtubeVisible && youtubeReady) {
+          if (youtubePlayer.isMuted()) youtubePlayer.unMute();
+          else youtubePlayer.mute();
+        } else {
+          direct.muted = !direct.muted;
+        }
+      } else if (command === "volumeup" || command === "volumedown") {
+        const change = command === "volumeup" ? 5 : -5;
+        if (youtubeVisible && youtubeReady)
+          youtubePlayer.setVolume(Math.max(0, Math.min(100, youtubePlayer.getVolume() + change)));
+        else
+          direct.volume = Math.max(0, Math.min(1, direct.volume + change / 100));
+      }
+    };
+
+    const youtubeApi = document.createElement("script");
+    youtubeApi.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(youtubeApi);
+  </script>
+</body>
+</html>

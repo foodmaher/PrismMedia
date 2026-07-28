@@ -1,7 +1,10 @@
 <h1 align="center">PrismTextureStreamer</h1>
 
 <p align="center">
-A Prism3D plugin that takes over cabin screens (GPS, dashboard, or any custom accessory) in <b>Euro Truck Simulator 2</b> (or American Truck Simulator) and mirrors a live captured window onto them.
+A Prism3D plugin that takes over cabin screens (GPS, dashboard, or custom) in
+<b>Euro Truck Simulator 2</b> and <b>American Truck Simulator</b>. It can
+capture a window, play YouTube through a lightweight integrated client, or
+decode direct media without window capture.
 </p>
 
 ---
@@ -10,6 +13,10 @@ A Prism3D plugin that takes over cabin screens (GPS, dashboard, or any custom ac
 Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Add a **GPS** screen, **Dashboard** screen, or a **Custom** screen (The target `.tobj` MUST be a functional screen from a UI Script, such as `/ui/gps.sii`)
 - Pick a running application window as the source for that screen
+- Play YouTube videos/playlists without running a full browser
+- Play local files or direct stream URLs through Windows Media Foundation
+- Control media and assign keys for Play/Pause, Next, Previous, Mute and Volume
+- See live measured plugin CPU/readback cost and estimated FPS loss
 - Adjust target resolution and framerate
 - Apply changes 
 
@@ -48,15 +55,25 @@ Every present call, each screen with a live texture and an active source:
 The GPS/dashboard/custom screens are normally only drawn under specific in game conditions. `dllmain.cpp` patches the relevant conditional jump in the games process, flipping `JE` to `JMP` (and back) at runtime so the screen's render path is unconditionally taken whenever a screen of that type exists, and restored to normal when it doesn't. Addresses are found via pattern scanning, so it hopefully survives most game updates.
 
 ## Content sources
-Currently there's one source implementation, **`WindowSource`**, which finds a target window by executable name, then captures it every frame using `PrintWindow` + `GetDIBits` on a dedicated worker thread.
 
-The source uses a interface `IContentSource`, so other backends (a video file source, a mintor source, etc) can be implimented very easially in the future without touching the DX11 or menu code.
+- **Window Capture** uses modern Windows Graphics Capture by default, with
+  `PrintWindow` available only as a compatibility fallback.
+- **Integrated Media Client** hosts the official YouTube embedded player or an
+  HTML5 video element in a minimal hardware-accelerated WebView2 process. The
+  plugin captures this one clean surface rather than a full browser.
+- **Native Direct Media** uses Media Foundation and D3D11 hardware decoding for
+  local files and direct media URLs. It bypasses window capture completely.
+
+All backends implement `IContentSource`, including shared media controls and
+performance statistics.
 
 ## Requirements
 - MinHook
 - Dear ImGui
 - SCS Telemetry SDK
 - DirectX 11
+- Microsoft Edge WebView2 Runtime for the Integrated Media Client (normally
+  already installed on Windows 10/11)
 
 ## Known issues
 - Fingerprinting textures by dimensions/format means any other texture in the game that happens to match GPS/dashboard's size and format exactly would get caught too which is unlikely (if using unqiue dimentions), but not impossible.
@@ -64,13 +81,21 @@ The source uses a interface `IContentSource`, so other backends (a video file so
 
 ## Usage
 
-1. Drop the compiled plugin DLL into your ETS2/ATS `plugins` folder (not a injected DLL)
+1. Copy **all files in the release package** into the ETS2/ATS
+   `bin\win_x64\plugins` folder. Keep `PrismMediaClient.exe` and its supporting
+   files beside `PrismTextureStreamerFB.dll`.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
 
-## Performance build changes
+## Version 2.0 performance and media changes
 
-Version `1.3.0-performance` includes:
+Version `2.0.0-performance` includes:
+
+- Selectable Window Capture, Integrated Media Client and Native Direct Media
+- Official YouTube IFrame player support for videos and playlists
+- Native Media Foundation playback with audio and D3D11 frame transfer
+- Live CPU/readback/dropped-frame meter and estimated FPS loss
+- Assignable persistent media hotkeys
 
 - Persistent WGC staging textures instead of allocating one every frame
 - FPS limiting for Windows Graphics Capture as well as legacy capture
@@ -94,7 +119,7 @@ Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-1.3.0-performance` artifact. This cloud build requires
+`PrismTextureStreamerFB-2.0.0-performance` artifact. This cloud build requires
 no local Visual Studio installation.
 
 ## Contributing

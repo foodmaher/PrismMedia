@@ -36,10 +36,35 @@ jobs:
           Get-Item $Dll
           Get-FileHash -Algorithm SHA256 $Dll
 
-      - name: Upload finished DLL
+      - name: Assemble install package
+        shell: pwsh
+        run: |
+          $Package = "package"
+          $Client = "PrismMediaClient\bin\x64\Release\net48"
+          if (-not (Test-Path "$Client\PrismMediaClient.exe")) {
+              throw "PrismMediaClient.exe was not produced in $Client"
+          }
+
+          New-Item -ItemType Directory -Path $Package -Force | Out-Null
+          Copy-Item "x64\Release\PrismTextureStreamerFB.dll" $Package
+          Copy-Item "$Client\*" $Package -Recurse
+
+          @"
+          PrismTextureStreamerFB 2.0.0
+
+          Copy every file and folder in this package into:
+          <ETS2 or ATS>\bin\win_x64\plugins
+
+          Keep PrismMediaClient.exe and its DLL/files beside
+          PrismTextureStreamerFB.dll. Open the menu with Ctrl+F8.
+          "@ | Set-Content "$Package\INSTALL.txt"
+
+          Get-ChildItem $Package -Recurse
+
+      - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-1.3.0-performance
-          path: x64/Release/PrismTextureStreamerFB.dll
+          name: PrismTextureStreamerFB-2.0.0-performance
+          path: package
           if-no-files-found: error
           retention-days: 30

@@ -5,7 +5,10 @@
 #include <string>
 
 #include "screens.h"
+#include "hotkeys.h"
 #include "scs_logging.h"
+#include "sources/media_client.h"
+#include "sources/native_media.h"
 #include "sources/window.h"
 #include "sources/wgc_window.h"
 
@@ -62,6 +65,20 @@ namespace settings {
     bool load()
     {
         const auto path = config_path();
+        for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
+        {
+            const std::string section = "Hotkey" + std::to_string(hotkeyIndex);
+            auto& binding = g_media_hotkeys[hotkeyIndex];
+            binding.virtualKey = GetPrivateProfileIntA(
+                section.c_str(), "Key", binding.virtualKey, path.c_str());
+            binding.control = GetPrivateProfileIntA(
+                section.c_str(), "Control", binding.control ? 1 : 0, path.c_str()) != 0;
+            binding.alt = GetPrivateProfileIntA(
+                section.c_str(), "Alt", binding.alt ? 1 : 0, path.c_str()) != 0;
+            binding.shift = GetPrivateProfileIntA(
+                section.c_str(), "Shift", binding.shift ? 1 : 0, path.c_str()) != 0;
+        }
+
         const int count = (std::min)(GetPrivateProfileIntA("General", "ScreenCount", 0, path.c_str()), 16U);
         if (count <= 0)
             return true;
@@ -100,8 +117,36 @@ namespace settings {
                 0U, static_cast<UINT>(performance_profile_t::SMOOTH)));
             screen.source_application_name = read_string(path, section.c_str(), "SourceApplication");
             screen.source_application_display_name = read_string(path, section.c_str(), "SourceTitle");
+            screen.mediaUrl = read_string(path, section.c_str(), "MediaUrl");
+            screen.contentMode = static_cast<content_mode_t>((std::clamp)(
+                GetPrivateProfileIntA(section.c_str(), "ContentMode",
+                    static_cast<UINT>(content_mode_t::WINDOW_CAPTURE), path.c_str()),
+                0U, static_cast<UINT>(content_mode_t::NATIVE_DIRECT_MEDIA)));
+            screen.hotkeyTarget = GetPrivateProfileIntA(
+                section.c_str(), "HotkeyTarget", 0, path.c_str()) != 0;
 
-            if (!screen.source_application_name.empty())
+            if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA &&
+                !screen.mediaUrl.empty())
+            {
+                g_screen_source_creation_in_progress = true;
+                screen.source = sources::CreateMediaClientSource(
+                    screen.mediaUrl, screen.framerate,
+                    screen.targetLiveTextureWidth,
+                    screen.targetLiveTextureHeight);
+                g_screen_source_creation_in_progress = false;
+            }
+            else if (screen.contentMode == content_mode_t::NATIVE_DIRECT_MEDIA &&
+                !screen.mediaUrl.empty())
+            {
+                g_screen_source_creation_in_progress = true;
+                screen.source = sources::CreateNativeMediaSource(
+                    screen.mediaUrl, screen.framerate,
+                    screen.targetLiveTextureWidth,
+                    screen.targetLiveTextureHeight);
+                g_screen_source_creation_in_progress = false;
+            }
+            else if (screen.contentMode == content_mode_t::WINDOW_CAPTURE &&
+                !screen.source_application_name.empty())
             {
                 g_screen_source_creation_in_progress = true;
                 if (screen.legacyCapture)
@@ -142,8 +187,18 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 2);
+        write_number(temporaryPath, "General", "Version", 3);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
+
+        for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
+        {
+            const std::string section = "Hotkey" + std::to_string(hotkeyIndex);
+            const auto& binding = g_media_hotkeys[hotkeyIndex];
+            write_number(temporaryPath, section.c_str(), "Key", binding.virtualKey);
+            write_number(temporaryPath, section.c_str(), "Control", binding.control ? 1 : 0);
+            write_number(temporaryPath, section.c_str(), "Alt", binding.alt ? 1 : 0);
+            write_number(temporaryPath, section.c_str(), "Shift", binding.shift ? 1 : 0);
+        }
 
         for (size_t i = 0; i < g_screens.size(); ++i)
         {
@@ -162,8 +217,11 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "Paused", screen.paused ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "ScaleMode", static_cast<uint32_t>(screen.scaleMode));
             write_number(temporaryPath, section.c_str(), "PerformanceProfile", static_cast<uint32_t>(screen.performanceProfile));
+            write_number(temporaryPath, section.c_str(), "ContentMode", static_cast<uint32_t>(screen.contentMode));
+            write_number(temporaryPath, section.c_str(), "HotkeyTarget", screen.hotkeyTarget ? 1 : 0);
             WritePrivateProfileStringA(section.c_str(), "SourceApplication", screen.source_application_name.c_str(), temporaryPath.c_str());
             WritePrivateProfileStringA(section.c_str(), "SourceTitle", screen.source_application_display_name.c_str(), temporaryPath.c_str());
+            WritePrivateProfileStringA(section.c_str(), "MediaUrl", screen.mediaUrl.c_str(), temporaryPath.c_str());
         }
 
         WritePrivateProfileStringA(nullptr, nullptr, nullptr, temporaryPath.c_str());

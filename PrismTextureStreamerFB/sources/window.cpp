@@ -6,8 +6,11 @@
 using namespace scs_logging;
 
 #include <vector>
+#include <atomic>
 #include <mutex>
 #include <algorithm>
+#include <chrono>
+#include <thread>
 
 struct FindWindowData {
     const char* exeName;
@@ -101,6 +104,10 @@ namespace sources {
         std::atomic<bool> m_haveFrame{};
         uint64_t m_frameGeneration{};
         uint64_t m_lastCopiedGeneration{};
+        std::chrono::steady_clock::time_point m_lastDelivered{};
+        std::atomic<double> m_workerCpuMs{};
+        std::atomic<double> m_deliveredFps{};
+        std::atomic<uint64_t> m_droppedFrames{};
 
         std::thread m_thread;
         std::atomic<bool> m_stopRequested{};
@@ -230,6 +237,26 @@ namespace sources {
                 }
 
                 auto elapsed = std::chrono::steady_clock::now() - frameStart;
+                const double workerMs =
+                    std::chrono::duration<double, std::milli>(elapsed).count();
+                const double oldWorker = m_workerCpuMs.load();
+                m_workerCpuMs = oldWorker == 0.0
+                    ? workerMs : oldWorker * 0.90 + workerMs * 0.10;
+
+                const auto deliveredAt = std::chrono::steady_clock::now();
+                if (m_lastDelivered.time_since_epoch().count() != 0)
+                {
+                    const double interval = std::chrono::duration<double>(
+                        deliveredAt - m_lastDelivered).count();
+                    if (interval > 0.0)
+                    {
+                        const double instantaneousFps = 1.0 / interval;
+                        const double oldFps = m_deliveredFps.load();
+                        m_deliveredFps = oldFps == 0.0
+                            ? instantaneousFps : oldFps * 0.90 + instantaneousFps * 0.10;
+                    }
+                }
+                m_lastDelivered = deliveredAt;
                 if (elapsed < frameInterval) std::this_thread::sleep_for(frameInterval - elapsed);
             }
 
@@ -302,6 +329,15 @@ namespace sources {
             height = m_height.load();
             m_lastCopiedGeneration = m_frameGeneration;
             return true;
+        }
+
+        source_performance_stats_t GetPerformanceStats() const override
+        {
+            source_performance_stats_t result;
+            result.workerCpuMs = m_workerCpuMs.load();
+            result.deliveredFps = m_deliveredFps.load();
+            result.droppedFrames = m_droppedFrames.load();
+            return result;
         }
     };
 

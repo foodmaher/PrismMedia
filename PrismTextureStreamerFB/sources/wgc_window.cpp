@@ -17,6 +17,7 @@ using namespace winrt::Windows;
 #include "wgc_dispatcher.h"
 
 #include <vector>
+#include <atomic>
 #include <mutex>
 #include <algorithm>
 #include <array>
@@ -200,6 +201,11 @@ namespace sources {
         uint64_t m_frameGeneration{};
         uint64_t m_lastCopiedGeneration{};
         std::chrono::steady_clock::time_point m_lastCapture{};
+        std::chrono::steady_clock::time_point m_lastDelivered{};
+        std::atomic<double> m_workerCpuMs{};
+        std::atomic<double> m_readbackMs{};
+        std::atomic<double> m_deliveredFps{};
+        std::atomic<uint64_t> m_droppedFrames{};
 
         struct StagingSlot
         {
@@ -237,6 +243,7 @@ namespace sources {
 
         bool TryReadCompletedFrame(ID3D11DeviceContext* ctx, const D3D11_TEXTURE2D_DESC& desc)
         {
+            const auto readbackStarted = std::chrono::steady_clock::now();
             for (auto& slot : m_stagingSlots)
             {
                 if (!slot.pending)
@@ -333,6 +340,26 @@ namespace sources {
 
                 ctx->Unmap(slot.texture.get(), 0);
                 slot.pending = false;
+
+                const auto deliveredAt = std::chrono::steady_clock::now();
+                const double readbackMs = std::chrono::duration<double, std::milli>(
+                    deliveredAt - readbackStarted).count();
+                const double oldReadback = m_readbackMs.load();
+                m_readbackMs = oldReadback == 0.0
+                    ? readbackMs : oldReadback * 0.90 + readbackMs * 0.10;
+                if (m_lastDelivered.time_since_epoch().count() != 0)
+                {
+                    const double interval = std::chrono::duration<double>(
+                        deliveredAt - m_lastDelivered).count();
+                    if (interval > 0.0)
+                    {
+                        const double instantaneousFps = 1.0 / interval;
+                        const double oldFps = m_deliveredFps.load();
+                        m_deliveredFps = oldFps == 0.0
+                            ? instantaneousFps : oldFps * 0.90 + instantaneousFps * 0.10;
+                    }
+                }
+                m_lastDelivered = deliveredAt;
                 return true;
             }
             return false;
@@ -341,6 +368,7 @@ namespace sources {
 
         void OnFrameArrived(Graphics::Capture::Direct3D11CaptureFramePool const& sender, Foundation::IInspectable const&)
         {
+            const auto workerStarted = std::chrono::steady_clock::now();
             std::lock_guard<std::mutex> lockFrame(m_frameMutex);
             if (m_stopping.load())
                 return;
@@ -392,6 +420,7 @@ namespace sources {
                 // the GPU, then queue the newest capture into a free slot.
                 TryReadCompletedFrame(ctx.get(), desc);
 
+                bool queued = false;
                 for (size_t attempt = 0; attempt < m_stagingSlots.size(); ++attempt)
                 {
                     const size_t index = (m_nextStagingSlot + attempt) % m_stagingSlots.size();
@@ -403,8 +432,17 @@ namespace sources {
                     ctx->End(slot.completion.get());
                     slot.pending = true;
                     m_nextStagingSlot = (index + 1) % m_stagingSlots.size();
+                    queued = true;
                     break;
                 }
+                if (!queued)
+                    ++m_droppedFrames;
+
+                const double workerMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - workerStarted).count();
+                const double oldWorker = m_workerCpuMs.load();
+                m_workerCpuMs = oldWorker == 0.0
+                    ? workerMs : oldWorker * 0.90 + workerMs * 0.10;
             }
             catch (const winrt::hresult_error& e) {
                 scs_log(2, "[WgcWindowSource] OnFrameArrived failed: 0x%08X", e.code().value);
@@ -517,6 +555,16 @@ namespace sources {
             height = m_height.load();
             m_lastCopiedGeneration = m_frameGeneration;
             return true;
+        }
+
+        source_performance_stats_t GetPerformanceStats() const override
+        {
+            source_performance_stats_t result;
+            result.workerCpuMs = m_workerCpuMs.load();
+            result.readbackMs = m_readbackMs.load();
+            result.deliveredFps = m_deliveredFps.load();
+            result.droppedFrames = m_droppedFrames.load();
+            return result;
         }
     };
 

@@ -1,4 +1,15 @@
-# PrismTextureStreamerFB 1.3.0 Performance Guide
+# PrismTextureStreamerFB 2.0.0 Performance Guide
+
+## Choose the playback method
+
+| Method | Typical impact | Supported content | Notes |
+| --- | --- | --- | --- |
+| Native Direct Media | Lowest | Local video files and direct media/stream URLs | Media Foundation hardware decode; bypasses window capture |
+| Integrated Media Client | Low to medium | YouTube videos/playlists, direct URLs | Recommended for YouTube; removes the full browser but retains one optimized WGC transfer |
+| Window Capture | Medium to high | Any visible application | Maximum compatibility; the external app and capture path both consume resources |
+
+YouTube page URLs must use the Integrated Media Client. The plugin does not
+extract or bypass YouTube media streams; it uses the official embedded player.
 
 ## Recommended profile
 
@@ -30,11 +41,24 @@ This is normally sufficient for a GPS or dashboard-sized display.
 - **Stretch** is the least visually accurate but fills the entire texture.
 - Leave **Legacy Capture** disabled unless Windows Graphics Capture fails for a
   specific application.
+- The **Live Performance Monitor** reports measured game-thread upload time,
+  source-worker CPU time, GPU readback time, delivered FPS, and dropped frames.
+  The FPS-loss value is estimated from measured render-thread cost; decoder/GPU
+  contention cannot be converted into an exact FPS number on every system.
 
-## Why the plugin cannot have literally zero impact
+## Media controls and hotkeys
 
-Displaying changing external content requires Windows to capture a frame and
-the plugin to update a DirectX texture. Version 1.3.0 reduces avoidable work by
-limiting capture resolution, skipping duplicate frames, avoiding a full
-capture-to-render CPU copy, using non-blocking triple-buffered GPU readback,
-and caching scaling lookup tables.
+Play/Pause, Next, Previous, Mute, Volume Up, and Volume Down are available in
+the in-game menu. Every action can be rebound to a key or key combination and
+the bindings persist in `%LOCALAPPDATA%\PrismTextureStreamerFB\config.ini`.
+
+For YouTube playlists, Next and Previous change playlist items. For native
+direct media, they seek forward or backward by 30 seconds.
+
+## Why playback cannot have literally zero impact
+
+Displaying changing content always requires decoding and updating a DirectX
+texture. Version 2.0.0 offers a direct Media Foundation path that avoids window
+capture, plus a small WebView2-based YouTube client that avoids running a full
+browser. The existing capture path still limits resolution, skips duplicates,
+uses non-blocking triple-buffered GPU readback, and caches scaling data.

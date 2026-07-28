@@ -27,6 +27,20 @@ if (-not (Test-Path $Dll)) {
 }
 
 $Hash = Get-FileHash -Algorithm SHA256 $Dll
+$ClientDirectory = Join-Path $ProjectRoot 'PrismMediaClient\bin\x64\Release\net48'
+if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
+    throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
+}
+
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-2.0.0'
+if (Test-Path $Package) {
+    Remove-Item $Package -Recurse -Force
+}
+New-Item -ItemType Directory -Path $Package | Out-Null
+Copy-Item $Dll $Package
+Copy-Item (Join-Path $ClientDirectory '*') $Package -Recurse
+
 Write-Host ''
 Write-Host "Build succeeded: $Dll" -ForegroundColor Green
+Write-Host "Install package: $Package" -ForegroundColor Green
 Write-Host "SHA-256: $($Hash.Hash)"

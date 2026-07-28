@@ -1,6 +1,7 @@
 #include "dx11.h"
 #include <d3d11.h>
 #include <algorithm>
+#include <chrono>
 
 #include <MinHook/MinHook.h>
 
@@ -72,6 +73,7 @@ void new_frame()
     std::lock_guard<std::mutex> lock(g_screens_mutex);
     for (auto& screen : g_screens)
     {
+        const auto workStarted = std::chrono::steady_clock::now();
         if (!screen.source.get())
             continue;
 
@@ -202,6 +204,28 @@ void new_frame()
 
         screen.immediateContext->Unmap(screen.liveTexture, 0);
         screen.hasUploadedFrame = true;
+        ++screen.uploadedFrames;
+
+        const double elapsedMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - workStarted).count();
+        screen.uploadCpuMs = screen.uploadCpuMs == 0.0
+            ? elapsedMs
+            : (screen.uploadCpuMs * 0.90 + elapsedMs * 0.10);
+
+        const uint64_t nowTick = GetTickCount64();
+        if (screen.lastUploadTick != 0 && nowTick > screen.lastUploadTick)
+        {
+            const double instantaneousFps =
+                1000.0 / static_cast<double>(nowTick - screen.lastUploadTick);
+            screen.deliveredFps = screen.deliveredFps == 0.0
+                ? instantaneousFps
+                : (screen.deliveredFps * 0.90 + instantaneousFps * 0.10);
+        }
+        screen.lastUploadTick = nowTick;
+
+        const auto sourceStats = screen.source->GetPerformanceStats();
+        screen.totalPluginCpuMs =
+            screen.uploadCpuMs + sourceStats.workerCpuMs;
     }
 }
 

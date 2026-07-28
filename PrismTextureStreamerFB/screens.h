@@ -1,4 +1,7 @@
 #pragma once
+#include <atomic>
+#include <cstdint>
+#include <memory>
 #include <vector>
 #include <mutex>
 #include <string>
@@ -28,6 +31,12 @@ enum class performance_profile_t : uint8_t {
 	SMOOTH
 };
 
+enum class content_mode_t : uint8_t {
+	WINDOW_CAPTURE = 0,
+	INTEGRATED_MEDIA,
+	NATIVE_DIRECT_MEDIA
+};
+
 struct screen_t
 {
 	screen_type_t type{};
@@ -40,6 +49,7 @@ struct screen_t
 
 	std::string source_application_name;
 	std::string source_application_display_name;
+	std::string mediaUrl;
 	std::unique_ptr<IContentSource> source;
 	std::vector<uint8_t> frameScratch;
 	uint32_t frameScratchWidth{};
@@ -52,8 +62,18 @@ struct screen_t
 	bool legacyCapture = false;
 	bool flipVertical = true;
 	bool paused = false;
+	bool hotkeyTarget = false;
 	scale_mode_t scaleMode = scale_mode_t::FIT;
 	performance_profile_t performanceProfile = performance_profile_t::BALANCED;
+	content_mode_t contentMode = content_mode_t::WINDOW_CAPTURE;
+
+	// Performance measurements are smoothed on the game's render thread.
+	double uploadCpuMs{};
+	double totalPluginCpuMs{};
+	double estimatedFpsLoss{};
+	double deliveredFps{};
+	uint64_t uploadedFrames{};
+	uint64_t lastUploadTick{};
 
 	ID3D11Texture2D* liveTexture{};
 	ID3D11DeviceContext* immediateContext{};

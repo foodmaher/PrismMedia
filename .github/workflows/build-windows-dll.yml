@@ -1,0 +1,45 @@
+name: Build Windows DLL
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build x64 Release
+    runs-on: windows-2022
+
+    steps:
+      - name: Download source
+        uses: actions/checkout@v4
+
+      - name: Configure MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build plugin
+        shell: pwsh
+        run: >
+          msbuild PrismTextureStreamerFB.sln
+          /m
+          /restore
+          /t:Build
+          /p:Configuration=Release
+          /p:Platform=x64
+
+      - name: Verify plugin output
+        shell: pwsh
+        run: |
+          $Dll = "x64\Release\PrismTextureStreamerFB.dll"
+          if (-not (Test-Path $Dll)) {
+              throw "Expected DLL was not produced: $Dll"
+          }
+
+          Get-Item $Dll
+          Get-FileHash -Algorithm SHA256 $Dll
+
+      - name: Upload finished DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrismTextureStreamerFB-1.3.0-performance
+          path: x64/Release/PrismTextureStreamerFB.dll
+          if-no-files-found: error
+          retention-days: 30

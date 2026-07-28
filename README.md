@@ -70,7 +70,7 @@ The source uses a interface `IContentSource`, so other backends (a video file so
 
 ## Performance build changes
 
-Version `1.2.0-performance` adds:
+Version `1.3.0-performance` includes:
 
 - Persistent WGC staging textures instead of allocating one every frame
 - FPS limiting for Windows Graphics Capture as well as legacy capture
@@ -81,9 +81,21 @@ Version `1.2.0-performance` adds:
 - Last-valid-frame retention through temporary zero-size/resize events
 - Configuration persistence in `%LOCALAPPDATA%\PrismTextureStreamerFB\config.ini`
 - Automatic restoration of screens, source window, resolution, FPS, flip state, and capture mode
+- Zero-copy buffer swaps between capture and rendering threads
+- Triple-buffered, non-blocking WGC GPU readback
+- Aspect-preserving capture downscaling so low-resolution profiles avoid copying full 1080p/4K frames through CPU memory
+- Pause/freeze mode that keeps the last image while stopping plugin frame work
+- Economy, Balanced, Quality, Smooth, and Custom performance profiles
+- Stretch, aspect-correct Fit, and centre Crop scaling modes
+- Persistent settings for performance profile, pause state, and scaling mode
 
 Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 **Desktop development with C++** workload to produce the x64 release DLL.
+
+Alternatively, open the repository's **Actions** tab, select
+**Build Windows DLL**, choose **Run workflow**, and download the resulting
+`PrismTextureStreamerFB-1.3.0-performance` artifact. This cloud build requires
+no local Visual Studio installation.
 
 ## Contributing
 PRs and issues are welcome, keep in mind:

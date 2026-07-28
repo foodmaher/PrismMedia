@@ -1,5 +1,6 @@
 #include "menu.h"
 #include <d3d11.h>
+#include <algorithm>
 #include <map>
 
 #include "../version.h"
@@ -23,6 +24,36 @@ using namespace scs_logging;
 
 
 static bool menu_visible{};
+
+static void apply_performance_profile(screen_t& screen)
+{
+	switch (screen.performanceProfile)
+	{
+	case performance_profile_t::ECONOMY:
+		screen.targetLiveTextureWidth = 854;
+		screen.targetLiveTextureHeight = 480;
+		screen.framerate = 20;
+		break;
+	case performance_profile_t::BALANCED:
+		screen.targetLiveTextureWidth = 1280;
+		screen.targetLiveTextureHeight = 720;
+		screen.framerate = 30;
+		break;
+	case performance_profile_t::QUALITY:
+		screen.targetLiveTextureWidth = 1920;
+		screen.targetLiveTextureHeight = 1080;
+		screen.framerate = 30;
+		break;
+	case performance_profile_t::SMOOTH:
+		screen.targetLiveTextureWidth = 1280;
+		screen.targetLiveTextureHeight = 720;
+		screen.framerate = 60;
+		break;
+	default:
+		break;
+	}
+}
+
 void on_frame()
 {
 	bool saveConfiguration = false;
@@ -120,6 +151,25 @@ void on_frame()
 		bool justSaved = false;
 		if (ImGui::Button("Apply Unsaved Changes"))
 		{
+			{
+				std::lock_guard<std::mutex> lock(g_screens_mutex);
+				for (auto& screen : g_screens)
+				{
+					screen.targetLiveTextureWidth =
+						(std::clamp)(screen.targetLiveTextureWidth, 64U, 7680U);
+					screen.targetLiveTextureHeight =
+						(std::clamp)(screen.targetLiveTextureHeight, 64U, 4320U);
+					screen.framerate =
+						static_cast<uint8_t>((std::clamp)(static_cast<uint32_t>(screen.framerate), 1U, 120U));
+					if (screen.source)
+					{
+						screen.source->SetFramerate(screen.framerate);
+						screen.source->SetOutputSize(
+							screen.targetLiveTextureWidth,
+							screen.targetLiveTextureHeight);
+					}
+				}
+			}
 			prism::string cmd("game");
 			prism::execute_command::call(&cmd, -1);
 
@@ -251,24 +301,78 @@ void on_frame()
 						}
 					}
 
+					const char* performanceProfiles[] = {
+						"Custom", "Economy (854x480 @ 20)", "Balanced (1280x720 @ 30)",
+						"Quality (1920x1080 @ 30)", "Smooth (1280x720 @ 60)"
+					};
+					int selectedProfile = static_cast<int>(screen.performanceProfile);
+					if (ImGui::Combo("Performance Profile", &selectedProfile, performanceProfiles, IM_ARRAYSIZE(performanceProfiles)))
+					{
+						screen.performanceProfile = static_cast<performance_profile_t>(selectedProfile);
+						apply_performance_profile(screen);
+						if (screen.source) {
+							screen.source->SetFramerate(screen.framerate);
+							screen.source->SetOutputSize(
+								screen.targetLiveTextureWidth,
+								screen.targetLiveTextureHeight);
+						}
+						unsavedChanges = true;
+					}
+
 					ImGui::Text("Resolution");
 					ImGui::SameLine();
 					ImGui::SetNextItemWidth(80.0f);
-					if (ImGui::InputScalar("##res_w", ImGuiDataType_U32, &screen.targetLiveTextureWidth)) unsavedChanges = true;
+					if (ImGui::InputScalar("##res_w", ImGuiDataType_U32, &screen.targetLiveTextureWidth)) {
+						screen.performanceProfile = performance_profile_t::CUSTOM;
+						if (screen.source)
+							screen.source->SetOutputSize(
+								screen.targetLiveTextureWidth,
+								screen.targetLiveTextureHeight);
+						unsavedChanges = true;
+					}
 					ImGui::SameLine();
 					ImGui::Text("x");
 					ImGui::SameLine();
 					ImGui::SetNextItemWidth(80.0f);
-					if (ImGui::InputScalar("##res_h", ImGuiDataType_U32, &screen.targetLiveTextureHeight)) unsavedChanges = true;
+					if (ImGui::InputScalar("##res_h", ImGuiDataType_U32, &screen.targetLiveTextureHeight)) {
+						screen.performanceProfile = performance_profile_t::CUSTOM;
+						if (screen.source)
+							screen.source->SetOutputSize(
+								screen.targetLiveTextureWidth,
+								screen.targetLiveTextureHeight);
+						unsavedChanges = true;
+					}
 
 					ImGui::Text("Framerate");
 					ImGui::SameLine();
 					ImGui::SetNextItemWidth(160.0f);
 					uint8_t fps_min = 1, fps_max = 120;
 					if (ImGui::SliderScalar("##target_fps", ImGuiDataType_U8, &screen.framerate, &fps_min, &fps_max)) {
+						screen.performanceProfile = performance_profile_t::CUSTOM;
 						unsavedChanges = true;
 						if (screen.source.get())
 							screen.source->SetFramerate(screen.framerate);
+					}
+
+					const char* scalingModes[] = { "Stretch", "Fit (keep aspect ratio)", "Crop (fill screen)" };
+					int selectedScalingMode = static_cast<int>(screen.scaleMode);
+					if (ImGui::Combo("Scaling Mode", &selectedScalingMode, scalingModes, IM_ARRAYSIZE(scalingModes)))
+					{
+						screen.scaleMode = static_cast<scale_mode_t>(selectedScalingMode);
+						saveConfiguration = true;
+					}
+
+					if (ImGui::Checkbox("Pause / Freeze", &screen.paused))
+					{
+						if (screen.source)
+							screen.source->SetPaused(screen.paused);
+						saveConfiguration = true;
+					}
+					if (ImGui::IsItemHovered())
+					{
+						ImGui::BeginTooltip();
+						ImGui::Text("Keeps the last image and stops plugin frame processing");
+						ImGui::EndTooltip();
 					}
 
 					const bool captureModeChanged = ImGui::Checkbox("Legacy Capture", &screen.legacyCapture);
@@ -309,14 +413,27 @@ void on_frame()
 						screen.source.reset(); // Destroy before construct
 
 						if (screen.legacyCapture) {
-							screen.source = sources::CreateWindowSource(screen.source_application_name.c_str(), screen.source_application_display_name.c_str(), screen.framerate);
+							screen.source = sources::CreateWindowSource(
+								screen.source_application_name.c_str(),
+								screen.source_application_display_name.c_str(),
+								screen.framerate,
+								screen.targetLiveTextureWidth,
+								screen.targetLiveTextureHeight);
 						}
 						else {
-							screen.source = sources::CreateWgcWindowSource(screen.source_application_name.c_str(), screen.source_application_display_name.c_str(), screen.framerate);
+							screen.source = sources::CreateWgcWindowSource(
+								screen.source_application_name.c_str(),
+								screen.source_application_display_name.c_str(),
+								screen.framerate,
+								screen.targetLiveTextureWidth,
+								screen.targetLiveTextureHeight);
 						}
 
 						if (!screen.source.get()) {
 							ImGui::OpenPopup("Source Error");
+						}
+						else {
+							screen.source->SetPaused(screen.paused);
 						}
 
 						g_screen_source_creation_in_progress = false;

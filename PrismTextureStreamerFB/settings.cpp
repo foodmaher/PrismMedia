@@ -91,6 +91,13 @@ namespace settings {
                 GetPrivateProfileIntA(section.c_str(), "Framerate", 30, path.c_str()), 1U, 120U));
             screen.legacyCapture = GetPrivateProfileIntA(section.c_str(), "LegacyCapture", 0, path.c_str()) != 0;
             screen.flipVertical = GetPrivateProfileIntA(section.c_str(), "FlipVertical", 1, path.c_str()) != 0;
+            screen.paused = GetPrivateProfileIntA(section.c_str(), "Paused", 0, path.c_str()) != 0;
+            screen.scaleMode = static_cast<scale_mode_t>((std::clamp)(
+                GetPrivateProfileIntA(section.c_str(), "ScaleMode", static_cast<UINT>(scale_mode_t::FIT), path.c_str()),
+                0U, static_cast<UINT>(scale_mode_t::CROP)));
+            screen.performanceProfile = static_cast<performance_profile_t>((std::clamp)(
+                GetPrivateProfileIntA(section.c_str(), "PerformanceProfile", static_cast<UINT>(performance_profile_t::CUSTOM), path.c_str()),
+                0U, static_cast<UINT>(performance_profile_t::SMOOTH)));
             screen.source_application_name = read_string(path, section.c_str(), "SourceApplication");
             screen.source_application_display_name = read_string(path, section.c_str(), "SourceTitle");
 
@@ -101,13 +108,19 @@ namespace settings {
                     screen.source = sources::CreateWindowSource(
                         screen.source_application_name.c_str(),
                         screen.source_application_display_name.empty() ? nullptr : screen.source_application_display_name.c_str(),
-                        screen.framerate);
+                        screen.framerate,
+                        screen.targetLiveTextureWidth,
+                        screen.targetLiveTextureHeight);
                 else
                     screen.source = sources::CreateWgcWindowSource(
                         screen.source_application_name.c_str(),
                         screen.source_application_display_name.empty() ? nullptr : screen.source_application_display_name.c_str(),
-                        screen.framerate);
+                        screen.framerate,
+                        screen.targetLiveTextureWidth,
+                        screen.targetLiveTextureHeight);
                 g_screen_source_creation_in_progress = false;
+                if (screen.source)
+                    screen.source->SetPaused(screen.paused);
             }
 
             loaded.push_back(std::move(screen));
@@ -129,7 +142,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 1);
+        write_number(temporaryPath, "General", "Version", 2);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t i = 0; i < g_screens.size(); ++i)
@@ -146,6 +159,9 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "Framerate", screen.framerate);
             write_number(temporaryPath, section.c_str(), "LegacyCapture", screen.legacyCapture ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "FlipVertical", screen.flipVertical ? 1 : 0);
+            write_number(temporaryPath, section.c_str(), "Paused", screen.paused ? 1 : 0);
+            write_number(temporaryPath, section.c_str(), "ScaleMode", static_cast<uint32_t>(screen.scaleMode));
+            write_number(temporaryPath, section.c_str(), "PerformanceProfile", static_cast<uint32_t>(screen.performanceProfile));
             WritePrivateProfileStringA(section.c_str(), "SourceApplication", screen.source_application_name.c_str(), temporaryPath.c_str());
             WritePrivateProfileStringA(section.c_str(), "SourceTitle", screen.source_application_display_name.c_str(), temporaryPath.c_str());
         }

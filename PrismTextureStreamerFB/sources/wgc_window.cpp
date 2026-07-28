@@ -19,6 +19,7 @@ using namespace winrt::Windows;
 #include <vector>
 #include <mutex>
 #include <algorithm>
+#include <array>
 #include <chrono>
 
 #pragma comment(lib, "dxgi.lib")
@@ -176,6 +177,9 @@ namespace sources {
         std::atomic<uint32_t> m_width{};
         std::atomic<uint32_t> m_height{};
         std::atomic<uint8_t> m_framerate{ 30 };
+        std::atomic<bool> m_paused{};
+        std::atomic<uint32_t> m_outputWidth{ 1280 };
+        std::atomic<uint32_t> m_outputHeight{ 720 };
 
         winrt::com_ptr < ID3D11Device> m_d3dDevice{};
         Graphics::DirectX::Direct3D11::IDirect3DDevice m_wgcDevice{ nullptr };
@@ -197,9 +201,142 @@ namespace sources {
         uint64_t m_lastCopiedGeneration{};
         std::chrono::steady_clock::time_point m_lastCapture{};
 
-        winrt::com_ptr<ID3D11Texture2D> m_stagingTexture;
+        struct StagingSlot
+        {
+            winrt::com_ptr<ID3D11Texture2D> texture;
+            winrt::com_ptr<ID3D11Query> completion;
+            bool pending{};
+        };
+        std::array<StagingSlot, 3> m_stagingSlots;
         UINT m_stagingWidth{};
         UINT m_stagingHeight{};
+        size_t m_nextStagingSlot{};
+        std::vector<uint32_t> m_readbackScaleX;
+        uint32_t m_readbackSourceWidth{};
+        uint32_t m_readbackOutputWidth{};
+
+        void RecreateStagingResources(const D3D11_TEXTURE2D_DESC& textureDesc)
+        {
+            for (auto& slot : m_stagingSlots)
+            {
+                slot.texture = nullptr;
+                slot.completion = nullptr;
+                slot.pending = false;
+                winrt::check_hresult(m_d3dDevice->CreateTexture2D(
+                    &textureDesc, nullptr, slot.texture.put()));
+
+                D3D11_QUERY_DESC queryDesc{};
+                queryDesc.Query = D3D11_QUERY_EVENT;
+                winrt::check_hresult(m_d3dDevice->CreateQuery(
+                    &queryDesc, slot.completion.put()));
+            }
+            m_stagingWidth = textureDesc.Width;
+            m_stagingHeight = textureDesc.Height;
+            m_nextStagingSlot = 0;
+        }
+
+        bool TryReadCompletedFrame(ID3D11DeviceContext* ctx, const D3D11_TEXTURE2D_DESC& desc)
+        {
+            for (auto& slot : m_stagingSlots)
+            {
+                if (!slot.pending)
+                    continue;
+
+                BOOL complete{};
+                const HRESULT queryResult = ctx->GetData(
+                    slot.completion.get(), &complete, sizeof(complete),
+                    D3D11_ASYNC_GETDATA_DONOTFLUSH);
+                if (queryResult != S_OK || !complete)
+                    continue;
+
+                D3D11_MAPPED_SUBRESOURCE mapped{};
+                if (ctx->Map(slot.texture.get(), 0, D3D11_MAP_READ,
+                    D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped) != S_OK)
+                    continue;
+
+                uint32_t outputWidth = desc.Width;
+                uint32_t outputHeight = desc.Height;
+                const uint32_t maxOutputWidth = (std::max)(1U, m_outputWidth.load());
+                const uint32_t maxOutputHeight = (std::max)(1U, m_outputHeight.load());
+                if (outputWidth > maxOutputWidth || outputHeight > maxOutputHeight)
+                {
+                    if (static_cast<uint64_t>(desc.Width) * maxOutputHeight >
+                        static_cast<uint64_t>(desc.Height) * maxOutputWidth)
+                    {
+                        outputWidth = maxOutputWidth;
+                        outputHeight = (std::max)(1U, static_cast<uint32_t>(
+                            static_cast<uint64_t>(desc.Height) * outputWidth / desc.Width));
+                    }
+                    else
+                    {
+                        outputHeight = maxOutputHeight;
+                        outputWidth = (std::max)(1U, static_cast<uint32_t>(
+                            static_cast<uint64_t>(desc.Width) * outputHeight / desc.Height));
+                    }
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(m_bufferMutex);
+                    m_frameBuffer.resize(
+                        static_cast<size_t>(outputWidth) * outputHeight * 4);
+                    if (outputWidth == desc.Width && outputHeight == desc.Height)
+                    {
+                        const size_t rowBytes = static_cast<size_t>(outputWidth) * 4;
+                        for (uint32_t y = 0; y < outputHeight; ++y)
+                        {
+                            const uint8_t* sourceRow =
+                                static_cast<uint8_t*>(mapped.pData) +
+                                static_cast<size_t>(y) * mapped.RowPitch;
+                            memcpy(m_frameBuffer.data() + static_cast<size_t>(y) * rowBytes,
+                                sourceRow, rowBytes);
+                        }
+                    }
+                    else
+                    {
+                        if (m_readbackSourceWidth != desc.Width ||
+                            m_readbackOutputWidth != outputWidth)
+                        {
+                            m_readbackScaleX.resize(outputWidth);
+                            for (uint32_t x = 0; x < outputWidth; ++x)
+                            {
+                                m_readbackScaleX[x] = static_cast<uint32_t>(
+                                    static_cast<uint64_t>(x) * desc.Width / outputWidth);
+                            }
+                            m_readbackSourceWidth = desc.Width;
+                            m_readbackOutputWidth = outputWidth;
+                        }
+
+                        auto* destinationPixels =
+                            reinterpret_cast<uint32_t*>(m_frameBuffer.data());
+                        for (uint32_t y = 0; y < outputHeight; ++y)
+                        {
+                            const uint32_t sourceY = static_cast<uint32_t>(
+                                static_cast<uint64_t>(y) * desc.Height / outputHeight);
+                            const uint8_t* srcRow =
+                                static_cast<uint8_t*>(mapped.pData) +
+                                static_cast<size_t>(sourceY) * mapped.RowPitch;
+                            const auto* sourcePixels =
+                                reinterpret_cast<const uint32_t*>(srcRow);
+
+                            for (uint32_t x = 0; x < outputWidth; ++x)
+                            {
+                                destinationPixels[static_cast<size_t>(y) * outputWidth + x] =
+                                    sourcePixels[m_readbackScaleX[x]];
+                            }
+                        }
+                    }
+                    m_width = outputWidth;
+                    m_height = outputHeight;
+                    ++m_frameGeneration;
+                    m_haveFrame = true;
+                }
+
+                ctx->Unmap(slot.texture.get(), 0);
+                slot.pending = false;
+                return true;
+            }
+            return false;
+        }
 
 
         void OnFrameArrived(Graphics::Capture::Direct3D11CaptureFramePool const& sender, Foundation::IInspectable const&)
@@ -211,6 +348,7 @@ namespace sources {
             try {
                 auto frame = sender.TryGetNextFrame();
                 if (!frame) return;
+                if (m_paused.load() && m_haveFrame.load()) return;
 
                 auto contentSize = frame.ContentSize();
                 if (contentSize.Width <= 0 || contentSize.Height <= 0)
@@ -241,39 +379,31 @@ namespace sources {
                 desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
                 desc.MiscFlags = 0;
 
-                if (!m_stagingTexture || m_stagingWidth != desc.Width || m_stagingHeight != desc.Height)
-                {
-                    m_stagingTexture = nullptr;
-                    winrt::check_hresult(m_d3dDevice->CreateTexture2D(&desc, nullptr, m_stagingTexture.put()));
-                    m_stagingWidth = desc.Width;
-                    m_stagingHeight = desc.Height;
-                }
-
                 winrt::com_ptr<ID3D11DeviceContext> ctx;
                 m_d3dDevice->GetImmediateContext(ctx.put());
-                ctx->CopyResource(m_stagingTexture.get(), gpuTexture.get());
 
-                D3D11_MAPPED_SUBRESOURCE mapped;
-                if (SUCCEEDED(ctx->Map(m_stagingTexture.get(), 0, D3D11_MAP_READ, 0, &mapped)))
+                if (!m_stagingSlots[0].texture ||
+                    m_stagingWidth != desc.Width || m_stagingHeight != desc.Height)
                 {
-                    // Keep the native BGRA format and copy complete rows.
-                    const auto rowBytes = desc.Width * 4;
-                    std::lock_guard<std::mutex> lock(m_bufferMutex);
-                    m_frameBuffer.resize(rowBytes * desc.Height);
+                    RecreateStagingResources(desc);
+                }
 
-                    for (UINT y = 0; y < desc.Height; ++y)
-                    {
-                        const uint8_t* srcRow = static_cast<uint8_t*>(mapped.pData) + y * mapped.RowPitch;
-                        uint8_t* dstRow = m_frameBuffer.data() + y * rowBytes;
+                // Read a completed older copy without making the CPU wait for
+                // the GPU, then queue the newest capture into a free slot.
+                TryReadCompletedFrame(ctx.get(), desc);
 
-                        memcpy(dstRow, srcRow, rowBytes);
-                    }
+                for (size_t attempt = 0; attempt < m_stagingSlots.size(); ++attempt)
+                {
+                    const size_t index = (m_nextStagingSlot + attempt) % m_stagingSlots.size();
+                    auto& slot = m_stagingSlots[index];
+                    if (slot.pending)
+                        continue;
 
-                    m_width = desc.Width;
-                    m_height = desc.Height;
-                    ctx->Unmap(m_stagingTexture.get(), 0);
-                    ++m_frameGeneration;
-                    m_haveFrame = true;
+                    ctx->CopyResource(slot.texture.get(), gpuTexture.get());
+                    ctx->End(slot.completion.get());
+                    slot.pending = true;
+                    m_nextStagingSlot = (index + 1) % m_stagingSlots.size();
+                    break;
                 }
             }
             catch (const winrt::hresult_error& e) {
@@ -282,9 +412,15 @@ namespace sources {
         }
 
     public:
-        explicit WgcWindowSource(const char* application_name, const char* application_title, uint8_t framerate)
+        explicit WgcWindowSource(
+            const char* application_name,
+            const char* application_title,
+            uint8_t framerate,
+            uint32_t output_width,
+            uint32_t output_height)
         {
             m_framerate = (std::max)(static_cast<uint8_t>(1), framerate);
+            SetOutputSize(output_width, output_height);
             // Create our own ownership
             m_appname = new char[strlen(application_name) + 1] {};
             strcpy(m_appname, application_name);
@@ -362,6 +498,12 @@ namespace sources {
         {
             m_framerate = (std::max)(static_cast<uint8_t>(1), framerate);
         }
+        void SetPaused(bool paused) override { m_paused = paused; }
+        void SetOutputSize(uint32_t width, uint32_t height) override
+        {
+            m_outputWidth = (std::max)(1U, width);
+            m_outputHeight = (std::max)(1U, height);
+        }
 
         bool CopyLatestFrame(std::vector<uint8_t>& dst, uint32_t& width, uint32_t& height) override
         {
@@ -370,10 +512,7 @@ namespace sources {
             std::lock_guard<std::mutex> lock(m_bufferMutex);
             if (m_lastCopiedGeneration == m_frameGeneration)
                 return false;
-            if (dst.size() != m_frameBuffer.size())
-                dst.resize(m_frameBuffer.size());
-
-            memcpy(dst.data(), m_frameBuffer.data(), m_frameBuffer.size());
+            dst.swap(m_frameBuffer);
             width = m_width.load();
             height = m_height.load();
             m_lastCopiedGeneration = m_frameGeneration;
@@ -382,13 +521,24 @@ namespace sources {
     };
 
 
-    std::unique_ptr<IContentSource> CreateWgcWindowSource(const char* application_name, const char* window_title, uint8_t framerate)
+    std::unique_ptr<IContentSource> CreateWgcWindowSource(
+        const char* application_name,
+        const char* window_title,
+        uint8_t framerate,
+        uint32_t output_width,
+        uint32_t output_height)
     {
         std::string appname(application_name);
         std::string apptitle = window_title ? window_title : std::string();
 
-        return WgcDispatcher::Instance().PostResult([appname, apptitle, framerate]() -> std::unique_ptr<IContentSource> {
-            auto src = std::make_unique<WgcWindowSource>(appname.c_str(), apptitle.empty() ? nullptr : apptitle.c_str(), framerate);
+        return WgcDispatcher::Instance().PostResult(
+            [appname, apptitle, framerate, output_width, output_height]() -> std::unique_ptr<IContentSource> {
+            auto src = std::make_unique<WgcWindowSource>(
+                appname.c_str(),
+                apptitle.empty() ? nullptr : apptitle.c_str(),
+                framerate,
+                output_width,
+                output_height);
             if (!src->Start()) return nullptr;
             return src;
         });

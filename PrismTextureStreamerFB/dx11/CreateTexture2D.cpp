@@ -1,5 +1,6 @@
 #include "dx11.h"
 #include <d3d11.h>
+#include <algorithm>
 
 #include <MinHook/MinHook.h>
 
@@ -47,6 +48,7 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 
                 screen.liveTextureWidth = modifiedDesc.Width;
                 screen.liveTextureHeight = modifiedDesc.Height;
+                screen.hasUploadedFrame = false;
 
                 screen.liveTexture = *ppTexture2D;
                 screen.liveTexture->AddRef(); // own a ref independent of the games
@@ -76,15 +78,85 @@ void new_frame()
         if (!screen.liveTexture || !screen.immediateContext)
             continue;
 
-        uint32_t srcWidth{};
-        uint32_t srcHeight{};
-        if (!screen.source->CopyLatestFrame(screen.frameScratch, srcWidth, srcHeight))
+        if (screen.paused && screen.hasUploadedFrame)
             continue;
+
+        uint32_t srcWidth = screen.frameScratchWidth;
+        uint32_t srcHeight = screen.frameScratchHeight;
+        const bool hasNewFrame =
+            screen.source->CopyLatestFrame(screen.frameScratch, srcWidth, srcHeight);
+        if (hasNewFrame)
+        {
+            screen.frameScratchWidth = srcWidth;
+            screen.frameScratchHeight = srcHeight;
+        }
+        else if (screen.hasUploadedFrame || screen.frameScratch.empty())
+        {
+            continue;
+        }
 
         const UINT dstWidth = screen.liveTextureWidth;
         const UINT dstHeight = screen.liveTextureHeight;
         if (srcWidth == 0 || srcHeight == 0 || dstWidth == 0 || dstHeight == 0)
             continue;
+        if (screen.frameScratch.size() < static_cast<size_t>(srcWidth) * srcHeight * 4)
+            continue;
+
+        UINT srcX{};
+        UINT srcY{};
+        UINT srcSpanWidth = srcWidth;
+        UINT srcSpanHeight = srcHeight;
+        UINT dstX{};
+        UINT dstY{};
+        UINT renderWidth = dstWidth;
+        UINT renderHeight = dstHeight;
+
+        const uint64_t sourceAspectProduct = static_cast<uint64_t>(srcWidth) * dstHeight;
+        const uint64_t destinationAspectProduct = static_cast<uint64_t>(srcHeight) * dstWidth;
+
+        if (screen.scaleMode == scale_mode_t::FIT)
+        {
+            if (sourceAspectProduct > destinationAspectProduct)
+            {
+                renderHeight = (std::max)(1U, static_cast<UINT>(
+                    static_cast<uint64_t>(dstWidth) * srcHeight / srcWidth));
+                dstY = (dstHeight - renderHeight) / 2;
+            }
+            else
+            {
+                renderWidth = (std::max)(1U, static_cast<UINT>(
+                    static_cast<uint64_t>(dstHeight) * srcWidth / srcHeight));
+                dstX = (dstWidth - renderWidth) / 2;
+            }
+        }
+        else if (screen.scaleMode == scale_mode_t::CROP)
+        {
+            if (sourceAspectProduct > destinationAspectProduct)
+            {
+                srcSpanWidth = (std::max)(1U, static_cast<UINT>(
+                    static_cast<uint64_t>(srcHeight) * dstWidth / dstHeight));
+                srcX = (srcWidth - srcSpanWidth) / 2;
+            }
+            else
+            {
+                srcSpanHeight = (std::max)(1U, static_cast<UINT>(
+                    static_cast<uint64_t>(srcWidth) * dstHeight / dstWidth));
+                srcY = (srcHeight - srcSpanHeight) / 2;
+            }
+        }
+
+        if (screen.scaleXSourceOffset != srcX ||
+            screen.scaleXSourceSpan != srcSpanWidth ||
+            screen.scaleXDestinationWidth != renderWidth)
+        {
+            screen.scaleX.resize(renderWidth);
+            for (UINT x = 0; x < renderWidth; ++x)
+                screen.scaleX[x] = srcX + static_cast<UINT>(
+                    static_cast<uint64_t>(x) * srcSpanWidth / renderWidth);
+            screen.scaleXSourceOffset = srcX;
+            screen.scaleXSourceSpan = srcSpanWidth;
+            screen.scaleXDestinationWidth = renderWidth;
+        }
 
 
         D3D11_MAPPED_SUBRESOURCE mapped;
@@ -94,36 +166,42 @@ void new_frame()
         const uint8_t* src = screen.frameScratch.data();
         uint8_t* dstBase = static_cast<uint8_t*>(mapped.pData);
 
-        for (UINT y = 0; y < dstHeight; ++y)
+        if (screen.scaleMode == scale_mode_t::FIT &&
+            (dstX != 0 || dstY != 0 || renderWidth != dstWidth || renderHeight != dstHeight))
         {
-            const UINT srcY = static_cast<UINT>(static_cast<uint64_t>(y) * srcHeight / dstHeight);
-            const UINT dstRow = screen.flipVertical ? (dstHeight - 1 - y) : y;
-            const uint8_t* srcRow = src + static_cast<size_t>(srcY) * srcWidth * 4;
-            uint8_t* dstRowPtr = dstBase + static_cast<size_t>(dstRow) * mapped.RowPitch;
+            for (UINT y = 0; y < dstHeight; ++y)
+                memset(dstBase + static_cast<size_t>(y) * mapped.RowPitch, 0,
+                    static_cast<size_t>(dstWidth) * 4);
+        }
 
-            if (srcWidth == dstWidth) {
-                memcpy(dstRowPtr, srcRow, static_cast<size_t>(dstWidth) * 4);
+        for (UINT y = 0; y < renderHeight; ++y)
+        {
+            const UINT sampledSourceY = srcY + static_cast<UINT>(
+                static_cast<uint64_t>(y) * srcSpanHeight / renderHeight);
+            const UINT logicalDestinationY = dstY + y;
+            const UINT destinationRow = screen.flipVertical
+                ? (dstHeight - 1 - logicalDestinationY)
+                : logicalDestinationY;
+            const uint8_t* srcRow =
+                src + static_cast<size_t>(sampledSourceY) * srcWidth * 4;
+            uint8_t* dstRowPtr =
+                dstBase + static_cast<size_t>(destinationRow) * mapped.RowPitch +
+                static_cast<size_t>(dstX) * 4;
+
+            if (srcX == 0 && srcSpanWidth == renderWidth) {
+                memcpy(dstRowPtr, srcRow, static_cast<size_t>(renderWidth) * 4);
                 continue;
-            }
-
-            if (screen.scaleXSourceWidth != srcWidth ||
-                screen.scaleXDestinationWidth != dstWidth)
-            {
-                screen.scaleX.resize(dstWidth);
-                for (UINT x = 0; x < dstWidth; ++x)
-                    screen.scaleX[x] = static_cast<UINT>(static_cast<uint64_t>(x) * srcWidth / dstWidth);
-                screen.scaleXSourceWidth = srcWidth;
-                screen.scaleXDestinationWidth = dstWidth;
             }
 
             const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(srcRow);
             uint32_t* dstPixels = reinterpret_cast<uint32_t*>(dstRowPtr);
-            for (UINT x = 0; x < dstWidth; ++x) {
+            for (UINT x = 0; x < renderWidth; ++x) {
                 dstPixels[x] = srcPixels[screen.scaleX[x]];
             }
         }
 
         screen.immediateContext->Unmap(screen.liveTexture, 0);
+        screen.hasUploadedFrame = true;
     }
 }
 

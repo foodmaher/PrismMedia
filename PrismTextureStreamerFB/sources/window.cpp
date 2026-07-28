@@ -7,6 +7,7 @@ using namespace scs_logging;
 
 #include <vector>
 #include <mutex>
+#include <algorithm>
 
 struct FindWindowData {
     const char* exeName;
@@ -86,9 +87,15 @@ namespace sources {
         HWND m_hwnd{};
         std::atomic<uint32_t> m_width{};
         std::atomic<uint32_t> m_height{};
-        uint8_t m_framerate{};
+        std::atomic<uint8_t> m_framerate{ 30 };
+        std::atomic<bool> m_paused{};
+        std::atomic<uint32_t> m_outputWidth{ 1280 };
+        std::atomic<uint32_t> m_outputHeight{ 720 };
 
         std::vector<uint8_t> m_frameBuffer;
+        std::vector<uint32_t> m_scaleX;
+        uint32_t m_scaleSourceWidth{};
+        uint32_t m_scaleOutputWidth{};
         std::mutex m_bufferMutex;
 
         std::atomic<bool> m_haveFrame{};
@@ -100,30 +107,39 @@ namespace sources {
 
         void CaptureLoop()
         {
+            RECT initialRect{};
+            GetClientRect(m_hwnd, &initialRect);
+            const uint32_t initialWidth = (std::max)(
+                1L, initialRect.right - initialRect.left);
+            const uint32_t initialHeight = (std::max)(
+                1L, initialRect.bottom - initialRect.top);
+
             HDC windowDC = GetDC(m_hwnd);
             HDC memDC = CreateCompatibleDC(windowDC);
-            HBITMAP bitmap = CreateCompatibleBitmap(windowDC, m_width, m_height);
+            HBITMAP bitmap = CreateCompatibleBitmap(windowDC, initialWidth, initialHeight);
             HGDIOBJ oldObj = SelectObject(memDC, bitmap);
 
             BITMAPINFO bmi = {};
             bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-            bmi.bmiHeader.biWidth = static_cast<LONG>(m_width);
-            bmi.bmiHeader.biHeight = -static_cast<LONG>(m_height);
+            bmi.bmiHeader.biWidth = static_cast<LONG>(initialWidth);
+            bmi.bmiHeader.biHeight = -static_cast<LONG>(initialHeight);
             bmi.bmiHeader.biPlanes = 1;
             bmi.bmiHeader.biBitCount = 32;
             bmi.bmiHeader.biCompression = BI_RGB;
 
 
-            const size_t arraysize = static_cast<size_t>(m_width) * m_height * 4;
+            const size_t arraysize = static_cast<size_t>(initialWidth) * initialHeight * 4;
             std::vector<uint8_t> bgraScratch(arraysize);
             m_frameBuffer.resize(arraysize);
 
             while (!m_stopRequested.load())
             {
-                const auto frameInterval = std::chrono::milliseconds(1000 / m_framerate);
+                const auto fps = (std::max)(static_cast<uint8_t>(1), m_framerate.load());
+                const auto frameInterval = std::chrono::milliseconds(1000 / fps);
                 auto frameStart = std::chrono::steady_clock::now();
 
                 if (!IsWindow(m_hwnd)) { scs_log(0, "[WindowSource] Target window %s (%s) no longer exists, stopping capture for this window", m_appname, m_apptitle ? m_apptitle : "NO_TITLE"); break; }
+                if (m_paused.load() && m_haveFrame.load()) { std::this_thread::sleep_for(frameInterval); continue; }
                 if (IsIconic(m_hwnd)) { std::this_thread::sleep_for(frameInterval); continue; } // minimized
 
                 RECT rect;
@@ -153,19 +169,62 @@ namespace sources {
                 }
                 GetDIBits(memDC, bitmap, 0, height, bgraScratch.data(), &bmi, DIB_RGB_COLORS);
 
+                uint32_t outputWidth = width;
+                uint32_t outputHeight = height;
+                const uint32_t maxOutputWidth = (std::max)(1U, m_outputWidth.load());
+                const uint32_t maxOutputHeight = (std::max)(1U, m_outputHeight.load());
+                if (outputWidth > maxOutputWidth || outputHeight > maxOutputHeight)
+                {
+                    if (static_cast<uint64_t>(width) * maxOutputHeight >
+                        static_cast<uint64_t>(height) * maxOutputWidth)
+                    {
+                        outputWidth = maxOutputWidth;
+                        outputHeight = (std::max)(1U, static_cast<uint32_t>(
+                            static_cast<uint64_t>(height) * outputWidth / width));
+                    }
+                    else
+                    {
+                        outputHeight = maxOutputHeight;
+                        outputWidth = (std::max)(1U, static_cast<uint32_t>(
+                            static_cast<uint64_t>(width) * outputHeight / height));
+                    }
+                }
+
                 {
                     std::lock_guard<std::mutex> lock(m_bufferMutex);
 
-                    if (m_frameBuffer.size() != arraysize)
-                        m_frameBuffer.resize(arraysize);
+                    const size_t outputSize =
+                        static_cast<size_t>(outputWidth) * outputHeight * 4;
+                    if (m_frameBuffer.size() != outputSize)
+                        m_frameBuffer.resize(outputSize);
 
                     const auto* srcPixels = reinterpret_cast<const uint32_t*>(bgraScratch.data());
                     auto* dstPixels = reinterpret_cast<uint32_t*>(m_frameBuffer.data());
-                    const size_t pixelCount = static_cast<size_t>(width) * height;
-                    for (size_t i = 0; i < pixelCount; ++i)
-                        dstPixels[i] = srcPixels[i] | 0xFF000000U;
-                    m_width = width;
-                    m_height = height;
+                    if (m_scaleSourceWidth != width || m_scaleOutputWidth != outputWidth)
+                    {
+                        m_scaleX.resize(outputWidth);
+                        for (uint32_t x = 0; x < outputWidth; ++x)
+                        {
+                            m_scaleX[x] = static_cast<uint32_t>(
+                                static_cast<uint64_t>(x) * width / outputWidth);
+                        }
+                        m_scaleSourceWidth = width;
+                        m_scaleOutputWidth = outputWidth;
+                    }
+
+                    for (uint32_t y = 0; y < outputHeight; ++y)
+                    {
+                        const uint32_t sourceY = static_cast<uint32_t>(
+                            static_cast<uint64_t>(y) * height / outputHeight);
+                        for (uint32_t x = 0; x < outputWidth; ++x)
+                        {
+                            dstPixels[static_cast<size_t>(y) * outputWidth + x] =
+                                srcPixels[static_cast<size_t>(sourceY) * width + m_scaleX[x]] |
+                                0xFF000000U;
+                        }
+                    }
+                    m_width = outputWidth;
+                    m_height = outputHeight;
                     ++m_frameGeneration;
                     m_haveFrame = true;
                 }
@@ -183,8 +242,13 @@ namespace sources {
         }
 
     public:
-        explicit WindowSource(const char* application_name, const char* application_title)
+        explicit WindowSource(
+            const char* application_name,
+            const char* application_title,
+            uint32_t output_width,
+            uint32_t output_height)
         {
+            SetOutputSize(output_width, output_height);
             // Create our own ownership
             m_appname = new char[strlen(application_name) + 1]{};
             strcpy(m_appname, application_name);
@@ -218,7 +282,13 @@ namespace sources {
 
         uint32_t GetWidth() const override { return m_width.load(); }
         uint32_t GetHeight() const override { return m_height.load(); }
-        void SetFramerate(uint8_t framerate) override { m_framerate = framerate; }
+        void SetFramerate(uint8_t framerate) override { m_framerate = (std::max)(static_cast<uint8_t>(1), framerate); }
+        void SetPaused(bool paused) override { m_paused = paused; }
+        void SetOutputSize(uint32_t width, uint32_t height) override
+        {
+            m_outputWidth = (std::max)(1U, width);
+            m_outputHeight = (std::max)(1U, height);
+        }
 
         bool CopyLatestFrame(std::vector<uint8_t>& dst, uint32_t& width, uint32_t& height) override
         {
@@ -227,10 +297,7 @@ namespace sources {
             std::lock_guard<std::mutex> lock(m_bufferMutex);
             if (m_lastCopiedGeneration == m_frameGeneration)
                 return false;
-            if (dst.size() != m_frameBuffer.size())
-                dst.resize(m_frameBuffer.size());
-
-            memcpy(dst.data(), m_frameBuffer.data(), m_frameBuffer.size());
+            dst.swap(m_frameBuffer);
             width = m_width.load();
             height = m_height.load();
             m_lastCopiedGeneration = m_frameGeneration;
@@ -239,9 +306,15 @@ namespace sources {
     };
 
 
-	std::unique_ptr<IContentSource> CreateWindowSource(const char* application_name, const char* application_title, uint8_t framerate)
+	std::unique_ptr<IContentSource> CreateWindowSource(
+        const char* application_name,
+        const char* application_title,
+        uint8_t framerate,
+        uint32_t output_width,
+        uint32_t output_height)
 	{
-		auto src = std::make_unique<WindowSource>(application_name, application_title);
+		auto src = std::make_unique<WindowSource>(
+            application_name, application_title, output_width, output_height);
 		if (!src->Start(framerate)) return nullptr;
 		return src;
 	}

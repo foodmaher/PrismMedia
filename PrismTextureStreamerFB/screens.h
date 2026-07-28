@@ -14,6 +14,20 @@ enum class screen_type_t : uint8_t {
 	CUSTOM
 };
 
+enum class scale_mode_t : uint8_t {
+	STRETCH = 0,
+	FIT,
+	CROP
+};
+
+enum class performance_profile_t : uint8_t {
+	CUSTOM = 0,
+	ECONOMY,
+	BALANCED,
+	QUALITY,
+	SMOOTH
+};
+
 struct screen_t
 {
 	screen_type_t type{};
@@ -28,11 +42,18 @@ struct screen_t
 	std::string source_application_display_name;
 	std::unique_ptr<IContentSource> source;
 	std::vector<uint8_t> frameScratch;
+	uint32_t frameScratchWidth{};
+	uint32_t frameScratchHeight{};
+	bool hasUploadedFrame{};
 	std::vector<uint32_t> scaleX;
-	uint32_t scaleXSourceWidth{};
+	uint32_t scaleXSourceOffset{};
+	uint32_t scaleXSourceSpan{};
 	uint32_t scaleXDestinationWidth{};
 	bool legacyCapture = false;
 	bool flipVertical = true;
+	bool paused = false;
+	scale_mode_t scaleMode = scale_mode_t::FIT;
+	performance_profile_t performanceProfile = performance_profile_t::BALANCED;
 
 	ID3D11Texture2D* liveTexture{};
 	ID3D11DeviceContext* immediateContext{};

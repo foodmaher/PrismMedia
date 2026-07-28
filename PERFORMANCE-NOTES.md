@@ -1,4 +1,4 @@
-# PrismTextureStreamerFB 2.1.0 Performance and Adaptive Features Guide
+# PrismTextureStreamerFB 2.1.1 Performance and Adaptive Features Guide
 
 ## Choose the playback method
 

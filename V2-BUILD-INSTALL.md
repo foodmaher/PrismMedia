@@ -2,7 +2,7 @@
 
 ## A. Update the GitHub repository
 
-1. Extract `PrismTextureStreamerFB-2.1.0-adaptive-source.zip`.
+1. Extract `PrismTextureStreamerFB-2.1.1-adaptive-source.zip`.
 2. Open your `PrismTextureStreamerFB-Performance` repository on GitHub.
 3. Upload the extracted files and folders into the repository root, preserving
    the folder structure. Allow GitHub to replace files with the same names.
@@ -19,7 +19,7 @@ previous “dumpbin is not recognized” failure cannot occur.
 4. Wait for the run to turn green. A normal build is usually about 2–5 minutes;
    the first NuGet restore can take a little longer.
 5. Open the finished run.
-6. Download the `PrismTextureStreamerFB-2.1.0-adaptive` artifact.
+6. Download the `PrismTextureStreamerFB-2.1.1-adaptive` artifact.
 7. Extract the downloaded ZIP.
 
 ## C. Install

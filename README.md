@@ -118,7 +118,7 @@ Version `2.0.0-performance` includes:
 
 ## Version 2.1 adaptive audio and reverse view
 
-Version `2.1.0-adaptive` adds:
+Version `2.1.1-adaptive` adds:
 
 - Head-orientation stereo panning and directional attenuation for the
   Integrated Media Client
@@ -142,7 +142,7 @@ Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-2.1.0-adaptive` artifact. This cloud build requires
+`PrismTextureStreamerFB-2.1.1-adaptive` artifact. This cloud build requires
 no local Visual Studio installation.
 
 ## Contributing

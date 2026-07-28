@@ -15,6 +15,25 @@ jobs:
       - name: Configure MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Verify bundled native libraries
+        shell: pwsh
+        run: |
+          $Libraries = @{
+              "Lib\ImGuiR.lib" = 7000000
+              "Lib\ImGuiD.lib" = 8000000
+          }
+
+          foreach ($Entry in $Libraries.GetEnumerator()) {
+              if (-not (Test-Path $Entry.Key)) {
+                  throw "Required native library is missing: $($Entry.Key)"
+              }
+
+              $Size = (Get-Item $Entry.Key).Length
+              if ($Size -lt $Entry.Value) {
+                  throw "$($Entry.Key) is incomplete ($Size bytes). Replace it from the full source package before building."
+              }
+          }
+
       - name: Build plugin
         shell: pwsh
         run: >
@@ -52,7 +71,7 @@ jobs:
           Copy-Item "V2.1-ADAPTIVE-TESTING.md" $Package
 
           @"
-          PrismTextureStreamerFB 2.1.0
+          PrismTextureStreamerFB 2.1.1
 
           Copy every file and folder in this package into:
           <ETS2 or ATS>\bin\win_x64\plugins
@@ -66,7 +85,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-2.1.0-adaptive
+          name: PrismTextureStreamerFB-2.1.1-adaptive
           path: package
           if-no-files-found: error
           retention-days: 30

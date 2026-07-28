@@ -73,7 +73,11 @@ namespace PrismMediaClient
             IAudioSessionEnumerator sessionEnumerator = null;
             try
             {
-                enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+                // A COM coclass is not statically convertible to its interface
+                // with every C# compiler used by the GitHub Windows runners.
+                // Cast through object so the runtime performs QueryInterface.
+                enumerator =
+                    (IMMDeviceEnumerator)(object)new MMDeviceEnumerator();
                 Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(
                     EDataFlow.Render, ERole.Multimedia, out device));
 

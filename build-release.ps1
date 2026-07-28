@@ -32,7 +32,7 @@ if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-2.1.0'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-2.1.1'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }

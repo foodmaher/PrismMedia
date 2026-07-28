@@ -242,8 +242,12 @@ namespace settings {
                         screen.targetLiveTextureWidth,
                         screen.targetLiveTextureHeight);
                 g_screen_source_creation_in_progress = false;
-                if (screen.source)
-                    screen.source->SetPaused(screen.paused);
+            }
+
+            if (screen.source)
+            {
+                screen.source->SetPaused(screen.paused);
+                screen.source->SetSourceBrightness(screen.brightness);
             }
 
             if (screen.reverseCameraEnabled &&

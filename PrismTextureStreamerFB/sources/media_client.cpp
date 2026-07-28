@@ -139,7 +139,26 @@ namespace {
             uint32_t& width,
             uint32_t& height) override
         {
-            return m_capture->CopyLatestFrame(destination, width, height);
+            const bool copied =
+                m_capture->CopyLatestFrame(destination, width, height);
+            if (!m_brightnessRefreshPending.load())
+                return copied;
+
+            // WM_COPYDATA schedules the WebView update on its UI thread. Keep
+            // capture awake briefly and discard any older queued frame so a
+            // paused GPS receives the newly filtered image.
+            if (GetTickCount64() <
+                m_brightnessRefreshRequestedTick.load() + 100)
+                return false;
+
+            if (copied)
+            {
+                m_brightnessRefreshPending = false;
+                m_capture->SetPaused(
+                    m_userCapturePaused.load() ||
+                    !m_vehiclePowered.load());
+            }
+            return copied;
         }
 
         bool SupportsMediaControls() const override { return true; }
@@ -204,6 +223,28 @@ namespace {
                 m_lastSpatialSendTick = now;
             }
         }
+        bool SupportsSourceBrightness() const override { return true; }
+        void SetSourceBrightness(float brightness) override
+        {
+            brightness = (std::clamp)(brightness, 0.10f, 2.0f);
+            if (std::fabs(brightness - m_lastBrightness) < 0.001f)
+                return;
+
+            char payload[48]{};
+            std::snprintf(
+                payload, sizeof(payload), "brightness|%.4f", brightness);
+            if (send_payload(payload, 30))
+            {
+                m_lastBrightness = brightness;
+                if (m_userCapturePaused.load() ||
+                    !m_vehiclePowered.load())
+                {
+                    m_brightnessRefreshRequestedTick = GetTickCount64();
+                    m_brightnessRefreshPending = true;
+                    m_capture->SetPaused(false);
+                }
+            }
+        }
         source_performance_stats_t GetPerformanceStats() const override
         {
             auto result = m_capture->GetPerformanceStats();
@@ -223,6 +264,9 @@ namespace {
         float m_lastSpatialGain{ 1.0f };
         float m_lastSpatialPan{};
         uint64_t m_lastSpatialSendTick{};
+        float m_lastBrightness{ -1.0f };
+        std::atomic<bool> m_brightnessRefreshPending{};
+        std::atomic<uint64_t> m_brightnessRefreshRequestedTick{};
     };
 }
 

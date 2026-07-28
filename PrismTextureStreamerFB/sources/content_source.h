@@ -48,6 +48,11 @@ public:
     virtual void SetVehiclePowered(bool) {}
     virtual bool SupportsSpatialAudio() const { return false; }
     virtual void SetSpatialAudio(float, float, bool) {}
+    // Sources that can apply brightness in their own GPU compositor should
+    // override these methods. This avoids touching every captured pixel on the
+    // game's render thread.
+    virtual bool SupportsSourceBrightness() const { return false; }
+    virtual void SetSourceBrightness(float) {}
     virtual void SetCaptureRegion(float, float, float, float) {}
     virtual source_performance_stats_t GetPerformanceStats() const { return {}; }
     virtual std::string GetStatusText() const { return "Capturing"; }

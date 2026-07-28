@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "2.3.0-adaptive";
+inline const char* g_version = "2.3.1-adaptive";

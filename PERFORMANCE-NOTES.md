@@ -1,4 +1,4 @@
-# PrismTextureStreamerFB 2.3.0 Performance and Adaptive Features Guide
+# PrismTextureStreamerFB 2.3.1 Performance and Adaptive Features Guide
 
 ## Choose the playback method
 
@@ -39,8 +39,11 @@ This is normally sufficient for a GPS or dashboard-sized display.
 - **Fit** preserves the source aspect ratio and adds bars where necessary.
 - **Crop** preserves aspect ratio and fills the texture by cropping the centre.
 - **Stretch** is the least visually accurate but fills the entire texture.
-- **Screen Brightness** is saved per screen. At `100%` the existing fast copy
-  path is unchanged; other values add a small colour lookup during upload.
+- **Screen Brightness** is saved per screen. Integrated Media Client playback
+  uses a GPU-composited black overlay below `100%` and a GPU brightness filter
+  above `100%`, so the game's upload thread keeps its fast-copy path. Window
+  Capture and Native Direct Media retain the compatible CPU colour lookup.
+  At `100%`, every mode uses the existing fast-copy path.
 - **Edge Colour-Bleed Guard** writes only the outer 0–16 pixels after upload.
   The recommended `2 px` prevents clamp-sampled video colours from tinting the
   truck GPS bezel and has negligible cost.

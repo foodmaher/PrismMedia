@@ -88,7 +88,10 @@ static bool rebuild_source(screen_t& screen)
 	}
 
 	if (screen.source)
+	{
 		screen.source->SetPaused(screen.paused);
+		screen.source->SetSourceBrightness(screen.brightness);
+	}
 	g_screen_source_creation_in_progress = false;
 	return screen.source != nullptr;
 }
@@ -615,17 +618,34 @@ void on_frame()
 						ImGuiSliderFlags_AlwaysClamp))
 					{
 						screen.brightness = brightnessPercent / 100.0f;
-						// Reprocess the cached image immediately, including when
-						// capture is paused.
-						screen.hasUploadedFrame = false;
+						if (screen.source &&
+							screen.source->SupportsSourceBrightness())
+						{
+							screen.source->SetSourceBrightness(
+								screen.brightness);
+							screen.hasUploadedFrame = false;
+						}
+						else
+						{
+							// Compatible fallback sources reprocess the cached
+							// image, including while capture is paused.
+							screen.hasUploadedFrame = false;
+						}
 						saveConfiguration = true;
 					}
 					if (ImGui::IsItemHovered())
 					{
 						ImGui::BeginTooltip();
 						ImGui::TextWrapped(
-							"100%% preserves the source. Other values use a small "
-							"colour lookup cost during texture upload.");
+							screen.source &&
+								screen.source->SupportsSourceBrightness()
+							? "Integrated Media uses a GPU black-overlay filter "
+							  "below 100%%, with no per-pixel game-thread cost. "
+							  "Values above 100%% use the media client's GPU "
+							  "brightness filter."
+							: "100%% preserves the source. Window Capture and "
+							  "Native Direct Media use a compatible CPU colour "
+							  "lookup at other values.");
 						ImGui::EndTooltip();
 					}
 

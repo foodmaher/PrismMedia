@@ -202,8 +202,13 @@ void new_frame()
             screen.scaleXDestinationWidth = renderWidth;
         }
 
-        const float brightness = (std::clamp)(
-            screen.brightness, 0.10f, 2.0f);
+        // The integrated media helper applies brightness in WebView2's GPU
+        // compositor. Other sources retain the compatible CPU fallback.
+        const bool sourceHandlesBrightness =
+            !reverseActive && activeSource->SupportsSourceBrightness();
+        const float brightness = sourceHandlesBrightness
+            ? 1.0f
+            : (std::clamp)(screen.brightness, 0.10f, 2.0f);
         const bool adjustBrightness =
             std::fabs(brightness - 1.0f) > 0.001f;
         if (adjustBrightness &&

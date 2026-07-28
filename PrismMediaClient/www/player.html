@@ -15,12 +15,17 @@
       color: #ddd; background: rgba(0,0,0,.65); padding: 6px 9px;
       border-radius: 4px; font: 13px "Segoe UI", sans-serif;
     }
+    #brightness-overlay {
+      position: fixed; inset: 0; z-index: 100;
+      background: #000; opacity: 0; pointer-events: none;
+    }
   </style>
 </head>
 <body>
   <div id="youtube"></div>
   <video id="direct" playsinline></video>
   <div id="status">Enter a YouTube, playlist, local file, or direct media URL in the in-game menu.</div>
+  <div id="brightness-overlay"></div>
   <script>
     "use strict";
     let youtubePlayer = null;
@@ -28,8 +33,26 @@
     let pendingUrl = "";
     let userWantsPlayback = true;
     let vehiclePowered = true;
+    let currentBrightness = 1;
     const direct = document.getElementById("direct");
     const status = document.getElementById("status");
+    const brightnessOverlay = document.getElementById("brightness-overlay");
+
+    function applyBrightness(value) {
+      const brightness = Math.max(0.1, Math.min(2.0, Number(value) || 1));
+      currentBrightness = brightness;
+      const contentFilter = brightness > 1
+        ? "brightness(" + brightness.toFixed(4) + ")"
+        : "none";
+      const youtube = document.getElementById("youtube");
+      if (youtube) youtube.style.filter = contentFilter;
+      direct.style.filter = contentFilter;
+
+      // Darkening is a single GPU-composited translucent black layer. It does
+      // not require the game plugin to transform every captured video pixel.
+      brightnessOverlay.style.opacity =
+        brightness < 1 ? (1 - brightness).toFixed(4) : "0";
+    }
 
     function showStatus(text) {
       status.textContent = text;
@@ -127,6 +150,7 @@
         events: {
           onReady: function () {
             youtubeReady = true;
+            applyBrightness(currentBrightness);
             if (pendingUrl) {
               const value = pendingUrl;
               pendingUrl = "";
@@ -167,6 +191,8 @@
       } else if (command === "vehiclepower") {
         vehiclePowered = argument === "1";
         applyPlaybackState();
+      } else if (command === "brightness") {
+        applyBrightness(argument);
       } else if (command === "next") {
         if (youtubeVisible && youtubeReady)
           youtubePlayer.nextVideo();

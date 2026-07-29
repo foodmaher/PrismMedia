@@ -81,6 +81,7 @@ jobs:
           Copy-Item "V2.7-PARK-ACTIVATION-TEST.md" $Package
           Copy-Item "V2.8-INTERNAL-CAMERA-TEST.md" $Package
           Copy-Item "V2.8.1-LOADING-CRASH-HOTFIX.md" $Package
+          Copy-Item "V2.9-SAFE-READBACK-TEST.md" $Package
 
           $SpfBridge = "$Package\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |
@@ -89,7 +90,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Package\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 2.8.1 Loading Crash Hotfix
+          PrismTextureStreamerFB 2.9.0 Safe Readback Test
 
           Copy the root files and the www folder into:
           <ETS2 or ATS>\bin\win_x64\plugins
@@ -106,7 +107,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-2.8.1-loading-crash-hotfix
+          name: PrismTextureStreamerFB-2.9.0-safe-readback-test
           path: package
           if-no-files-found: error
           retention-days: 30

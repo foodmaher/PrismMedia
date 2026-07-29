@@ -152,73 +152,36 @@ void new_frame()
         if (!screen.liveTexture || !screen.immediateContext)
             continue;
 
+        bool usingInternalParkFrame{};
         if (reverseRequested && internalParkMethod)
         {
-            const uint64_t nowTick = GetTickCount64();
-            const uint64_t interval = (std::max)(
-                1ULL,
-                1000ULL /
-                    (std::max)(
-                        1U,
-                        static_cast<uint32_t>(
-                            screen.reverseFramerate)));
-            const bool shouldBlit =
-                screen.internalParkLastBlitTick == 0 ||
-                nowTick < screen.internalParkLastBlitTick ||
-                nowTick - screen.internalParkLastBlitTick >=
-                    interval;
-            if (!shouldBlit)
-                continue;
-
-            // The v2.8.1 hotfix leaves the internal camera scheduler and
-            // diagnostics active, but never binds the GPS replacement as a
-            // render target. A readback-safe display bridge will replace this
-            // disabled GPU blit after it is validated independently.
-            const bool parkBlitSucceeded = false;
-            if (parkBlitSucceeded)
+            uint32_t parkWidth =
+                screen.internalParkScratchWidth;
+            uint32_t parkHeight =
+                screen.internalParkScratchHeight;
+            const bool hasNewParkFrame =
+                dx11::internal_render_probe::copy_park_frame(
+                    screen.internalParkScratch,
+                    parkWidth,
+                    parkHeight,
+                    screen.internalParkFrameSequence);
+            if (hasNewParkFrame)
             {
-                screen.internalParkLastBlitTick = nowTick;
+                screen.internalParkScratchWidth = parkWidth;
+                screen.internalParkScratchHeight = parkHeight;
                 screen.internalParkWasDisplayed = true;
-                screen.hasUploadedFrame = true;
-                ++screen.uploadedFrames;
-
-                const double elapsedMs =
-                    std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() -
-                        workStarted).count();
-                screen.uploadCpuMs =
-                    screen.uploadCpuMs == 0.0
-                        ? elapsedMs
-                        : (screen.uploadCpuMs * 0.90 +
-                            elapsedMs * 0.10);
-                if (screen.lastUploadTick != 0 &&
-                    nowTick > screen.lastUploadTick)
-                {
-                    const double instantaneousFps =
-                        1000.0 /
-                        static_cast<double>(
-                            nowTick - screen.lastUploadTick);
-                    screen.deliveredFps =
-                        screen.deliveredFps == 0.0
-                            ? instantaneousFps
-                            : (screen.deliveredFps * 0.90 +
-                                instantaneousFps * 0.10);
-                }
-                screen.lastUploadTick = nowTick;
-                const auto mediaStats = screen.source
-                    ? screen.source->GetPerformanceStats()
-                    : source_performance_stats_t{};
-                screen.totalPluginCpuMs =
-                    screen.uploadCpuMs + mediaStats.workerCpuMs;
+                screen.internalParkLastBlitTick =
+                    GetTickCount64();
+                usingInternalParkFrame = true;
+            }
+            else if (screen.internalParkWasDisplayed)
+            {
+                // The staged readback is deliberately non-blocking. Keep the
+                // last uploaded park frame until a newer one is ready instead
+                // of re-uploading or waiting on the GPU.
                 continue;
             }
-            // A missing/unsupported internal target falls through to the
-            // normal media source, preserving a usable GPS image.
-            if (screen.internalParkWasDisplayed)
-            {
-                screen.internalParkWasDisplayed = false;
-                screen.hasUploadedFrame = false;
-            }
+            // Until the first staged frame arrives, retain normal media.
         }
         else
         {
@@ -236,32 +199,48 @@ void new_frame()
 	        IContentSource* activeSource = reverseActive
 	            ? screen.reverseSource.get()
 	            : screen.source.get();
-	        if (!activeSource)
+
+	        if (screen.paused && !reverseRequested &&
+                screen.hasUploadedFrame)
 	            continue;
 
-	        if (screen.paused && !reverseActive && screen.hasUploadedFrame)
-	            continue;
-
-        uint32_t srcWidth = screen.frameScratchWidth;
-        uint32_t srcHeight = screen.frameScratchHeight;
-        const bool hasNewFrame =
-	            activeSource->CopyLatestFrame(
-	                screen.frameScratch, srcWidth, srcHeight);
-        if (hasNewFrame)
+        const std::vector<uint8_t>* activeFrame =
+            &screen.frameScratch;
+        uint32_t srcWidth = usingInternalParkFrame
+            ? screen.internalParkScratchWidth
+            : screen.frameScratchWidth;
+        uint32_t srcHeight = usingInternalParkFrame
+            ? screen.internalParkScratchHeight
+            : screen.frameScratchHeight;
+        if (usingInternalParkFrame)
         {
-            screen.frameScratchWidth = srcWidth;
-            screen.frameScratchHeight = srcHeight;
+            activeFrame = &screen.internalParkScratch;
         }
-        else if (screen.hasUploadedFrame || screen.frameScratch.empty())
+        else
         {
-            continue;
+            if (!activeSource)
+                continue;
+            const bool hasNewFrame =
+                activeSource->CopyLatestFrame(
+                    screen.frameScratch, srcWidth, srcHeight);
+            if (hasNewFrame)
+            {
+                screen.frameScratchWidth = srcWidth;
+                screen.frameScratchHeight = srcHeight;
+            }
+            else if (screen.hasUploadedFrame ||
+                screen.frameScratch.empty())
+            {
+                continue;
+            }
         }
 
         const UINT dstWidth = screen.liveTextureWidth;
         const UINT dstHeight = screen.liveTextureHeight;
         if (srcWidth == 0 || srcHeight == 0 || dstWidth == 0 || dstHeight == 0)
             continue;
-        if (screen.frameScratch.size() < static_cast<size_t>(srcWidth) * srcHeight * 4)
+        if (activeFrame->size() <
+            static_cast<size_t>(srcWidth) * srcHeight * 4)
             continue;
 
         UINT srcX{};
@@ -323,7 +302,10 @@ void new_frame()
         // The integrated media helper applies brightness in WebView2's GPU
         // compositor. Other sources retain the compatible CPU fallback.
         const bool sourceHandlesBrightness =
-            !reverseActive && activeSource->SupportsSourceBrightness();
+            !usingInternalParkFrame &&
+            !reverseActive &&
+            activeSource &&
+            activeSource->SupportsSourceBrightness();
         const float brightness = sourceHandlesBrightness
             ? 1.0f
             : (std::clamp)(screen.brightness, 0.10f, 2.0f);
@@ -353,7 +335,7 @@ void new_frame()
             &mapped)))
             continue;
 
-        const uint8_t* src = screen.frameScratch.data();
+        const uint8_t* src = activeFrame->data();
         uint8_t* dstBase = static_cast<uint8_t*>(mapped.pData);
 
         if (screen.scaleMode == scale_mode_t::FIT &&
@@ -458,7 +440,9 @@ void new_frame()
         }
         screen.lastUploadTick = nowTick;
 
-	        const auto sourceStats = activeSource->GetPerformanceStats();
+	        const auto sourceStats = activeSource
+                ? activeSource->GetPerformanceStats()
+                : source_performance_stats_t{};
 	        screen.totalPluginCpuMs =
 	            screen.uploadCpuMs + sourceStats.workerCpuMs;
 	    }

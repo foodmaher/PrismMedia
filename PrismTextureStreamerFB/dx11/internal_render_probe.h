@@ -41,6 +41,7 @@ namespace dx11::internal_render_probe
 		bool parkMaskForced{};
 		bool parkColorTargetReady{};
 		bool parkCompositorReady{};
+		bool parkReadbackReady{};
 		uint32_t timeDateStamp{};
 		uint32_t imageSize{};
 		uint32_t signatureMatches{};
@@ -50,6 +51,7 @@ namespace dx11::internal_render_probe
 		uint64_t parkInstallAttempts{};
 		uint64_t parkScheduleCount{};
 		uint64_t parkOutputFrames{};
+		uint64_t parkReadbackBusySkips{};
 		uint64_t traceStartedTick{};
 		uint64_t traceEndTick{};
 		uint64_t frameIndex{};
@@ -64,13 +66,18 @@ namespace dx11::internal_render_probe
 
 	bool init();
 	void shutdown();
-	void on_present_frame();
+	void on_present_frame(ID3D11DeviceContext* context);
 	void begin_trace(uint32_t seconds = 10);
 	void end_trace();
 	void set_park_activation_requested(bool requested);
 	void set_park_render_requested(bool requested);
 	void set_park_target_framerate(uint32_t framerate);
 	void on_texture_created(ID3D11Texture2D* texture);
+	bool copy_park_frame(
+		std::vector<uint8_t>& destination,
+		uint32_t& width,
+		uint32_t& height,
+		uint64_t& sequence);
 	bool blit_park_texture(
 		ID3D11DeviceContext* context,
 		ID3D11Texture2D* destination,

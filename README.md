@@ -230,6 +230,24 @@ GPU output. The internal slot remains available for diagnostics; use **Window
 crop (stable)** for a visible reverse feed in this hotfix. See
 `V2.8.1-LOADING-CRASH-HOTFIX.md`.
 
+### Version 2.9 safe staged-readback test
+
+Version `2.9.0-safe-readback-test` reconnects the internal park camera without
+changing the stable GPS texture:
+
+- observes ETS2's live 256x256 `R11G11B10_FLOAT` park target only while slot 7
+  is explicitly scheduled;
+- copies it into a three-texture staging ring;
+- uses `D3D11_MAP_FLAG_DO_NOT_WAIT`, dropping a busy frame instead of stalling
+  the game render thread;
+- tone-maps the small HDR image to BGRA on the CPU; and
+- uploads it through the same dynamic GPS path used by the working v2.8.1
+  hotfix.
+
+The staging resources exist only after reverse/Preview is requested. Forward
+driving retains zero park-camera render/readback work. See
+`V2.9-SAFE-READBACK-TEST.md`.
+
 ## Version 2.3 engine-powered media and GPS edge fix
 
 Version `2.3.1-adaptive` added:
@@ -264,7 +282,7 @@ Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-2.8.1-loading-crash-hotfix` artifact. This cloud build
+`PrismTextureStreamerFB-2.9.0-safe-readback-test` artifact. This cloud build
 requires no local Visual Studio installation.
 
 ## Contributing

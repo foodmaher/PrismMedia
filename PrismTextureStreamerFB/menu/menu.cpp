@@ -1082,10 +1082,10 @@ void on_frame()
 								ImGui::TextWrapped(
 									"The current legacy mode captures a calibrated part of the "
 									"game window. The experimental internal mode activates "
-									"ETS2's dormant park-camera slot for diagnostics. In the "
-									"v2.8.1 crash hotfix, direct GPU transfer to the GPS is "
-									"disabled to protect the D3D11 device during loading and "
-									"display-mode changes.");
+									"ETS2's dormant park-camera slot and reads its 256x256 "
+									"result through a non-blocking three-buffer staging ring. "
+									"The GPS remains the stable CPU-writable texture proven by "
+									"the v2.8.1 loading-crash hotfix.");
 
 							if (ImGui::TreeNode(
 								"Internal render-to-texture probe"))
@@ -1184,10 +1184,9 @@ void on_frame()
 
 								ImGui::Separator();
 								ImGui::TextWrapped(
-									"The internal path is diagnostic-only in this hotfix. "
-									"Use Window crop (stable) for a visible reverse image. "
-									"The trace remains available for developing a safe "
-									"readback bridge.");
+									"The internal camera is displayed automatically in reverse "
+									"or Preview after its live colour target is observed. The "
+									"trace remains optional diagnostics.");
 								ImGui::TextColored(
 									ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
 									"Normal forward driving has no additional park-camera "
@@ -1303,7 +1302,7 @@ void on_frame()
 									g_reverse_active.load() ? "Yes" : "No");
 								static const char* reverseMethodNames[] = {
 									"Window crop (stable)",
-									"Internal park camera (diagnostic only)"
+									"Internal park camera (safe staged test)"
 								};
 								int reverseMethod = static_cast<int>(
 									screen.reverseCameraMethod);
@@ -1346,26 +1345,26 @@ void on_frame()
 								if (internalParkMethod)
 								{
 									ImGui::TextColored(
-										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-										"v2.8.1 safety mode: internal GPS output disabled; "
-										"select Window crop for a visible reverse image.");
+										ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
+										"Safe output: engine target -> non-blocking staging "
+										"ring -> stable dynamic GPS texture.");
 									const auto parkStatus =
 										dx11::internal_render_probe::status();
 									ImGui::TextColored(
 										parkStatus.parkCameraInstalled &&
 											parkStatus.parkResourcePresent &&
-											parkStatus.parkColorTargetReady
+											parkStatus.parkReadbackReady
 											? ImVec4(
 												0.35f, 0.85f, 0.40f, 1.0f)
 											: ImVec4(
 												1.0f, 0.72f, 0.25f, 1.0f),
 										"Internal slot 7: %s | resource: %s | "
-										"colour target: %s",
+										"readback: %s",
 										parkStatus.parkCameraInstalled
 											? "installed" : "waiting",
 										parkStatus.parkResourcePresent
 											? "ready" : "waiting",
-										parkStatus.parkColorTargetReady
+										parkStatus.parkReadbackReady
 											? "ready" : "waiting");
 									if (!parkStatus.parkCameraInstalled)
 									{
@@ -1378,31 +1377,33 @@ void on_frame()
 									else if (!parkStatus.parkColorTargetReady)
 									{
 										ImGui::TextWrapped(
-											"The park slot exists, but its colour target "
-											"was not captured. Reload the truck once. "
-											"Normal media remains on the GPS as a safe "
-											"fallback.");
+											"Put the truck in reverse or enable Preview. "
+											"Normal media remains visible until the live "
+											"park target is observed.");
 									}
 									else
 									{
 										ImGui::TextColored(
 											ImVec4(
 												0.35f, 0.85f, 0.40f, 1.0f),
-											"GPU target: %ux%u %s | compositor: %s",
+											"GPU target: %ux%u %s | staged pixels: %s",
 											parkStatus.parkTargetWidth,
 											parkStatus.parkTargetHeight,
 											dx11::internal_render_probe::
 												format_name(
 													parkStatus.
 														parkTargetFormat),
-											parkStatus.parkCompositorReady
-												? "active" :
-													"starts with Preview/reverse");
+											parkStatus.parkReadbackReady
+												? "ready" : "waiting");
 										ImGui::Text(
-											"Target FPS: %u | displayed frames: %llu",
+											"Target FPS: %u | decoded frames: %llu | "
+											"busy skips: %llu",
 											parkStatus.parkTargetFramerate,
 											static_cast<unsigned long long>(
-												parkStatus.parkOutputFrames));
+												parkStatus.parkOutputFrames),
+											static_cast<unsigned long long>(
+												parkStatus.
+													parkReadbackBusySkips));
 									}
 
 									static const char*
@@ -1484,7 +1485,8 @@ void on_frame()
 										"Park-camera render cost is zero forward: slot 7 "
 										"is scheduled only in reverse or Preview. Normal "
 										"media returns to the stable direct dynamic-texture "
-										"upload path with no extra GPU texture copy.");
+										"upload path. Readback maps never wait for the GPU; "
+										"a busy frame is dropped instead.");
 								}
 								else
 								{

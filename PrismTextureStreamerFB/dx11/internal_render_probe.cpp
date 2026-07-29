@@ -117,7 +117,9 @@ namespace
 	std::atomic<uint64_t> g_parkInstallAttempts{};
 	std::atomic<uint64_t> g_parkScheduleCount{};
 	std::atomic<uint64_t> g_parkOutputFrames{};
+	std::atomic<uint64_t> g_parkReadbackBusySkips{};
 	std::atomic<uint64_t> g_lastParkScheduleTick{};
+	std::atomic<uint64_t> g_lastParkForcedFrame{UINT64_MAX};
 	std::atomic<uint32_t> g_parkTargetFramerate{15};
 	std::atomic<bool> g_parkColorTargetReady{};
 	std::atomic<bool> g_parkCompositorReady{};
@@ -164,6 +166,27 @@ namespace
 	ID3D11PixelShader* g_parkPixelShader{};
 	ID3D11SamplerState* g_parkSampler{};
 	ID3D11Buffer* g_parkConstants{};
+	ID3D11Device* g_parkReadbackDevice{};
+	struct park_staging_slot_t
+	{
+		ID3D11Texture2D* texture{};
+		bool pending{};
+		uint64_t submissionOrder{};
+	};
+	std::array<park_staging_slot_t, 3> g_parkStaging{};
+	uint32_t g_nextParkStaging{};
+	uint64_t g_parkObservedFrame{UINT64_MAX};
+	uint64_t g_parkSubmittedFrame{UINT64_MAX};
+	std::vector<uint8_t> g_parkReadbackPixels;
+	uint32_t g_parkReadbackWidth{};
+	uint32_t g_parkReadbackHeight{};
+	uint64_t g_parkReadbackSequence{};
+	uint64_t g_parkNextSubmissionOrder{};
+	uint64_t g_parkLastDecodedSubmissionOrder{};
+	bool g_parkReadbackReady{};
+	std::array<uint8_t, 2048> g_parkFloat11Lut{};
+	std::array<uint8_t, 1024> g_parkFloat10Lut{};
+	bool g_parkToneMapLutReady{};
 
 	struct park_compositor_constants_t
 	{
@@ -286,6 +309,27 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		release_com_object(g_parkSampleTexture);
 	}
 
+	void release_park_readback_resources_locked()
+	{
+		for (auto& slot : g_parkStaging)
+		{
+			release_com_object(slot.texture);
+			slot.pending = false;
+			slot.submissionOrder = 0;
+		}
+		release_com_object(g_parkReadbackDevice);
+		g_nextParkStaging = 0;
+		g_parkObservedFrame = UINT64_MAX;
+		g_parkSubmittedFrame = UINT64_MAX;
+		g_parkReadbackPixels.clear();
+		g_parkReadbackWidth = 0;
+		g_parkReadbackHeight = 0;
+		g_parkReadbackSequence = 0;
+		g_parkNextSubmissionOrder = 0;
+		g_parkLastDecodedSubmissionOrder = 0;
+		g_parkReadbackReady = false;
+	}
+
 	void release_park_compositor_locked()
 	{
 		release_park_sample_resources_locked();
@@ -308,12 +352,267 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		g_parkTargetHeight.store(0, std::memory_order_relaxed);
 		g_parkTargetFormat.store(0, std::memory_order_relaxed);
 		release_park_sample_resources_locked();
+		release_park_readback_resources_locked();
 	}
 
 	void release_park_color_target()
 	{
 		std::lock_guard<std::mutex> lock(g_parkTextureMutex);
 		release_park_color_target_locked();
+	}
+
+	float decode_unsigned_float(
+		uint32_t bits,
+		uint32_t mantissaBits)
+	{
+		const uint32_t mantissaMask =
+			(1U << mantissaBits) - 1U;
+		const uint32_t mantissa = bits & mantissaMask;
+		const uint32_t exponent =
+			(bits >> mantissaBits) & 0x1FU;
+		if (exponent == 0)
+		{
+			return std::ldexp(
+				static_cast<float>(mantissa),
+				1 - 15 - static_cast<int>(mantissaBits));
+		}
+		if (exponent == 0x1FU)
+			return mantissa == 0 ? 65504.0f : 0.0f;
+		return std::ldexp(
+			1.0f +
+				static_cast<float>(mantissa) /
+					static_cast<float>(1U << mantissaBits),
+			static_cast<int>(exponent) - 15);
+	}
+
+	uint8_t tone_map_channel(float value)
+	{
+		value = (std::max)(0.0f, value);
+		value = value / (1.0f + value);
+		value = std::pow(
+			(std::clamp)(value, 0.0f, 1.0f),
+			1.0f / 2.2f);
+		return static_cast<uint8_t>(
+			std::lround(
+				(std::clamp)(value, 0.0f, 1.0f) *
+				255.0f));
+	}
+
+	void ensure_park_tone_map_lut()
+	{
+		if (g_parkToneMapLutReady)
+			return;
+		for (uint32_t value = 0;
+			value < g_parkFloat11Lut.size(); ++value)
+		{
+			g_parkFloat11Lut[value] =
+				tone_map_channel(
+					decode_unsigned_float(value, 6));
+		}
+		for (uint32_t value = 0;
+			value < g_parkFloat10Lut.size(); ++value)
+		{
+			g_parkFloat10Lut[value] =
+				tone_map_channel(
+					decode_unsigned_float(value, 5));
+		}
+		g_parkToneMapLutReady = true;
+	}
+
+	bool decode_park_readback_locked(
+		const D3D11_MAPPED_SUBRESOURCE& mapped,
+		const D3D11_TEXTURE2D_DESC& description)
+	{
+		if (!mapped.pData ||
+			description.Format !=
+				DXGI_FORMAT_R11G11B10_FLOAT)
+		{
+			return false;
+		}
+
+		const size_t pixelCount =
+			static_cast<size_t>(description.Width) *
+			description.Height;
+		ensure_park_tone_map_lut();
+		g_parkReadbackPixels.resize(pixelCount * 4);
+		const auto* sourceBase =
+			static_cast<const uint8_t*>(mapped.pData);
+		for (uint32_t y = 0;
+			y < description.Height; ++y)
+		{
+			const auto* sourceRow =
+				reinterpret_cast<const uint32_t*>(
+					sourceBase +
+					static_cast<size_t>(y) *
+						mapped.RowPitch);
+			uint8_t* destinationRow =
+				g_parkReadbackPixels.data() +
+				static_cast<size_t>(y) *
+					description.Width * 4;
+			for (uint32_t x = 0;
+				x < description.Width; ++x)
+			{
+				const uint32_t packed = sourceRow[x];
+				destinationRow[x * 4 + 0] =
+					g_parkFloat10Lut[
+						(packed >> 22) & 0x3FFU];
+				destinationRow[x * 4 + 1] =
+					g_parkFloat11Lut[
+						(packed >> 11) & 0x7FFU];
+				destinationRow[x * 4 + 2] =
+					g_parkFloat11Lut[
+						packed & 0x7FFU];
+				destinationRow[x * 4 + 3] = 255;
+			}
+		}
+
+		g_parkReadbackWidth = description.Width;
+		g_parkReadbackHeight = description.Height;
+		++g_parkReadbackSequence;
+		g_parkReadbackReady = true;
+		g_parkOutputFrames.fetch_add(
+			1, std::memory_order_relaxed);
+		return true;
+	}
+
+	bool ensure_park_staging_locked(
+		ID3D11Device* device,
+		const D3D11_TEXTURE2D_DESC& sourceDescription)
+	{
+		if (!device ||
+			sourceDescription.SampleDesc.Count != 1 ||
+			sourceDescription.Format !=
+				DXGI_FORMAT_R11G11B10_FLOAT)
+		{
+			return false;
+		}
+
+		if (g_parkReadbackDevice == device &&
+			g_parkStaging[0].texture)
+		{
+			D3D11_TEXTURE2D_DESC existing{};
+			g_parkStaging[0].texture->GetDesc(&existing);
+			if (existing.Width == sourceDescription.Width &&
+				existing.Height == sourceDescription.Height &&
+				existing.Format == sourceDescription.Format)
+			{
+				return true;
+			}
+		}
+
+		release_park_readback_resources_locked();
+		g_parkReadbackDevice = device;
+		g_parkReadbackDevice->AddRef();
+
+		D3D11_TEXTURE2D_DESC stagingDescription =
+			sourceDescription;
+		stagingDescription.MipLevels = 1;
+		stagingDescription.ArraySize = 1;
+		stagingDescription.Usage = D3D11_USAGE_STAGING;
+		stagingDescription.BindFlags = 0;
+		stagingDescription.CPUAccessFlags =
+			D3D11_CPU_ACCESS_READ;
+		stagingDescription.MiscFlags = 0;
+
+		for (auto& slot : g_parkStaging)
+		{
+			const HRESULT result = device->CreateTexture2D(
+				&stagingDescription,
+				nullptr,
+				&slot.texture);
+			if (FAILED(result) || !slot.texture)
+			{
+				scs_log(
+					2,
+					"[RTT park] Could not create a safe "
+					"staging texture (hr=0x%08X).",
+					result);
+				release_park_readback_resources_locked();
+				return false;
+			}
+		}
+
+		scs_log(
+			0,
+			"[RTT park] Safe staged readback initialized: "
+			"%ux%u %s.",
+			sourceDescription.Width,
+			sourceDescription.Height,
+			dx11::internal_render_probe::format_name(
+				static_cast<uint32_t>(
+					sourceDescription.Format)));
+		return true;
+	}
+
+	void observe_park_colour_target(
+		ID3D11Texture2D* texture,
+		const D3D11_TEXTURE2D_DESC& description,
+		uint64_t currentFrame)
+	{
+		if (!texture ||
+			!g_parkRenderRequested.load(
+				std::memory_order_relaxed) ||
+			description.SampleDesc.Count != 1 ||
+			description.Format !=
+				DXGI_FORMAT_R11G11B10_FLOAT)
+		{
+			return;
+		}
+
+		const uint64_t forcedFrame =
+			g_lastParkForcedFrame.load(
+				std::memory_order_relaxed);
+		if (forcedFrame == UINT64_MAX ||
+			currentFrame < forcedFrame ||
+			currentFrame - forcedFrame > 1)
+		{
+			return;
+		}
+
+		const uint32_t width =
+			g_slotWidth[kParkSlot].load(
+				std::memory_order_relaxed);
+		const uint32_t height =
+			g_slotHeight[kParkSlot].load(
+				std::memory_order_relaxed);
+		if (width == 0 || height == 0 ||
+			description.Width != width ||
+			description.Height != height)
+		{
+			return;
+		}
+
+		std::lock_guard<std::mutex> lock(
+			g_parkTextureMutex);
+		if (g_parkColorTexture != texture)
+		{
+			release_com_object(g_parkColorTexture);
+			g_parkColorTexture = texture;
+			g_parkColorTexture->AddRef();
+		}
+		g_parkObservedFrame = currentFrame;
+		g_parkTargetWidth.store(
+			description.Width, std::memory_order_relaxed);
+		g_parkTargetHeight.store(
+			description.Height, std::memory_order_relaxed);
+		g_parkTargetFormat.store(
+			static_cast<uint32_t>(description.Format),
+			std::memory_order_relaxed);
+		const bool firstTarget =
+			!g_parkColorTargetReady.exchange(
+				true, std::memory_order_acq_rel);
+		if (firstTarget)
+		{
+			scs_log(
+				0,
+				"[RTT park] Observed the live park colour "
+				"target: %ux%u %s.",
+				description.Width,
+				description.Height,
+				dx11::internal_render_probe::format_name(
+					static_cast<uint32_t>(
+						description.Format)));
+		}
 	}
 
 	bool compile_park_shader(
@@ -959,6 +1258,10 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		if (forcePark)
 		{
 			result |= 1U << kParkSlot;
+			g_lastParkForcedFrame.store(
+				g_frameIndex.load(
+					std::memory_order_relaxed),
+				std::memory_order_relaxed);
 			g_parkScheduleCount.fetch_add(
 				1, std::memory_order_relaxed);
 		}
@@ -975,6 +1278,9 @@ float4 ps_main(PixelInput input) : SV_TARGET
 	{
 		const bool tracing =
 			g_tracing.load(std::memory_order_relaxed);
+		const bool observingPark =
+			g_parkRenderRequested.load(
+				std::memory_order_relaxed);
 		const bool firstObservation =
 			!g_mirrorScheduleSeen.load(
 				std::memory_order_relaxed);
@@ -983,7 +1289,7 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			g_mirrorScheduleSeen.store(
 				true, std::memory_order_relaxed);
 		}
-		if (tracing || firstObservation)
+		if (tracing || observingPark || firstObservation)
 		{
 			g_mirrorScheduleCount.fetch_add(
 				1, std::memory_order_relaxed);
@@ -996,7 +1302,7 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			capture_camera_slot_descriptors();
 		}
 
-		if (!tracing)
+		if (!tracing && !observingPark)
 		{
 			return g_originalMirrorSchedule(
 				visualInterior,
@@ -1018,13 +1324,24 @@ float4 ps_main(PixelInput input) : SV_TARGET
 
 	void record_render_targets(
 		UINT renderTargetViewCount,
-		ID3D11RenderTargetView* const* renderTargetViews)
+		ID3D11RenderTargetView* const* renderTargetViews,
+		bool recordCandidates)
 	{
 		if (!renderTargetViews || renderTargetViewCount == 0)
 			return;
 
 		const uint64_t currentFrame =
 			g_frameIndex.load(std::memory_order_relaxed);
+		const uint64_t forcedFrame =
+			g_lastParkForcedFrame.load(
+				std::memory_order_relaxed);
+		if (!recordCandidates &&
+			(forcedFrame == UINT64_MAX ||
+				currentFrame < forcedFrame ||
+				currentFrame - forcedFrame > 1))
+		{
+			return;
+		}
 		const uint64_t mirrorFrame =
 			g_lastMirrorScheduleFrame.load(
 				std::memory_order_relaxed);
@@ -1061,7 +1378,13 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				reinterpret_cast<uintptr_t>(texture);
 			D3D11_TEXTURE2D_DESC description{};
 			texture->GetDesc(&description);
+			observe_park_colour_target(
+				texture,
+				description,
+				currentFrame);
 			texture->Release();
+			if (!recordCandidates)
+				continue;
 
 			if (description.Width < 64 ||
 				description.Height < 64 ||
@@ -1144,11 +1467,16 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		ID3D11RenderTargetView* const* renderTargetViews,
 		ID3D11DepthStencilView* depthStencilView)
 	{
-		if (g_tracing.load(std::memory_order_relaxed))
+		const bool tracing =
+			g_tracing.load(std::memory_order_relaxed);
+		if (tracing ||
+			g_parkRenderRequested.load(
+				std::memory_order_relaxed))
 		{
 			record_render_targets(
 				renderTargetViewCount,
-				renderTargetViews);
+				renderTargetViews,
+				tracing);
 		}
 
 		g_originalOmSetRenderTargets(
@@ -1487,19 +1815,121 @@ namespace dx11::internal_render_probe
 		}
 	}
 
-	void on_present_frame()
+	void on_present_frame(ID3D11DeviceContext* context)
 	{
 		g_frameIndex.fetch_add(
 			1, std::memory_order_relaxed);
 
-		if (!g_tracing.load(std::memory_order_relaxed))
+		if (g_tracing.load(std::memory_order_relaxed))
+		{
+			const uint64_t now = GetTickCount64();
+			if (now >=
+				g_traceEndTick.load(
+					std::memory_order_relaxed))
+			{
+				end_trace();
+			}
+		}
+
+		if (!context ||
+			!g_parkRenderRequested.load(
+				std::memory_order_relaxed))
+		{
+			return;
+		}
+
+		std::lock_guard<std::mutex> lock(
+			g_parkTextureMutex);
+		if (!g_parkColorTexture)
 			return;
 
-		const uint64_t now = GetTickCount64();
-		if (now >=
-			g_traceEndTick.load(std::memory_order_relaxed))
+		D3D11_TEXTURE2D_DESC description{};
+		g_parkColorTexture->GetDesc(&description);
+		ID3D11Device* sourceDevice{};
+		ID3D11Device* contextDevice{};
+		g_parkColorTexture->GetDevice(&sourceDevice);
+		context->GetDevice(&contextDevice);
+		const bool sameDevice =
+			sourceDevice && sourceDevice == contextDevice;
+		if (!sameDevice ||
+			!ensure_park_staging_locked(
+				sourceDevice, description))
 		{
-			end_trace();
+			release_com_object(sourceDevice);
+			release_com_object(contextDevice);
+			return;
+		}
+		release_com_object(sourceDevice);
+		release_com_object(contextDevice);
+
+		for (auto& slot : g_parkStaging)
+		{
+			if (!slot.pending || !slot.texture)
+				continue;
+
+			D3D11_MAPPED_SUBRESOURCE mapped{};
+			const HRESULT result = context->Map(
+				slot.texture,
+				0,
+				D3D11_MAP_READ,
+				D3D11_MAP_FLAG_DO_NOT_WAIT,
+				&mapped);
+			if (result == DXGI_ERROR_WAS_STILL_DRAWING)
+			{
+				g_parkReadbackBusySkips.fetch_add(
+					1, std::memory_order_relaxed);
+				continue;
+			}
+			if (FAILED(result))
+			{
+				slot.pending = false;
+				continue;
+			}
+
+			if (slot.submissionOrder >
+				g_parkLastDecodedSubmissionOrder)
+			{
+				if (decode_park_readback_locked(
+					mapped, description))
+				{
+					g_parkLastDecodedSubmissionOrder =
+						slot.submissionOrder;
+				}
+			}
+			context->Unmap(slot.texture, 0);
+			slot.pending = false;
+		}
+
+		if (g_parkObservedFrame == UINT64_MAX ||
+			g_parkObservedFrame == g_parkSubmittedFrame)
+		{
+			return;
+		}
+
+		for (uint32_t offset = 0;
+			offset < g_parkStaging.size(); ++offset)
+		{
+			const uint32_t index =
+				(g_nextParkStaging + offset) %
+				static_cast<uint32_t>(
+					g_parkStaging.size());
+			auto& slot = g_parkStaging[index];
+			if (slot.pending || !slot.texture)
+				continue;
+
+			context->CopyResource(
+				slot.texture,
+				g_parkColorTexture);
+			slot.pending = true;
+			slot.submissionOrder =
+				++g_parkNextSubmissionOrder;
+			g_nextParkStaging =
+				(index + 1) %
+				static_cast<uint32_t>(
+					g_parkStaging.size());
+			g_parkSubmittedFrame =
+				g_parkObservedFrame;
+			break;
 		}
 	}
 
@@ -1561,14 +1991,19 @@ namespace dx11::internal_render_probe
 
 	void set_park_render_requested(bool requested)
 	{
-		g_parkRenderRequested.store(
-			requested, std::memory_order_release);
+		const bool previous =
+			g_parkRenderRequested.exchange(
+				requested, std::memory_order_acq_rel);
 		if (!requested)
 		{
 			g_lastParkScheduleTick.store(
 				0, std::memory_order_relaxed);
+			g_lastParkForcedFrame.store(
+				UINT64_MAX, std::memory_order_relaxed);
 			g_parkMaskForced.store(
 				false, std::memory_order_relaxed);
+			if (previous)
+				release_park_color_target();
 		}
 	}
 
@@ -1672,6 +2107,28 @@ namespace dx11::internal_render_probe
 					description.Format)),
 			static_cast<uint32_t>(description.Format),
 			score);
+	}
+
+	bool copy_park_frame(
+		std::vector<uint8_t>& destination,
+		uint32_t& width,
+		uint32_t& height,
+		uint64_t& sequence)
+	{
+		std::lock_guard<std::mutex> lock(
+			g_parkTextureMutex);
+		if (!g_parkReadbackReady ||
+			g_parkReadbackPixels.empty() ||
+			g_parkReadbackSequence == sequence)
+		{
+			return false;
+		}
+
+		destination = g_parkReadbackPixels;
+		width = g_parkReadbackWidth;
+		height = g_parkReadbackHeight;
+		sequence = g_parkReadbackSequence;
+		return true;
 	}
 
 	bool blit_park_texture(
@@ -1818,6 +2275,12 @@ namespace dx11::internal_render_probe
 			g_parkColorTargetReady.load();
 		result.parkCompositorReady =
 			g_parkCompositorReady.load();
+		{
+			std::lock_guard<std::mutex> lock(
+				g_parkTextureMutex);
+			result.parkReadbackReady =
+				g_parkReadbackReady;
+		}
 		result.timeDateStamp = g_timeDateStamp.load();
 		result.imageSize = g_imageSize.load();
 		result.signatureMatches =
@@ -1832,6 +2295,8 @@ namespace dx11::internal_render_probe
 			g_parkScheduleCount.load();
 		result.parkOutputFrames =
 			g_parkOutputFrames.load();
+		result.parkReadbackBusySkips =
+			g_parkReadbackBusySkips.load();
 		result.traceStartedTick =
 			g_traceStartedTick.load();
 		result.traceEndTick = g_traceEndTick.load();

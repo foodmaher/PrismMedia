@@ -69,6 +69,10 @@ struct screen_t
 	std::vector<uint8_t> frameScratch;
 	uint32_t frameScratchWidth{};
 	uint32_t frameScratchHeight{};
+	std::vector<uint8_t> internalParkScratch;
+	uint32_t internalParkScratchWidth{};
+	uint32_t internalParkScratchHeight{};
+	uint64_t internalParkFrameSequence{};
 	bool hasUploadedFrame{};
 	std::vector<uint32_t> scaleX;
 	uint32_t scaleXSourceOffset{};

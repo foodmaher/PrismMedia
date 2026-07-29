@@ -26,8 +26,6 @@ typedef HRESULT(__stdcall* present_t)(IDXGISwapChain*, UINT, UINT);
 static present_t original_present{};
 HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
 {
-    dx11::internal_render_probe::on_present_frame();
-
     static bool init{};
     if (!init) {
         DXGI_SWAP_CHAIN_DESC desc;
@@ -78,6 +76,7 @@ HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
         init = true;
     }
 
+    dx11::internal_render_probe::on_present_frame(context);
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();

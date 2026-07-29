@@ -22,8 +22,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $Dll = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB.dll'
+$BridgeDll = Join-Path $ProjectRoot 'x64\Release\PrismCameraBridge.dll'
 if (-not (Test-Path $Dll)) {
     throw "Build completed but the expected DLL was not found at: $Dll"
+}
+if (-not (Test-Path $BridgeDll)) {
+    throw "Build completed but the SPF bridge DLL was not found at: $BridgeDll"
 }
 
 $Hash = Get-FileHash -Algorithm SHA256 $Dll
@@ -32,7 +36,7 @@ if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-2.3.1'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-2.4.0'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }
@@ -41,6 +45,12 @@ Copy-Item $Dll $Package
 Copy-Item (Join-Path $ClientDirectory '*') $Package -Recurse
 Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Package
 Copy-Item (Join-Path $ProjectRoot 'V2.3-ADAPTIVE-TESTING.md') $Package
+Copy-Item (Join-Path $ProjectRoot 'V2.4-DISTANCE-AUDIO-TESTING.md') $Package
+$SpfBridge = Join-Path $Package 'SPF-OPTIONAL\PrismCameraBridge'
+New-Item -ItemType Directory -Path $SpfBridge -Force | Out-Null
+Copy-Item $BridgeDll $SpfBridge
+Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (
+    Join-Path $Package 'SPF-OPTIONAL')
 
 Write-Host ''
 Write-Host "Build succeeded: $Dll" -ForegroundColor Green

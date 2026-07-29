@@ -29,6 +29,7 @@ namespace PrismMediaClient
             new Queue<string>();
         private readonly AdaptiveAudioController adaptiveAudio =
             new AdaptiveAudioController();
+        private MediaLowPassController lowPass;
         private bool ready;
 
         internal MainForm(string initialUrl)
@@ -69,6 +70,10 @@ namespace PrismMediaClient
 
                 string contentFolder = Path.Combine(
                     AppDomain.CurrentDomain.BaseDirectory, "www");
+                lowPass = new MediaLowPassController(
+                    webView.CoreWebView2);
+                await lowPass.InstallAsync(File.ReadAllText(
+                    Path.Combine(contentFolder, "adaptive-audio.js")));
                 webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
                     "prism.local", contentFolder,
                     CoreWebView2HostResourceAccessKind.Allow);
@@ -134,7 +139,7 @@ namespace PrismMediaClient
             if (command.StartsWith("spatial|", StringComparison.Ordinal))
             {
                 string[] parts = command.Split('|');
-                if (parts.Length == 4 &&
+                if (parts.Length >= 4 &&
                     int.TryParse(parts[1], out int spatialEnabled) &&
                     float.TryParse(
                         parts[2], NumberStyles.Float,
@@ -143,8 +148,17 @@ namespace PrismMediaClient
                         parts[3], NumberStyles.Float,
                         CultureInfo.InvariantCulture, out float pan))
                 {
+                    float cutoffHz = 20000.0f;
+                    if (parts.Length >= 5)
+                        float.TryParse(
+                            parts[4], NumberStyles.Float,
+                            CultureInfo.InvariantCulture,
+                            out cutoffHz);
                     adaptiveAudio.SetDesired(
                         spatialEnabled != 0, gain, pan);
+                    lowPass?.SetDesired(
+                        spatialEnabled != 0,
+                        cutoffHz <= 0.0f ? 20000.0f : cutoffHz);
                 }
                 return;
             }
@@ -166,6 +180,7 @@ namespace PrismMediaClient
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            lowPass?.Dispose();
             adaptiveAudio.Dispose();
             base.OnFormClosed(e);
         }

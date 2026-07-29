@@ -48,12 +48,18 @@ jobs:
         shell: pwsh
         run: |
           $Dll = "x64\Release\PrismTextureStreamerFB.dll"
+          $Bridge = "x64\Release\PrismCameraBridge.dll"
           if (-not (Test-Path $Dll)) {
               throw "Expected DLL was not produced: $Dll"
+          }
+          if (-not (Test-Path $Bridge)) {
+              throw "Expected SPF companion was not produced: $Bridge"
           }
 
           Get-Item $Dll
           Get-FileHash -Algorithm SHA256 $Dll
+          Get-Item $Bridge
+          Get-FileHash -Algorithm SHA256 $Bridge
 
       - name: Assemble install package
         shell: pwsh
@@ -69,15 +75,25 @@ jobs:
           Copy-Item "$Client\*" $Package -Recurse
           Copy-Item "PERFORMANCE-NOTES.md" $Package
           Copy-Item "V2.3-ADAPTIVE-TESTING.md" $Package
+          Copy-Item "V2.4-DISTANCE-AUDIO-TESTING.md" $Package
+
+          $SpfBridge = "$Package\SPF-OPTIONAL\PrismCameraBridge"
+          New-Item -ItemType Directory -Path $SpfBridge -Force |
+              Out-Null
+          Copy-Item "x64\Release\PrismCameraBridge.dll" $SpfBridge
+          Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Package\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 2.3.1
+          PrismTextureStreamerFB 2.4.0
 
-          Copy every file and folder in this package into:
+          Copy the root files and the www folder into:
           <ETS2 or ATS>\bin\win_x64\plugins
 
           Keep PrismMediaClient.exe and its DLL/files beside
           PrismTextureStreamerFB.dll. Open the menu with Ctrl+F8.
+
+          Do not copy SPF-OPTIONAL as-is. Read its install file only if
+          you want exact external-camera distance audio.
           "@ | Set-Content "$Package\INSTALL.txt"
 
           Get-ChildItem $Package -Recurse
@@ -85,7 +101,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-2.3.1-adaptive
+          name: PrismTextureStreamerFB-2.4.0-distance-audio
           path: package
           if-no-files-found: error
           retention-days: 30

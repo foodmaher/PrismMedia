@@ -140,6 +140,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="camera_bridge_client.cpp" />
     <ClCompile Include="dinput8\dinput8.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="dx11\CreateTexture2D.cpp" />
@@ -159,6 +160,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bmem.h" />
+    <ClInclude Include="camera_bridge_client.h" />
     <ClInclude Include="dinput8\dinput8.h" />
     <ClInclude Include="dx11\CreateTexture2D.h" />
     <ClInclude Include="dx11\dx11.h" />
@@ -182,6 +184,7 @@
     <ClInclude Include="sources\window.h" />
     <ClInclude Include="version.h" />
     <ClInclude Include="win32\win32.h" />
+    <ClInclude Include="..\Shared\PrismCameraBridgeShared.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

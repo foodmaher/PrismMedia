@@ -17,6 +17,8 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Play local files or direct stream URLs through Windows Media Foundation
 - Control media and assign keys for Play/Pause, Next, Previous, Mute and Volume
 - Spatialize Integrated Media Client sound from the driver's live head pose
+- Fade and muffle outside-camera media by true camera-to-driver distance with
+  the optional SPF companion
 - Apply separate media volume in menus and detect external cameras reliably
 - Adjust and save brightness independently for every streamed screen
 - Pause and resume media automatically with the truck engine
@@ -80,6 +82,8 @@ performance statistics.
 - DirectX 11
 - Microsoft Edge WebView2 Runtime for the Integrated Media Client (normally
   already installed on Windows 10/11)
+- Optional: SPF Framework 1.2+ for exact external-camera position. The main
+  plugin retains fixed outside-volume fallback without it.
 
 ## Known issues
 - Fingerprinting textures by dimensions/format means any other texture in the game that happens to match GPS/dashboard's size and format exactly would get caught too which is unlikely (if using unqiue dimentions), but not impossible.
@@ -120,9 +124,29 @@ Version `2.0.0-performance` includes:
 - Stretch, aspect-correct Fit, and centre Crop scaling modes
 - Persistent settings for performance profile, pause state, and scaling mode
 
+## Version 2.4 exact external-camera distance audio
+
+Version `2.4.0-distance-audio` includes all 2.3 features plus:
+
+- An optional SPF-compatible `PrismCameraBridge.dll` that publishes the
+  active camera type and world coordinates through a tiny shared-memory block
+- Per-truck driver-head calibration from interior camera 1
+- Live camera-to-driver distance while outside the cab, including while the
+  truck is moving
+- Configurable full-volume and mute/minimum-volume distances
+- A logarithmic distance-controlled low-pass filter for realistic muffling
+- Live metres, applied gain, and cutoff readouts in the ImGui menu
+- Automatic fixed-volume fallback when SPF or the companion is not installed
+
+The normal plugin files remain in `bin\win_x64\plugins`. For exact distance,
+install the [SPF Framework](https://github.com/TrackAndTruckDevs/SPF-Framework/releases)
+and copy `PrismCameraBridge.dll` to
+`bin\win_x64\plugins\spfPlugins\PrismCameraBridge`. See
+`SPF-BRIDGE-INSTALL.txt` in the build artifact.
+
 ## Version 2.3 engine-powered media and GPS edge fix
 
-Version `2.3.1-adaptive` includes:
+Version `2.3.1-adaptive` added:
 
 - Head-orientation stereo panning and directional attenuation for the
   Integrated Media Client
@@ -154,7 +178,7 @@ Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-2.3.1-adaptive` artifact. This cloud build requires
+`PrismTextureStreamerFB-2.4.0-distance-audio` artifact. This cloud build requires
 no local Visual Studio installation.
 
 ## Contributing

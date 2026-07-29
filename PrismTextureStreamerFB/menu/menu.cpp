@@ -906,11 +906,42 @@ void on_frame()
 									ImGuiSliderFlags_AlwaysClamp))
 									saveConfiguration = true;
 								if (ImGui::SliderFloat(
-									"Volume when outside",
+									"Minimum volume when far away",
 									&screen.adaptiveAudioOutsideVolume,
 									0.0f, 1.0f, "%.2f",
 									ImGuiSliderFlags_AlwaysClamp))
 									saveConfiguration = true;
+								if (ImGui::Checkbox(
+									"Use exact external-camera distance (SPF)",
+									&screen.adaptiveAudioExternalDistanceEnabled))
+									saveConfiguration = true;
+								if (screen.adaptiveAudioExternalDistanceEnabled)
+								{
+									if (ImGui::SliderFloat(
+										"Full-volume distance",
+										&screen.adaptiveAudioExternalFullVolumeDistance,
+										0.0f, 10.0f, "%.1f m",
+										ImGuiSliderFlags_AlwaysClamp))
+										saveConfiguration = true;
+									if (ImGui::SliderFloat(
+										"Mute / minimum-volume distance",
+										&screen.adaptiveAudioExternalMuteDistance,
+										2.0f, 50.0f, "%.1f m",
+										ImGuiSliderFlags_AlwaysClamp))
+										saveConfiguration = true;
+									if (ImGui::Checkbox(
+										"Distance low-pass (muffle far audio)",
+										&screen.adaptiveAudioExternalLowPassEnabled))
+										saveConfiguration = true;
+									if (screen.adaptiveAudioExternalLowPassEnabled &&
+										ImGui::SliderFloat(
+											"Far-distance cutoff",
+											&screen.adaptiveAudioExternalMinimumCutoff,
+											120.0f, 4000.0f, "%.0f Hz",
+											ImGuiSliderFlags_Logarithmic |
+												ImGuiSliderFlags_AlwaysClamp))
+										saveConfiguration = true;
+								}
 								float menuVolumePercent =
 									screen.adaptiveAudioMenuVolume * 100.0f;
 								if (ImGui::SliderFloat(
@@ -933,10 +964,14 @@ void on_frame()
 									driving && lastHeadUpdate != 0 &&
 									now >= lastHeadUpdate &&
 									now - lastHeadUpdate <= 500;
+								const bool exactCamera =
+									g_camera_bridge_connected.load();
 								const bool externalCamera =
 									driving &&
-									(!g_camera_interior_hint.load() ||
-										!headTelemetryFresh);
+									(exactCamera
+										? g_camera_type.load() != 2
+										: (!g_camera_interior_hint.load() ||
+											!headTelemetryFresh));
 
 								if (!driving)
 								{
@@ -949,9 +984,33 @@ void on_frame()
 								{
 									ImGui::TextColored(
 										ImVec4(0.35f, 0.75f, 1.0f, 1.0f),
-										"Detected state: external camera (outside volume)");
-									ImGui::Text(
-										"Live head offset: unavailable outside the cab");
+										"Detected state: external camera");
+									if (exactCamera &&
+										g_head_anchor_calibrated.load())
+									{
+										ImGui::Text(
+											"Camera distance from driver: %.1f m",
+											g_external_camera_distance.load());
+										ImGui::Text(
+											"Distance gain: %.0f%% | low-pass: %.0f Hz",
+											g_adaptive_audio_distance_gain.load() *
+												100.0f,
+											g_adaptive_audio_lowpass_hz.load());
+									}
+									else if (exactCamera)
+									{
+										ImGui::TextColored(
+											ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+											"Head anchor not calibrated: switch to "
+											"camera 1 once.");
+									}
+									else
+									{
+										ImGui::TextColored(
+											ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+											"SPF bridge not detected; using fixed "
+											"outside volume.");
+									}
 								}
 								else
 								{
@@ -972,10 +1031,10 @@ void on_frame()
 								}
 								ImGui::TextWrapped(
 									"Speaker direction: negative is left, positive is "
-									"right. Set Outside volume to 0 for full silence "
-									"when the camera leaves the cab. External-camera "
-									"detection uses telemetry freshness plus the default "
-									"1-9/0 camera keys.");
+									"right. The SPF companion measures the true camera "
+									"distance and follows the moving truck. Without SPF, "
+									"camera keys and telemetry freshness provide a safe "
+									"fixed-volume fallback.");
 							}
 							ImGui::EndDisabled();
 							ImGui::TreePop();

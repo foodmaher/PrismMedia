@@ -1,4 +1,4 @@
-# PrismTextureStreamerFB 2.3.1 Performance and Adaptive Features Guide
+# PrismTextureStreamerFB 2.4 Performance and Adaptive Features Guide
 
 ## Choose the playback method
 
@@ -92,6 +92,26 @@ External cameras no longer reuse a frozen head value. The plugin combines head
 telemetry freshness with the default `1` interior and `2-9/0` external camera
 keys. When it detects an external camera, panning is centred and the configured
 outside volume is applied.
+
+For true camera distance, install the optional SPF Framework companion from
+the artifact's `SPF-OPTIONAL` folder. It reads SPF's active camera type and
+world coordinates, calibrates the driver-head position when camera `1` is
+active, and follows the truck while outside. The menu then provides:
+
+- **Full-volume distance**
+- **Mute / minimum-volume distance**
+- **Minimum volume when far away**
+- **Distance low-pass**
+- **Far-distance cutoff**
+
+Volume follows a smooth distance curve. The cutoff is interpolated
+logarithmically from full bandwidth near the driver to the configured
+far-distance frequency. This processing is applied only to media inside the
+Integrated Media Client; game audio sessions are not filtered.
+
+The companion performs no image capture or rendering. If it is not installed
+or cannot supply a current camera position, the plugin continues with the
+existing fixed outside-volume fallback.
 
 ## Engine-powered media
 

@@ -109,7 +109,8 @@ namespace {
         ~MediaClientSource() override
         {
             if (m_spatialEnabled)
-                send_payload("spatial|0|1.0000|0.0000", 30);
+                send_payload(
+                    "spatial|0|1.0000|0.0000|20000.0", 30);
             if (!m_vehiclePowered.load())
                 send_payload("vehiclepower|1", 30);
         }
@@ -196,30 +197,38 @@ namespace {
             }
             return name && send_payload(name);
         }
-        void SetSpatialAudio(float gain, float pan, bool enabled) override
+        void SetSpatialAudio(
+            float gain,
+            float pan,
+            bool enabled,
+            float lowpassHz) override
         {
             gain = (std::clamp)(gain, 0.0f, 1.0f);
             pan = (std::clamp)(pan, -1.0f, 1.0f);
+            lowpassHz = (std::clamp)(lowpassHz, 120.0f, 20000.0f);
 
             const uint64_t now = GetTickCount64();
             const bool stateChanged = enabled != m_spatialEnabled;
             const bool valueChanged =
                 std::fabs(gain - m_lastSpatialGain) >= 0.01f ||
-                std::fabs(pan - m_lastSpatialPan) >= 0.01f;
+                std::fabs(pan - m_lastSpatialPan) >= 0.01f ||
+                std::fabs(lowpassHz - m_lastLowpassHz) >= 35.0f;
             if (!stateChanged && !valueChanged)
                 return;
             if (!stateChanged && now - m_lastSpatialSendTick < 45)
                 return;
 
-            char payload[96]{};
+            char payload[128]{};
             std::snprintf(
-                payload, sizeof(payload), "spatial|%d|%.4f|%.4f",
-                enabled ? 1 : 0, gain, pan);
+                payload, sizeof(payload),
+                "spatial|%d|%.4f|%.4f|%.1f",
+                enabled ? 1 : 0, gain, pan, lowpassHz);
             if (send_payload(payload, 30))
             {
                 m_spatialEnabled = enabled;
                 m_lastSpatialGain = gain;
                 m_lastSpatialPan = pan;
+                m_lastLowpassHz = lowpassHz;
                 m_lastSpatialSendTick = now;
             }
         }
@@ -263,6 +272,7 @@ namespace {
         bool m_spatialEnabled{};
         float m_lastSpatialGain{ 1.0f };
         float m_lastSpatialPan{};
+        float m_lastLowpassHz{ 20000.0f };
         uint64_t m_lastSpatialSendTick{};
         float m_lastBrightness{ -1.0f };
         std::atomic<bool> m_brightnessRefreshPending{};

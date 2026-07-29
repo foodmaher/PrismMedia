@@ -1,0 +1,112 @@
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+
+#include "camera_bridge_client.h"
+#include "telemetry_state.h"
+#include "../Shared/PrismCameraBridgeShared.h"
+
+#include <cstring>
+
+namespace
+{
+    HANDLE g_mapping{};
+    const prism_camera_bridge::SharedState* g_shared{};
+    uint64_t g_lastOpenAttempt{};
+
+    void close_mapping()
+    {
+        if (g_shared)
+        {
+            UnmapViewOfFile(g_shared);
+            g_shared = nullptr;
+        }
+        if (g_mapping)
+        {
+            CloseHandle(g_mapping);
+            g_mapping = nullptr;
+        }
+        g_camera_bridge_connected = false;
+    }
+
+    bool try_open_mapping(uint64_t now)
+    {
+        if (g_shared)
+            return true;
+        if (g_lastOpenAttempt != 0 && now >= g_lastOpenAttempt &&
+            now - g_lastOpenAttempt < 2000)
+            return false;
+
+        g_lastOpenAttempt = now;
+        g_mapping = OpenFileMappingW(
+            FILE_MAP_READ, FALSE, prism_camera_bridge::kMappingName);
+        if (!g_mapping)
+            return false;
+
+        g_shared = static_cast<const prism_camera_bridge::SharedState*>(
+            MapViewOfFile(
+                g_mapping, FILE_MAP_READ, 0, 0,
+                sizeof(prism_camera_bridge::SharedState)));
+        if (!g_shared)
+        {
+            CloseHandle(g_mapping);
+            g_mapping = nullptr;
+            return false;
+        }
+        return true;
+    }
+}
+
+namespace camera_bridge
+{
+    void poll()
+    {
+        const uint64_t now = GetTickCount64();
+        if (!try_open_mapping(now))
+        {
+            g_camera_bridge_connected = false;
+            return;
+        }
+
+        prism_camera_bridge::SharedState snapshot{};
+        bool copied{};
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            const LONG before = g_shared->sequence;
+            if ((before & 1) != 0)
+                continue;
+
+            MemoryBarrier();
+            std::memcpy(&snapshot, g_shared, sizeof(snapshot));
+            MemoryBarrier();
+
+            const LONG after = g_shared->sequence;
+            if (before == after && (after & 1) == 0)
+            {
+                copied = true;
+                break;
+            }
+        }
+
+        const bool valid =
+            copied &&
+            snapshot.magic == prism_camera_bridge::kMagic &&
+            snapshot.version == prism_camera_bridge::kVersion &&
+            snapshot.valid != 0 &&
+            now >= snapshot.updatedTick &&
+            now - snapshot.updatedTick <= 1000;
+        g_camera_bridge_connected = valid;
+        if (!valid)
+            return;
+
+        g_camera_world_x = snapshot.cameraX;
+        g_camera_world_y = snapshot.cameraY;
+        g_camera_world_z = snapshot.cameraZ;
+        g_camera_type = snapshot.cameraType;
+        g_last_camera_bridge_tick = snapshot.updatedTick;
+    }
+
+    void shutdown()
+    {
+        close_mapping();
+    }
+}

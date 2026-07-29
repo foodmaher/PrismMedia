@@ -1,0 +1,33 @@
+OPTIONAL EXACT EXTERNAL-CAMERA DISTANCE
+=======================================
+
+The main PrismTextureStreamerFB plugin works without SPF. Install this
+companion only if you want true camera-to-driver distance falloff and the
+distance-controlled low-pass effect.
+
+1. Install the latest SPF Framework runtime from:
+   https://github.com/TrackAndTruckDevs/SPF-Framework/releases
+
+   Follow its installer, or copy its manualInstall contents into:
+   <ETS2 or ATS>\bin\win_x64\plugins
+
+2. Copy this complete folder:
+   SPF-OPTIONAL\PrismCameraBridge
+
+   into:
+   <ETS2 or ATS>\bin\win_x64\plugins\spfPlugins
+
+3. The final structure must be:
+   bin\win_x64\plugins\PrismTextureStreamerFB.dll
+   bin\win_x64\plugins\PrismMediaClient.exe
+   bin\win_x64\plugins\spf-framework.dll
+   bin\win_x64\plugins\spfPlugins\PrismCameraBridge\
+       PrismCameraBridge.dll
+
+4. Start a driving session, switch to interior camera 1 once, and open:
+   Ctrl+F8 > your screen > Adaptive Cabin Audio
+
+   The menu should show the exact camera distance when you switch outside.
+
+If SPF or the companion is missing, Prism automatically falls back to its
+fixed outside-volume setting. Game audio is never passed through the filter.

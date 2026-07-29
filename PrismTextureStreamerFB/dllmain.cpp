@@ -16,6 +16,7 @@
 #include "menu/menu.h"
 #include "settings.h"
 #include "telemetry_state.h"
+#include "camera_bridge_client.h"
 
 #include <algorithm>
 #include <cmath>
@@ -55,6 +56,22 @@ SCSAPI_VOID head_offset_changed(
     g_head_offset_z = value->value_fplacement.position.z;
     g_head_heading = value->value_fplacement.orientation.heading;
     g_last_head_update_tick = now;
+}
+
+SCSAPI_VOID truck_world_placement_changed(
+    const scs_string_t,
+    const scs_u32_t,
+    const scs_value_t* const value,
+    const scs_context_t)
+{
+    if (!value || value->type != SCS_VALUE_TYPE_dplacement)
+        return;
+
+    g_truck_world_x = value->value_dplacement.position.x;
+    g_truck_world_y = value->value_dplacement.position.y;
+    g_truck_world_z = value->value_dplacement.position.z;
+    g_truck_heading = value->value_dplacement.orientation.heading;
+    g_last_truck_placement_tick = GetTickCount64();
 }
 
 SCSAPI_VOID driving_state_changed(
@@ -126,6 +143,143 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
     IContentSource* spatialAudioFallback{};
     screen_t* spatialAudioScreen{};
     const bool reverseActive = g_reverse_active.load();
+
+    camera_bridge::poll();
+
+    // Calibrate a driver-head anchor in truck-local space whenever the exact
+    // SPF feed reports the interior camera. The anchor can then be transformed
+    // with the moving truck while an exterior camera is active.
+    constexpr int kSpfInteriorCamera = 2;
+    constexpr float kPi = 3.14159265358979323846f;
+    const uint64_t cameraNow = GetTickCount64();
+    const uint64_t lastTruckPlacement =
+        g_last_truck_placement_tick.load();
+    const bool exactCameraAvailable =
+        g_telemetry_driving.load() &&
+        g_camera_bridge_connected.load() &&
+        lastTruckPlacement != 0 &&
+        cameraNow >= lastTruckPlacement &&
+        cameraNow - lastTruckPlacement <= 1000;
+    if (exactCameraAvailable)
+    {
+        const bool exactInterior =
+            g_camera_type.load() == kSpfInteriorCamera;
+        g_camera_interior_hint = exactInterior;
+
+        const double truckX = g_truck_world_x.load();
+        const double truckY = g_truck_world_y.load();
+        const double truckZ = g_truck_world_z.load();
+        const double cameraX = g_camera_world_x.load();
+        const double cameraY = g_camera_world_y.load();
+        const double cameraZ = g_camera_world_z.load();
+        const float yaw = g_truck_heading.load() * 2.0f * kPi;
+        const float cosine = std::cos(yaw);
+        const float sine = std::sin(yaw);
+
+        if (exactInterior)
+        {
+            const float deltaX =
+                static_cast<float>(cameraX - truckX);
+            const float deltaY =
+                static_cast<float>(cameraY - truckY);
+            const float deltaZ =
+                static_cast<float>(cameraZ - truckZ);
+            const float localX =
+                deltaX * cosine - deltaZ * sine;
+            const float localZ =
+                deltaX * sine + deltaZ * cosine;
+            const float anchorLength = std::sqrt(
+                localX * localX + deltaY * deltaY +
+                localZ * localZ);
+
+            if (std::isfinite(static_cast<float>(cameraX)) &&
+                std::isfinite(static_cast<float>(cameraY)) &&
+                std::isfinite(static_cast<float>(cameraZ)))
+            {
+                // Always keep a reference pair. If SPF's live floating-origin
+                // coordinates differ from the absolute SCS world placement,
+                // truck displacement from this pair still moves the head
+                // reference correctly.
+                g_head_reference_camera_x =
+                    static_cast<float>(cameraX);
+                g_head_reference_camera_y =
+                    static_cast<float>(cameraY);
+                g_head_reference_camera_z =
+                    static_cast<float>(cameraZ);
+                g_head_reference_truck_x = truckX;
+                g_head_reference_truck_y = truckY;
+                g_head_reference_truck_z = truckZ;
+                g_head_anchor_calibrated = true;
+
+                // Prefer the more accurate yaw-aware local transform whenever
+                // both APIs clearly use the same coordinate origin.
+                if (std::isfinite(anchorLength) &&
+                    anchorLength < 20.0f)
+                {
+                    if (!g_head_anchor_uses_truck_local.load())
+                    {
+                        g_head_anchor_local_x = localX;
+                        g_head_anchor_local_y = deltaY;
+                        g_head_anchor_local_z = localZ;
+                    }
+                    else
+                    {
+                        constexpr float smoothing = 0.08f;
+                        g_head_anchor_local_x =
+                            g_head_anchor_local_x.load() +
+                            (localX - g_head_anchor_local_x.load()) *
+                            smoothing;
+                        g_head_anchor_local_y =
+                            g_head_anchor_local_y.load() +
+                            (deltaY - g_head_anchor_local_y.load()) *
+                            smoothing;
+                        g_head_anchor_local_z =
+                            g_head_anchor_local_z.load() +
+                            (localZ - g_head_anchor_local_z.load()) *
+                            smoothing;
+                    }
+                    g_head_anchor_uses_truck_local = true;
+                }
+                else
+                    g_head_anchor_uses_truck_local = false;
+                g_external_camera_distance = 0.0f;
+            }
+        }
+        else if (g_head_anchor_calibrated.load())
+        {
+            double headX{};
+            double headY{};
+            double headZ{};
+            if (g_head_anchor_uses_truck_local.load())
+            {
+                const float localX = g_head_anchor_local_x.load();
+                const float localY = g_head_anchor_local_y.load();
+                const float localZ = g_head_anchor_local_z.load();
+                headX =
+                    truckX + localX * cosine + localZ * sine;
+                headY = truckY + localY;
+                headZ =
+                    truckZ - localX * sine + localZ * cosine;
+            }
+            else
+            {
+                headX = g_head_reference_camera_x.load() +
+                    (truckX - g_head_reference_truck_x.load());
+                headY = g_head_reference_camera_y.load() +
+                    (truckY - g_head_reference_truck_y.load());
+                headZ = g_head_reference_camera_z.load() +
+                    (truckZ - g_head_reference_truck_z.load());
+            }
+            const double deltaX = cameraX - headX;
+            const double deltaY = cameraY - headY;
+            const double deltaZ = cameraZ - headZ;
+            const float distance = static_cast<float>(std::sqrt(
+                deltaX * deltaX + deltaY * deltaY +
+                deltaZ * deltaZ));
+            if (std::isfinite(distance))
+                g_external_camera_distance = distance;
+        }
+    }
 
     if (g_telemetry_driving.load() && !Gui::is_visible())
     {
@@ -205,8 +359,10 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                 now - lastHeadUpdate <= 500;
             const bool externalCamera =
                 driving &&
-                (!g_camera_interior_hint.load() ||
-                    !headTelemetryFresh);
+                (g_camera_bridge_connected.load()
+                    ? g_camera_type.load() != kSpfInteriorCamera
+                    : (!g_camera_interior_hint.load() ||
+                        !headTelemetryFresh));
 
             if (!driving)
             {
@@ -214,15 +370,78 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                     spatialAudioScreen->adaptiveAudioMenuVolume,
                     0.0f, 1.0f);
                 spatialAudioTarget->SetSpatialAudio(
-                    menuVolume, 0.0f, true);
+                    menuVolume, 0.0f, true, 20000.0f);
+                g_adaptive_audio_distance_gain = menuVolume;
+                g_adaptive_audio_lowpass_hz = 20000.0f;
             }
             else if (externalCamera)
             {
-                const float outsideVolume = (std::clamp)(
+                float gain = (std::clamp)(
                     spatialAudioScreen->adaptiveAudioOutsideVolume,
                     0.0f, 1.0f);
+                float lowpassHz =
+                    spatialAudioScreen->
+                        adaptiveAudioExternalLowPassEnabled
+                    ? (std::clamp)(
+                        spatialAudioScreen->
+                            adaptiveAudioExternalMinimumCutoff,
+                        120.0f, 8000.0f)
+                    : 20000.0f;
+
+                const bool useExactDistance =
+                    spatialAudioScreen->
+                        adaptiveAudioExternalDistanceEnabled &&
+                    g_camera_bridge_connected.load() &&
+                    g_head_anchor_calibrated.load();
+                if (useExactDistance)
+                {
+                    const float distance = (std::max)(
+                        0.0f, g_external_camera_distance.load());
+                    const float fullDistance = (std::clamp)(
+                        spatialAudioScreen->
+                            adaptiveAudioExternalFullVolumeDistance,
+                        0.0f, 25.0f);
+                    const float muteDistance = (std::max)(
+                        fullDistance + 0.5f,
+                        spatialAudioScreen->
+                            adaptiveAudioExternalMuteDistance);
+                    const float blend = (std::clamp)(
+                        (distance - fullDistance) /
+                            (muteDistance - fullDistance),
+                        0.0f, 1.0f);
+                    const float audible =
+                        std::pow(1.0f - blend, 1.35f);
+                    const float minimumGain = (std::clamp)(
+                        spatialAudioScreen->
+                            adaptiveAudioOutsideVolume,
+                        0.0f, 1.0f);
+                    gain = minimumGain +
+                        (1.0f - minimumGain) * audible;
+
+                    if (spatialAudioScreen->
+                        adaptiveAudioExternalLowPassEnabled)
+                    {
+                        const float minimumCutoff = (std::clamp)(
+                            spatialAudioScreen->
+                                adaptiveAudioExternalMinimumCutoff,
+                            120.0f, 8000.0f);
+                        const float logCutoff =
+                            std::log(20000.0f) +
+                            blend *
+                                (std::log(minimumCutoff) -
+                                    std::log(20000.0f));
+                        lowpassHz = std::exp(logCutoff);
+                    }
+                    else
+                    {
+                        lowpassHz = 20000.0f;
+                    }
+                }
+
                 spatialAudioTarget->SetSpatialAudio(
-                    outsideVolume, 0.0f, true);
+                    gain, 0.0f, true, lowpassHz);
+                g_adaptive_audio_distance_gain = gain;
+                g_adaptive_audio_lowpass_hz = lowpassHz;
             }
             else
             {
@@ -240,7 +459,6 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                 while (relativeDegrees < -180.0f)
                     relativeDegrees += 360.0f;
 
-                constexpr float kPi = 3.14159265358979323846f;
                 const float relativeRadians =
                     relativeDegrees * kPi / 180.0f;
                 const float strength = (std::clamp)(
@@ -278,12 +496,15 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                     outsideBlend * (1.0f - outsideVolume);
 
                 spatialAudioTarget->SetSpatialAudio(
-                    gain, pan, true);
+                    gain, pan, true, 20000.0f);
+                g_adaptive_audio_distance_gain = gain;
+                g_adaptive_audio_lowpass_hz = 20000.0f;
             }
         }
         else if (spatialAudioFallback)
         {
-            spatialAudioFallback->SetSpatialAudio(1.0f, 0.0f, false);
+            spatialAudioFallback->SetSpatialAudio(
+                1.0f, 0.0f, false, 20000.0f);
         }
     }
 
@@ -390,6 +611,13 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
         head_offset_changed,
         nullptr);
     version_params->register_for_channel(
+        SCS_TELEMETRY_TRUCK_CHANNEL_world_placement,
+        SCS_U32_NIL,
+        SCS_VALUE_TYPE_dplacement,
+        SCS_TELEMETRY_CHANNEL_FLAG_each_frame,
+        truck_world_placement_changed,
+        nullptr);
+    version_params->register_for_channel(
         SCS_TELEMETRY_TRUCK_CHANNEL_engine_enabled,
         SCS_U32_NIL,
         SCS_VALUE_TYPE_bool,
@@ -444,12 +672,14 @@ SCSAPI_VOID scs_telemetry_shutdown()
             if (screen.liveTexture) screen.liveTexture->Release();
             if (screen.immediateContext) screen.immediateContext->Release();
             if (screen.source && screen.source->SupportsSpatialAudio())
-                screen.source->SetSpatialAudio(1.0f, 0.0f, false);
+                screen.source->SetSpatialAudio(
+                    1.0f, 0.0f, false, 20000.0f);
         }
         g_screens.clear(); // Stops the sources
     }
 
     sources::WgcDispatcher::Instance().Stop();
+    camera_bridge::shutdown();
 
     dx11::shutdown();
     win32::shutdown();

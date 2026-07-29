@@ -47,7 +47,8 @@ public:
     virtual bool SupportsVehiclePowerControl() const { return false; }
     virtual void SetVehiclePowered(bool) {}
     virtual bool SupportsSpatialAudio() const { return false; }
-    virtual void SetSpatialAudio(float, float, bool) {}
+    virtual void SetSpatialAudio(
+        float, float, bool, float = 20000.0f) {}
     // Sources that can apply brightness in their own GPU compositor should
     // override these methods. This avoids touching every captured pixel on the
     // game's render thread.

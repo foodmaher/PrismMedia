@@ -32,6 +32,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="camera_bridge_client.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="dllmain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -70,6 +73,12 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="camera_bridge_client.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Shared\PrismCameraBridgeShared.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
     <ClInclude Include="scs_logging.h">
       <Filter>Source Files</Filter>
     </ClInclude>

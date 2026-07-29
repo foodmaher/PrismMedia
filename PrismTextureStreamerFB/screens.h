@@ -72,6 +72,11 @@ struct screen_t
 	float adaptiveAudioOutsideDistance = 0.85f;
 	float adaptiveAudioOutsideVolume = 0.0f;
 	float adaptiveAudioMenuVolume = 0.50f;
+	bool adaptiveAudioExternalDistanceEnabled = true;
+	float adaptiveAudioExternalFullVolumeDistance = 1.5f;
+	float adaptiveAudioExternalMuteDistance = 20.0f;
+	bool adaptiveAudioExternalLowPassEnabled = true;
+	float adaptiveAudioExternalMinimumCutoff = 650.0f;
 	bool reverseCameraEnabled = false;
 	bool reversePreview = false;
 	bool reverseZeroForwardImpact = true;

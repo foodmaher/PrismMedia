@@ -183,6 +183,37 @@ namespace settings {
             screen.adaptiveAudioMenuVolume = (std::clamp)(
                 read_float(path, section.c_str(), "AdaptiveAudioMenuVolume", 0.50f),
                 0.0f, 1.0f);
+            screen.adaptiveAudioExternalDistanceEnabled =
+                GetPrivateProfileIntA(
+                    section.c_str(),
+                    "AdaptiveAudioExternalDistanceEnabled",
+                    1, path.c_str()) != 0;
+            screen.adaptiveAudioExternalFullVolumeDistance =
+                (std::clamp)(
+                    read_float(
+                        path, section.c_str(),
+                        "AdaptiveAudioExternalFullVolumeDistance",
+                        1.5f),
+                    0.0f, 25.0f);
+            screen.adaptiveAudioExternalMuteDistance =
+                (std::clamp)(
+                    read_float(
+                        path, section.c_str(),
+                        "AdaptiveAudioExternalMuteDistance",
+                        20.0f),
+                    1.0f, 100.0f);
+            screen.adaptiveAudioExternalLowPassEnabled =
+                GetPrivateProfileIntA(
+                    section.c_str(),
+                    "AdaptiveAudioExternalLowPassEnabled",
+                    1, path.c_str()) != 0;
+            screen.adaptiveAudioExternalMinimumCutoff =
+                (std::clamp)(
+                    read_float(
+                        path, section.c_str(),
+                        "AdaptiveAudioExternalMinimumCutoff",
+                        650.0f),
+                    120.0f, 8000.0f);
             screen.reverseCameraEnabled = GetPrivateProfileIntA(
                 section.c_str(), "ReverseCameraEnabled", 0, path.c_str()) != 0;
             screen.reverseZeroForwardImpact = GetPrivateProfileIntA(
@@ -331,6 +362,11 @@ namespace settings {
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioOutsideDistance", screen.adaptiveAudioOutsideDistance);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioOutsideVolume", screen.adaptiveAudioOutsideVolume);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioMenuVolume", screen.adaptiveAudioMenuVolume);
+            write_number(temporaryPath, section.c_str(), "AdaptiveAudioExternalDistanceEnabled", screen.adaptiveAudioExternalDistanceEnabled ? 1 : 0);
+            write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalFullVolumeDistance", screen.adaptiveAudioExternalFullVolumeDistance);
+            write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalMuteDistance", screen.adaptiveAudioExternalMuteDistance);
+            write_number(temporaryPath, section.c_str(), "AdaptiveAudioExternalLowPassEnabled", screen.adaptiveAudioExternalLowPassEnabled ? 1 : 0);
+            write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalMinimumCutoff", screen.adaptiveAudioExternalMinimumCutoff);
             write_number(temporaryPath, section.c_str(), "ReverseCameraEnabled", screen.reverseCameraEnabled ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "ReverseZeroForwardImpact", screen.reverseZeroForwardImpact ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "ReverseFramerate", screen.reverseFramerate);

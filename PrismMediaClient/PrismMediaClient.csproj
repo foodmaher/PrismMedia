@@ -16,7 +16,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Remove="www\player.html" />
+    <None Remove="www\adaptive-audio.js" />
     <Content Include="www\player.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="www\adaptive-audio.js">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

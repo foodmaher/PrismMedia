@@ -41,16 +41,78 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 
             D3D11_TEXTURE2D_DESC modifiedDesc = *pDesc;
             modifiedDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            modifiedDesc.Usage = D3D11_USAGE_DYNAMIC;
-            modifiedDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            modifiedDesc.Usage = D3D11_USAGE_DEFAULT;
+            modifiedDesc.CPUAccessFlags = 0;
             modifiedDesc.MiscFlags = 0;
+            modifiedDesc.BindFlags =
+                D3D11_BIND_SHADER_RESOURCE |
+                D3D11_BIND_RENDER_TARGET;
             modifiedDesc.Width = screen.targetLiveTextureWidth;
             modifiedDesc.Height = screen.targetLiveTextureHeight;
 
             HRESULT hr = CreateTexture2D_Original(pDevice, &modifiedDesc, pInitialData, ppTexture2D);
             if (SUCCEEDED(hr) && ppTexture2D && *ppTexture2D)
             {
+                D3D11_TEXTURE2D_DESC uploadDesc = modifiedDesc;
+                uploadDesc.Usage = D3D11_USAGE_DYNAMIC;
+                uploadDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+                uploadDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                ID3D11Texture2D* uploadTexture{};
+                ID3D11RenderTargetView* renderTarget{};
+                HRESULT resourceHr = CreateTexture2D_Original(
+                    pDevice, &uploadDesc, nullptr, &uploadTexture);
+                if (SUCCEEDED(resourceHr))
+                {
+                    resourceHr = pDevice->CreateRenderTargetView(
+                        *ppTexture2D, nullptr, &renderTarget);
+                }
+
+                bool gpuOutputReady =
+                    SUCCEEDED(resourceHr) &&
+                    uploadTexture &&
+                    renderTarget;
+                if (!gpuOutputReady)
+                {
+                    if (uploadTexture)
+                        uploadTexture->Release();
+                    if (renderTarget)
+                        renderTarget->Release();
+
+                    // Keep the established CPU upload path as a fail-safe.
+                    // Internal park display will report unavailable, while
+                    // normal media continues to work instead of showing black.
+                    (*ppTexture2D)->Release();
+                    *ppTexture2D = nullptr;
+                    D3D11_TEXTURE2D_DESC fallbackDesc = modifiedDesc;
+                    fallbackDesc.Usage = D3D11_USAGE_DYNAMIC;
+                    fallbackDesc.CPUAccessFlags =
+                        D3D11_CPU_ACCESS_WRITE;
+                    fallbackDesc.BindFlags =
+                        D3D11_BIND_SHADER_RESOURCE;
+                    hr = CreateTexture2D_Original(
+                        pDevice,
+                        &fallbackDesc,
+                        nullptr,
+                        ppTexture2D);
+                    if (FAILED(hr) || !*ppTexture2D)
+                    {
+                        scs_log(
+                            2,
+                            "[dx11::create_texture_2d] GPU output and "
+                            "fallback creation failed for %s, "
+                            "hr=0x%08X",
+                            screen.original_texture.c_str(),
+                            hr);
+                        return hr;
+                    }
+                    uploadTexture = *ppTexture2D;
+                    uploadTexture->AddRef();
+                }
+
                 if (screen.liveTexture) screen.liveTexture->Release();
+                if (screen.uploadTexture) screen.uploadTexture->Release();
+                if (screen.liveTextureRenderTarget)
+                    screen.liveTextureRenderTarget->Release();
                 if (screen.immediateContext) screen.immediateContext->Release();
 
                 screen.liveTextureWidth = modifiedDesc.Width;
@@ -59,9 +121,16 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 
                 screen.liveTexture = *ppTexture2D;
                 screen.liveTexture->AddRef(); // own a ref independent of the games
+                screen.uploadTexture = uploadTexture;
+                screen.liveTextureRenderTarget = renderTarget;
                 pDevice->GetImmediateContext(&screen.immediateContext);
 
-                scs_log(0, "[dx11::create_texture_2d] matched texture '%s'", screen.original_texture.c_str());
+                scs_log(
+                    0,
+                    "[dx11::create_texture_2d] matched texture '%s' "
+                    "(GPU park output %s)",
+                    screen.original_texture.c_str(),
+                    gpuOutputReady ? "ready" : "unavailable; CPU fallback");
             }
             else {
                 scs_log(2, "[dx11::create_texture_2d] rewrite of %s FAILED, hr=0x%08X", screen.original_texture.c_str(), hr);
@@ -70,7 +139,14 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
         }
     }
 
-    return CreateTexture2D_Original(pDevice, pDesc, pInitialData, ppTexture2D);
+    const HRESULT result = CreateTexture2D_Original(
+        pDevice, pDesc, pInitialData, ppTexture2D);
+    if (SUCCEEDED(result) && ppTexture2D && *ppTexture2D)
+    {
+        dx11::internal_render_probe::on_texture_created(
+            *ppTexture2D);
+    }
+    return result;
 }
 
 
@@ -78,6 +154,7 @@ void new_frame()
 {
     bool internalParkActivationRequested{};
     bool internalParkRenderRequested{};
+    uint32_t internalParkTargetFramerate = 1;
     std::lock_guard<std::mutex> lock(g_screens_mutex);
 	    for (auto& screen : g_screens)
 	    {
@@ -93,6 +170,13 @@ void new_frame()
                 internalParkMethod;
             internalParkRenderRequested |=
                 reverseRequested && internalParkMethod;
+            if (screen.reverseCameraEnabled && internalParkMethod)
+            {
+                internalParkTargetFramerate = (std::max)(
+                    internalParkTargetFramerate,
+                    static_cast<uint32_t>(
+                        screen.reverseFramerate));
+            }
             const bool windowReverseRequested =
                 reverseRequested && !internalParkMethod;
 
@@ -125,14 +209,104 @@ void new_frame()
 
 	        const bool reverseActive =
 	            windowReverseRequested && screen.reverseSource;
+
+        if (!screen.liveTexture ||
+            !screen.uploadTexture ||
+            !screen.immediateContext)
+            continue;
+
+        if (reverseRequested && internalParkMethod)
+        {
+            const uint64_t nowTick = GetTickCount64();
+            const uint64_t interval = (std::max)(
+                1ULL,
+                1000ULL /
+                    (std::max)(
+                        1U,
+                        static_cast<uint32_t>(
+                            screen.reverseFramerate)));
+            const bool shouldBlit =
+                screen.internalParkLastBlitTick == 0 ||
+                nowTick < screen.internalParkLastBlitTick ||
+                nowTick - screen.internalParkLastBlitTick >=
+                    interval;
+            if (!shouldBlit)
+                continue;
+
+            g_screen_source_creation_in_progress = true;
+            const bool parkBlitSucceeded =
+                dx11::internal_render_probe::blit_park_texture(
+                screen.immediateContext,
+                screen.liveTexture,
+                screen.liveTextureRenderTarget,
+                screen.flipVertical,
+                screen.brightness,
+                static_cast<uint32_t>(screen.scaleMode),
+                screen.edgeBleedGuard);
+            g_screen_source_creation_in_progress = false;
+            if (parkBlitSucceeded)
+            {
+                screen.internalParkLastBlitTick = nowTick;
+                screen.internalParkWasDisplayed = true;
+                screen.hasUploadedFrame = true;
+                ++screen.uploadedFrames;
+
+                const double elapsedMs =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() -
+                        workStarted).count();
+                screen.uploadCpuMs =
+                    screen.uploadCpuMs == 0.0
+                        ? elapsedMs
+                        : (screen.uploadCpuMs * 0.90 +
+                            elapsedMs * 0.10);
+                if (screen.lastUploadTick != 0 &&
+                    nowTick > screen.lastUploadTick)
+                {
+                    const double instantaneousFps =
+                        1000.0 /
+                        static_cast<double>(
+                            nowTick - screen.lastUploadTick);
+                    screen.deliveredFps =
+                        screen.deliveredFps == 0.0
+                            ? instantaneousFps
+                            : (screen.deliveredFps * 0.90 +
+                                instantaneousFps * 0.10);
+                }
+                screen.lastUploadTick = nowTick;
+                const auto mediaStats = screen.source
+                    ? screen.source->GetPerformanceStats()
+                    : source_performance_stats_t{};
+                screen.totalPluginCpuMs =
+                    screen.uploadCpuMs + mediaStats.workerCpuMs;
+                continue;
+            }
+            // A missing/unsupported internal target falls through to the
+            // normal media source, preserving a usable GPS image.
+            if (screen.internalParkWasDisplayed)
+            {
+                screen.internalParkWasDisplayed = false;
+                screen.hasUploadedFrame = false;
+            }
+        }
+        else
+        {
+            screen.internalParkLastBlitTick = 0;
+            if (screen.internalParkWasDisplayed)
+            {
+                // Force one upload of the last normal media frame, even when
+                // that media source is paused, so the rear view never remains
+                // stuck on the GPS after leaving reverse.
+                screen.internalParkWasDisplayed = false;
+                screen.hasUploadedFrame = false;
+            }
+        }
+
 	        IContentSource* activeSource = reverseActive
 	            ? screen.reverseSource.get()
 	            : screen.source.get();
 	        if (!activeSource)
 	            continue;
-
-        if (!screen.liveTexture || !screen.immediateContext)
-            continue;
 
 	        if (screen.paused && !reverseActive && screen.hasUploadedFrame)
 	            continue;
@@ -240,7 +414,12 @@ void new_frame()
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped;
-        if (FAILED(screen.immediateContext->Map(screen.liveTexture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        if (FAILED(screen.immediateContext->Map(
+            screen.uploadTexture,
+            0,
+            D3D11_MAP_WRITE_DISCARD,
+            0,
+            &mapped)))
             continue;
 
         const uint8_t* src = screen.frameScratch.data();
@@ -326,7 +505,14 @@ void new_frame()
             }
         }
 
-        screen.immediateContext->Unmap(screen.liveTexture, 0);
+        screen.immediateContext->Unmap(
+            screen.uploadTexture, 0);
+        if (screen.uploadTexture != screen.liveTexture)
+        {
+            screen.immediateContext->CopyResource(
+                screen.liveTexture,
+                screen.uploadTexture);
+        }
         screen.hasUploadedFrame = true;
         ++screen.uploadedFrames;
 
@@ -356,6 +542,8 @@ void new_frame()
         internalParkActivationRequested);
     dx11::internal_render_probe::set_park_render_requested(
         internalParkRenderRequested);
+    dx11::internal_render_probe::set_park_target_framerate(
+        internalParkTargetFramerate);
 }
 
 

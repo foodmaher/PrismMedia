@@ -4,6 +4,10 @@
 #include <cstdint>
 #include <vector>
 
+struct ID3D11DeviceContext;
+struct ID3D11RenderTargetView;
+struct ID3D11Texture2D;
+
 namespace dx11::internal_render_probe
 {
 	struct candidate_t
@@ -35,6 +39,8 @@ namespace dx11::internal_render_probe
 		bool parkCameraInstalled{};
 		bool parkResourcePresent{};
 		bool parkMaskForced{};
+		bool parkColorTargetReady{};
+		bool parkCompositorReady{};
 		uint32_t timeDateStamp{};
 		uint32_t imageSize{};
 		uint32_t signatureMatches{};
@@ -43,10 +49,15 @@ namespace dx11::internal_render_probe
 		uint64_t mirrorScheduleCount{};
 		uint64_t parkInstallAttempts{};
 		uint64_t parkScheduleCount{};
+		uint64_t parkOutputFrames{};
 		uint64_t traceStartedTick{};
 		uint64_t traceEndTick{};
 		uint64_t frameIndex{};
 		size_t candidateCount{};
+		uint32_t parkTargetWidth{};
+		uint32_t parkTargetHeight{};
+		uint32_t parkTargetFormat{};
+		uint32_t parkTargetFramerate{};
 		uint32_t slotWidth[9]{};
 		uint32_t slotHeight[9]{};
 	};
@@ -58,6 +69,16 @@ namespace dx11::internal_render_probe
 	void end_trace();
 	void set_park_activation_requested(bool requested);
 	void set_park_render_requested(bool requested);
+	void set_park_target_framerate(uint32_t framerate);
+	void on_texture_created(ID3D11Texture2D* texture);
+	bool blit_park_texture(
+		ID3D11DeviceContext* context,
+		ID3D11Texture2D* destination,
+		ID3D11RenderTargetView* destinationView,
+		bool flipVertical,
+		float brightness,
+		uint32_t scaleMode,
+		uint32_t edgeGuard);
 
 	status_t status();
 	std::vector<candidate_t> candidates();

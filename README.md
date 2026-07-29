@@ -201,6 +201,26 @@ the exact engine-owned park texture before a GPU-to-GPU conversion is added.
 The stable Window crop reverse method remains available. See
 `V2.7-PARK-ACTIVATION-TEST.md`.
 
+## Version 2.8 internal park-camera display test
+
+Version `2.8.0-internal-camera-test` completes the first GPU display path for
+the guarded ETS2 park camera:
+
+- captures the slot 7 `R11G11B10_FLOAT` colour target while ETS2 creates the
+  truck's mirror resources;
+- transfers and tone-maps that texture directly to the selected GPS through
+  D3D11, with no window capture and no CPU pixel readback;
+- provides 10, 15, 20 and 30 FPS internal-camera profiles;
+- schedules slot 7 only in reverse or while Preview is enabled, retaining zero
+  park-camera render cost in forward gear;
+- restores the previous media frame immediately after leaving reverse; and
+- keeps the normal GPS media visible if target discovery or GPU compositor
+  initialization fails.
+
+The internal offsets remain locked to the exact supported ETS2 executable.
+Other ETS2 builds and ATS continue to use **Window crop (stable)**. See
+`V2.8-INTERNAL-CAMERA-TEST.md`.
+
 ## Version 2.3 engine-powered media and GPS edge fix
 
 Version `2.3.1-adaptive` added:
@@ -225,16 +245,17 @@ Version `2.3.1-adaptive` added:
   displays
 
 The legacy reverse feature captures a user-calibrated region of the game
-window. Use **Preview / calibrate now** to define that region. Versions 2.6 and
-2.7 provide the guarded migration path to a genuine independent rear-camera
-texture that will not depend on an on-screen mirror.
+window. Use **Preview / calibrate now** to define that region. Versions 2.6
+through 2.8 provide the guarded migration path and first GPU display test for
+a genuine independent rear-camera texture that does not depend on an on-screen
+mirror.
 
 Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 **Desktop development with C++** workload to produce the x64 release DLL.
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-2.7.0-park-activation-test` artifact. This cloud build requires
+`PrismTextureStreamerFB-2.8.0-internal-camera-test` artifact. This cloud build requires
 no local Visual Studio installation.
 
 ## Contributing

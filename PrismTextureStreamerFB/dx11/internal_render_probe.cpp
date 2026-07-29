@@ -2,12 +2,15 @@
 
 #include <Windows.h>
 #include <d3d11.h>
+#include <d3dcompiler.h>
 #include <dxgi.h>
 #include <MinHook/MinHook.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <climits>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -17,6 +20,8 @@
 #include "../scs_logging.h"
 
 using namespace scs_logging;
+
+#pragma comment(lib, "d3dcompiler.lib")
 
 namespace
 {
@@ -111,6 +116,14 @@ namespace
 	std::atomic<uint64_t> g_mirrorScheduleCount{};
 	std::atomic<uint64_t> g_parkInstallAttempts{};
 	std::atomic<uint64_t> g_parkScheduleCount{};
+	std::atomic<uint64_t> g_parkOutputFrames{};
+	std::atomic<uint64_t> g_lastParkScheduleTick{};
+	std::atomic<uint32_t> g_parkTargetFramerate{15};
+	std::atomic<bool> g_parkColorTargetReady{};
+	std::atomic<bool> g_parkCompositorReady{};
+	std::atomic<uint32_t> g_parkTargetWidth{};
+	std::atomic<uint32_t> g_parkTargetHeight{};
+	std::atomic<uint32_t> g_parkTargetFormat{};
 	std::atomic<uint64_t> g_lastMirrorScheduleFrame{
 		UINT64_MAX
 	};
@@ -139,6 +152,347 @@ namespace
 	std::unordered_map<uintptr_t, candidate_record_t> g_candidates;
 	uint32_t g_nextCandidateId = 1;
 	thread_local uint32_t g_mirrorScheduleDepth{};
+	thread_local bool g_capturingParkResourceInit{};
+
+	std::mutex g_parkTextureMutex;
+	ID3D11Texture2D* g_parkColorTexture{};
+	uint32_t g_parkColorTextureScore{};
+	ID3D11Device* g_compositorDevice{};
+	ID3D11Texture2D* g_parkSampleTexture{};
+	ID3D11ShaderResourceView* g_parkSampleView{};
+	ID3D11VertexShader* g_parkVertexShader{};
+	ID3D11PixelShader* g_parkPixelShader{};
+	ID3D11SamplerState* g_parkSampler{};
+	ID3D11Buffer* g_parkConstants{};
+
+	struct park_compositor_constants_t
+	{
+		float brightness{};
+		float flipVertical{};
+		float edgeGuardX{};
+		float edgeGuardY{};
+		float sourceAspect{};
+		float destinationAspect{};
+		uint32_t scaleMode{};
+		float padding{};
+	};
+
+	constexpr const char* kParkCompositorShader = R"(
+Texture2D ParkTexture : register(t0);
+SamplerState ParkSampler : register(s0);
+
+cbuffer ParkConstants : register(b0)
+{
+	float Brightness;
+	float FlipVertical;
+	float EdgeGuardX;
+	float EdgeGuardY;
+	float SourceAspect;
+	float DestinationAspect;
+	uint ScaleMode;
+	float Padding;
+};
+
+struct PixelInput
+{
+	float4 position : SV_POSITION;
+	float2 uv : TEXCOORD0;
+};
+
+PixelInput vs_main(uint vertexId : SV_VertexID)
+{
+	PixelInput output;
+	float2 uv = float2((vertexId << 1) & 2, vertexId & 2);
+	output.position = float4(
+		uv.x * 2.0f - 1.0f,
+		1.0f - uv.y * 2.0f,
+		0.0f,
+		1.0f);
+	output.uv = uv;
+	return output;
+}
+
+float4 ps_main(PixelInput input) : SV_TARGET
+{
+	float2 displayUv = input.uv;
+	if (displayUv.x < EdgeGuardX ||
+		displayUv.x > 1.0f - EdgeGuardX ||
+		displayUv.y < EdgeGuardY ||
+		displayUv.y > 1.0f - EdgeGuardY)
+	{
+		return float4(0.0f, 0.0f, 0.0f, 1.0f);
+	}
+
+	float2 uv = displayUv;
+	if (ScaleMode == 1)
+	{
+		if (SourceAspect > DestinationAspect)
+		{
+			float imageHeight = DestinationAspect / SourceAspect;
+			float top = (1.0f - imageHeight) * 0.5f;
+			if (uv.y < top || uv.y > top + imageHeight)
+				return float4(0.0f, 0.0f, 0.0f, 1.0f);
+			uv.y = (uv.y - top) / imageHeight;
+		}
+		else
+		{
+			float imageWidth = SourceAspect / DestinationAspect;
+			float left = (1.0f - imageWidth) * 0.5f;
+			if (uv.x < left || uv.x > left + imageWidth)
+				return float4(0.0f, 0.0f, 0.0f, 1.0f);
+			uv.x = (uv.x - left) / imageWidth;
+		}
+	}
+	else if (ScaleMode == 2)
+	{
+		if (SourceAspect > DestinationAspect)
+		{
+			float sourceWidth = DestinationAspect / SourceAspect;
+			uv.x = 0.5f + (uv.x - 0.5f) * sourceWidth;
+		}
+		else
+		{
+			float sourceHeight = SourceAspect / DestinationAspect;
+			uv.y = 0.5f + (uv.y - 0.5f) * sourceHeight;
+		}
+	}
+
+	if (FlipVertical > 0.5f)
+		uv.y = 1.0f - uv.y;
+
+	float3 colour = max(
+		ParkTexture.Sample(ParkSampler, uv).rgb,
+		float3(0.0f, 0.0f, 0.0f));
+	colour = colour / (1.0f + colour);
+	colour = pow(saturate(colour), 1.0f / 2.2f);
+	colour = saturate(colour * Brightness);
+	return float4(colour, 1.0f);
+}
+)";
+
+	template <typename T>
+	void release_com_object(T*& object)
+	{
+		if (object)
+		{
+			object->Release();
+			object = nullptr;
+		}
+	}
+
+	void release_park_sample_resources_locked()
+	{
+		release_com_object(g_parkSampleView);
+		release_com_object(g_parkSampleTexture);
+	}
+
+	void release_park_compositor_locked()
+	{
+		release_park_sample_resources_locked();
+		release_com_object(g_parkConstants);
+		release_com_object(g_parkSampler);
+		release_com_object(g_parkPixelShader);
+		release_com_object(g_parkVertexShader);
+		release_com_object(g_compositorDevice);
+		g_parkCompositorReady.store(
+			false, std::memory_order_relaxed);
+	}
+
+	void release_park_color_target_locked()
+	{
+		release_com_object(g_parkColorTexture);
+		g_parkColorTextureScore = 0;
+		g_parkColorTargetReady.store(
+			false, std::memory_order_relaxed);
+		g_parkTargetWidth.store(0, std::memory_order_relaxed);
+		g_parkTargetHeight.store(0, std::memory_order_relaxed);
+		g_parkTargetFormat.store(0, std::memory_order_relaxed);
+		release_park_sample_resources_locked();
+	}
+
+	void release_park_color_target()
+	{
+		std::lock_guard<std::mutex> lock(g_parkTextureMutex);
+		release_park_color_target_locked();
+	}
+
+	bool compile_park_shader(
+		const char* entryPoint,
+		const char* target,
+		ID3DBlob** byteCode)
+	{
+		ID3DBlob* errors{};
+		const HRESULT result = D3DCompile(
+			kParkCompositorShader,
+			std::strlen(kParkCompositorShader),
+			"PrismParkCompositor",
+			nullptr,
+			nullptr,
+			entryPoint,
+			target,
+			D3DCOMPILE_OPTIMIZATION_LEVEL3,
+			0,
+			byteCode,
+			&errors);
+		if (FAILED(result))
+		{
+			const char* message = errors
+				? static_cast<const char*>(
+					errors->GetBufferPointer())
+				: "no compiler details";
+			scs_log(
+				2,
+				"[RTT park] Shader compilation failed for "
+				"%s: %s",
+				entryPoint,
+				message);
+		}
+		release_com_object(errors);
+		return SUCCEEDED(result);
+	}
+
+	bool ensure_park_compositor_locked(ID3D11Device* device)
+	{
+		if (!device)
+			return false;
+		if (g_compositorDevice == device &&
+			g_parkVertexShader &&
+			g_parkPixelShader &&
+			g_parkSampler &&
+			g_parkConstants)
+		{
+			return true;
+		}
+
+		release_park_compositor_locked();
+		g_compositorDevice = device;
+		g_compositorDevice->AddRef();
+
+		ID3DBlob* vertexCode{};
+		ID3DBlob* pixelCode{};
+		if (!compile_park_shader(
+				"vs_main", "vs_5_0", &vertexCode) ||
+			!compile_park_shader(
+				"ps_main", "ps_5_0", &pixelCode))
+		{
+			release_com_object(vertexCode);
+			release_com_object(pixelCode);
+			release_park_compositor_locked();
+			return false;
+		}
+
+		HRESULT result = device->CreateVertexShader(
+			vertexCode->GetBufferPointer(),
+			vertexCode->GetBufferSize(),
+			nullptr,
+			&g_parkVertexShader);
+		if (SUCCEEDED(result))
+		{
+			result = device->CreatePixelShader(
+				pixelCode->GetBufferPointer(),
+				pixelCode->GetBufferSize(),
+				nullptr,
+				&g_parkPixelShader);
+		}
+		release_com_object(vertexCode);
+		release_com_object(pixelCode);
+		if (FAILED(result))
+		{
+			release_park_compositor_locked();
+			return false;
+		}
+
+		D3D11_SAMPLER_DESC samplerDescription{};
+		samplerDescription.Filter =
+			D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+		samplerDescription.AddressU =
+			D3D11_TEXTURE_ADDRESS_CLAMP;
+		samplerDescription.AddressV =
+			D3D11_TEXTURE_ADDRESS_CLAMP;
+		samplerDescription.AddressW =
+			D3D11_TEXTURE_ADDRESS_CLAMP;
+		samplerDescription.MaxLOD = D3D11_FLOAT32_MAX;
+		result = device->CreateSamplerState(
+			&samplerDescription, &g_parkSampler);
+
+		D3D11_BUFFER_DESC constantDescription{};
+		constantDescription.ByteWidth =
+			sizeof(park_compositor_constants_t);
+		constantDescription.Usage = D3D11_USAGE_DEFAULT;
+		constantDescription.BindFlags =
+			D3D11_BIND_CONSTANT_BUFFER;
+		if (SUCCEEDED(result))
+		{
+			result = device->CreateBuffer(
+				&constantDescription,
+				nullptr,
+				&g_parkConstants);
+		}
+		if (FAILED(result))
+		{
+			release_park_compositor_locked();
+			return false;
+		}
+
+		g_parkCompositorReady.store(
+			true, std::memory_order_relaxed);
+		scs_log(
+			0,
+			"[RTT park] GPU compositor initialized.");
+		return true;
+	}
+
+	bool ensure_park_sample_texture_locked(
+		ID3D11Device* device,
+		const D3D11_TEXTURE2D_DESC& sourceDescription)
+	{
+		if (g_parkSampleTexture)
+		{
+			D3D11_TEXTURE2D_DESC existing{};
+			g_parkSampleTexture->GetDesc(&existing);
+			if (existing.Width == sourceDescription.Width &&
+				existing.Height == sourceDescription.Height &&
+				existing.Format == sourceDescription.Format &&
+				existing.SampleDesc.Count ==
+					sourceDescription.SampleDesc.Count)
+			{
+				return g_parkSampleView != nullptr;
+			}
+			release_park_sample_resources_locked();
+		}
+
+		D3D11_TEXTURE2D_DESC sampleDescription =
+			sourceDescription;
+		sampleDescription.MipLevels = 1;
+		sampleDescription.ArraySize = 1;
+		sampleDescription.Usage = D3D11_USAGE_DEFAULT;
+		sampleDescription.BindFlags =
+			D3D11_BIND_SHADER_RESOURCE;
+		sampleDescription.CPUAccessFlags = 0;
+		sampleDescription.MiscFlags = 0;
+		HRESULT result = device->CreateTexture2D(
+			&sampleDescription,
+			nullptr,
+			&g_parkSampleTexture);
+		if (SUCCEEDED(result))
+		{
+			result = device->CreateShaderResourceView(
+				g_parkSampleTexture,
+				nullptr,
+				&g_parkSampleView);
+		}
+		if (FAILED(result))
+		{
+			release_park_sample_resources_locked();
+			scs_log(
+				2,
+				"[RTT park] Could not create the park-camera "
+				"sampling texture (hr=0x%08X).",
+				result);
+			return false;
+		}
+		return true;
+	}
 
 	executable_fingerprint_t fingerprint_executable()
 	{
@@ -522,7 +876,17 @@ namespace
 
 		const bool parkInstalled =
 			try_install_park_camera(visualInterior);
+		if (parkInstalled)
+		{
+			// The descriptor exists before the engine allocates the slot's
+			// GPU resources. Capture it now so the CreateTexture2D hook can
+			// distinguish slot 7 from the scaled side mirrors.
+			capture_camera_slot_descriptors();
+			release_park_color_target();
+		}
+		g_capturingParkResourceInit = parkInstalled;
 		g_originalResourceInit(visualInterior);
+		g_capturingParkResourceInit = false;
 
 		if (parkInstalled)
 		{
@@ -553,9 +917,8 @@ namespace
 	{
 		uint32_t result =
 			g_originalActiveMask(visualInterior, state);
-		const bool forcePark =
+		const bool parkEligible =
 			(state == 2 || state == 12) &&
-			g_tracing.load(std::memory_order_relaxed) &&
 			g_parkRenderRequested.load(
 				std::memory_order_relaxed) &&
 			g_parkCameraInstalled.load(
@@ -565,6 +928,34 @@ namespace
 			visualInterior ==
 				g_parkVisualInterior.load(
 					std::memory_order_relaxed);
+		bool forcePark{};
+		if (parkEligible)
+		{
+			const bool tracing =
+				g_tracing.load(std::memory_order_relaxed);
+			const uint64_t now = GetTickCount64();
+			const uint32_t targetFramerate =
+				(std::clamp)(
+					g_parkTargetFramerate.load(
+						std::memory_order_relaxed),
+					1U,
+					60U);
+			const uint64_t interval =
+				(std::max)(1ULL, 1000ULL / targetFramerate);
+			const uint64_t previous =
+				g_lastParkScheduleTick.load(
+					std::memory_order_relaxed);
+			forcePark =
+				tracing ||
+				previous == 0 ||
+				now < previous ||
+				now - previous >= interval;
+			if (forcePark)
+			{
+				g_lastParkScheduleTick.store(
+					now, std::memory_order_relaxed);
+			}
+		}
 		if (forcePark)
 		{
 			result |= 1U << kParkSlot;
@@ -1088,6 +1479,12 @@ namespace dx11::internal_render_probe
 		g_parkMaskForced.store(false);
 		g_parkVisualInterior.store(nullptr);
 		g_parkCamera.store(nullptr);
+		{
+			std::lock_guard<std::mutex> lock(
+				g_parkTextureMutex);
+			release_park_color_target_locked();
+			release_park_compositor_locked();
+		}
 	}
 
 	void on_present_frame()
@@ -1135,12 +1532,12 @@ namespace dx11::internal_render_probe
 		g_traceEndTick.store(
 			now + static_cast<uint64_t>(seconds) * 1000);
 		g_tracing.store(true, std::memory_order_release);
-		scs_log(
-			0,
-			"[RTT probe] Starting %u-second "
-			"render-target trace; park scheduling is "
-			"enabled only for this trace",
-			seconds);
+			scs_log(
+				0,
+				"[RTT probe] Starting %u-second "
+				"render-target trace; park scheduling is "
+				"temporarily unthrottled",
+				seconds);
 	}
 
 	void end_trace()
@@ -1166,6 +1563,230 @@ namespace dx11::internal_render_probe
 	{
 		g_parkRenderRequested.store(
 			requested, std::memory_order_release);
+		if (!requested)
+		{
+			g_lastParkScheduleTick.store(
+				0, std::memory_order_relaxed);
+			g_parkMaskForced.store(
+				false, std::memory_order_relaxed);
+		}
+	}
+
+	void set_park_target_framerate(uint32_t framerate)
+	{
+		g_parkTargetFramerate.store(
+			(std::clamp)(framerate, 1U, 60U),
+			std::memory_order_release);
+	}
+
+	void on_texture_created(ID3D11Texture2D* texture)
+	{
+		if (!texture ||
+			!g_capturingParkResourceInit ||
+			!g_parkCameraInstalled.load(
+				std::memory_order_relaxed))
+		{
+			return;
+		}
+
+		D3D11_TEXTURE2D_DESC description{};
+		texture->GetDesc(&description);
+		if (description.SampleDesc.Count != 1 ||
+			(description.BindFlags &
+				D3D11_BIND_RENDER_TARGET) == 0)
+		{
+			return;
+		}
+
+		const uint32_t parkWidth =
+			g_slotWidth[kParkSlot].load(
+				std::memory_order_relaxed);
+		const uint32_t parkHeight =
+			g_slotHeight[kParkSlot].load(
+				std::memory_order_relaxed);
+		if (parkWidth == 0 || parkHeight == 0)
+			return;
+
+		const bool exactSize =
+			description.Width == parkWidth &&
+			description.Height == parkHeight;
+		const bool scaledSize =
+			parkWidth <= UINT32_MAX / 2 &&
+			parkHeight <= UINT32_MAX / 2 &&
+			description.Width == parkWidth * 2 &&
+			description.Height == parkHeight * 2;
+		if (!exactSize && !scaledSize)
+			return;
+
+		uint32_t formatScore{};
+		switch (description.Format)
+		{
+		case DXGI_FORMAT_R11G11B10_FLOAT:
+			formatScore = 400;
+			break;
+		case DXGI_FORMAT_R16G16B16A16_FLOAT:
+			formatScore = 300;
+			break;
+		case DXGI_FORMAT_R10G10B10A2_UNORM:
+			formatScore = 250;
+			break;
+		case DXGI_FORMAT_R8G8B8A8_UNORM:
+		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+		case DXGI_FORMAT_B8G8R8A8_UNORM:
+		case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+			formatScore = 200;
+			break;
+		default:
+			return;
+		}
+
+		const uint32_t score =
+			formatScore + (exactSize ? 100U : 0U);
+		std::lock_guard<std::mutex> lock(
+			g_parkTextureMutex);
+		if (score <= g_parkColorTextureScore)
+			return;
+
+		release_com_object(g_parkColorTexture);
+		release_park_sample_resources_locked();
+		g_parkColorTexture = texture;
+		g_parkColorTexture->AddRef();
+		g_parkColorTextureScore = score;
+		g_parkTargetWidth.store(
+			description.Width, std::memory_order_relaxed);
+		g_parkTargetHeight.store(
+			description.Height, std::memory_order_relaxed);
+		g_parkTargetFormat.store(
+			static_cast<uint32_t>(description.Format),
+			std::memory_order_relaxed);
+		g_parkColorTargetReady.store(
+			true, std::memory_order_release);
+		scs_log(
+			0,
+			"[RTT park] Captured park colour target: "
+			"%ux%u %s(%u), score=%u.",
+			description.Width,
+			description.Height,
+			format_name(
+				static_cast<uint32_t>(
+					description.Format)),
+			static_cast<uint32_t>(description.Format),
+			score);
+	}
+
+	bool blit_park_texture(
+		ID3D11DeviceContext* context,
+		ID3D11Texture2D* destination,
+		ID3D11RenderTargetView* destinationView,
+		bool flipVertical,
+		float brightness,
+		uint32_t scaleMode,
+		uint32_t edgeGuard)
+	{
+		if (!context || !destination || !destinationView)
+			return false;
+
+		std::lock_guard<std::mutex> lock(
+			g_parkTextureMutex);
+		if (!g_parkColorTexture)
+			return false;
+
+		ID3D11Device* device{};
+		context->GetDevice(&device);
+		if (!device)
+			return false;
+
+		D3D11_TEXTURE2D_DESC sourceDescription{};
+		D3D11_TEXTURE2D_DESC destinationDescription{};
+		g_parkColorTexture->GetDesc(&sourceDescription);
+		destination->GetDesc(&destinationDescription);
+		const bool valid =
+			sourceDescription.SampleDesc.Count == 1 &&
+			destinationDescription.Width != 0 &&
+			destinationDescription.Height != 0 &&
+			ensure_park_compositor_locked(device) &&
+			ensure_park_sample_texture_locked(
+				device, sourceDescription);
+		device->Release();
+		if (!valid)
+			return false;
+
+		park_compositor_constants_t constants{};
+		constants.brightness =
+			(std::clamp)(brightness, 0.10f, 2.0f);
+		constants.flipVertical =
+			flipVertical ? 1.0f : 0.0f;
+		constants.edgeGuardX =
+			static_cast<float>(edgeGuard) /
+			static_cast<float>(
+				destinationDescription.Width);
+		constants.edgeGuardY =
+			static_cast<float>(edgeGuard) /
+			static_cast<float>(
+				destinationDescription.Height);
+		constants.sourceAspect =
+			static_cast<float>(sourceDescription.Width) /
+			static_cast<float>(sourceDescription.Height);
+		constants.destinationAspect =
+			static_cast<float>(
+				destinationDescription.Width) /
+			static_cast<float>(
+				destinationDescription.Height);
+		constants.scaleMode = (std::min)(scaleMode, 2U);
+
+		// Replacing the output target also unbinds the engine's park target,
+		// allowing a legal GPU copy without a CPU readback or synchronization
+		// stall.
+		context->OMSetRenderTargets(
+			1, &destinationView, nullptr);
+		context->CopyResource(
+			g_parkSampleTexture,
+			g_parkColorTexture);
+		context->UpdateSubresource(
+			g_parkConstants,
+			0,
+			nullptr,
+			&constants,
+			0,
+			0);
+
+		D3D11_VIEWPORT viewport{};
+		viewport.Width =
+			static_cast<float>(
+				destinationDescription.Width);
+		viewport.Height =
+			static_cast<float>(
+				destinationDescription.Height);
+		viewport.MinDepth = 0.0f;
+		viewport.MaxDepth = 1.0f;
+		context->RSSetViewports(1, &viewport);
+		context->IASetInputLayout(nullptr);
+		context->IASetPrimitiveTopology(
+			D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		context->VSSetShader(
+			g_parkVertexShader, nullptr, 0);
+		context->PSSetShader(
+			g_parkPixelShader, nullptr, 0);
+		context->PSSetConstantBuffers(
+			0, 1, &g_parkConstants);
+		context->PSSetSamplers(
+			0, 1, &g_parkSampler);
+		context->PSSetShaderResources(
+			0, 1, &g_parkSampleView);
+		context->GSSetShader(nullptr, nullptr, 0);
+		context->HSSetShader(nullptr, nullptr, 0);
+		context->DSSetShader(nullptr, nullptr, 0);
+		const FLOAT blendFactor[4]{};
+		context->OMSetBlendState(
+			nullptr, blendFactor, UINT_MAX);
+		context->OMSetDepthStencilState(nullptr, 0);
+		context->Draw(3, 0);
+
+		ID3D11ShaderResourceView* noView{};
+		context->PSSetShaderResources(0, 1, &noView);
+		g_parkOutputFrames.fetch_add(
+			1, std::memory_order_relaxed);
+		return true;
 	}
 
 	status_t status()
@@ -1193,6 +1814,10 @@ namespace dx11::internal_render_probe
 			g_parkResourcePresent.load();
 		result.parkMaskForced =
 			g_parkMaskForced.load();
+		result.parkColorTargetReady =
+			g_parkColorTargetReady.load();
+		result.parkCompositorReady =
+			g_parkCompositorReady.load();
 		result.timeDateStamp = g_timeDateStamp.load();
 		result.imageSize = g_imageSize.load();
 		result.signatureMatches =
@@ -1205,10 +1830,20 @@ namespace dx11::internal_render_probe
 			g_parkInstallAttempts.load();
 		result.parkScheduleCount =
 			g_parkScheduleCount.load();
+		result.parkOutputFrames =
+			g_parkOutputFrames.load();
 		result.traceStartedTick =
 			g_traceStartedTick.load();
 		result.traceEndTick = g_traceEndTick.load();
 		result.frameIndex = g_frameIndex.load();
+		result.parkTargetWidth =
+			g_parkTargetWidth.load();
+		result.parkTargetHeight =
+			g_parkTargetHeight.load();
+		result.parkTargetFormat =
+			g_parkTargetFormat.load();
+		result.parkTargetFramerate =
+			g_parkTargetFramerate.load();
 		for (uint32_t slot = 0;
 			slot < kMirrorSlotCount; ++slot)
 		{

@@ -670,6 +670,10 @@ SCSAPI_VOID scs_telemetry_shutdown()
         for (auto& screen : g_screens)
         {
             if (screen.liveTexture) screen.liveTexture->Release();
+            if (screen.uploadTexture)
+                screen.uploadTexture->Release();
+            if (screen.liveTextureRenderTarget)
+                screen.liveTextureRenderTarget->Release();
             if (screen.immediateContext) screen.immediateContext->Release();
             if (screen.source && screen.source->SupportsSpatialAudio())
                 screen.source->SetSpatialAudio(

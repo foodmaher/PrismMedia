@@ -11,6 +11,7 @@
 
 struct ID3D11Texture2D;
 struct ID3D11DeviceContext;
+struct ID3D11RenderTargetView;
 
 enum class screen_type_t : uint8_t {
 	GPS = 1,
@@ -121,8 +122,12 @@ struct screen_t
 	double deliveredFps{};
 	uint64_t uploadedFrames{};
 	uint64_t lastUploadTick{};
+	uint64_t internalParkLastBlitTick{};
+	bool internalParkWasDisplayed{};
 
 	ID3D11Texture2D* liveTexture{};
+	ID3D11Texture2D* uploadTexture{};
+	ID3D11RenderTargetView* liveTextureRenderTarget{};
 	ID3D11DeviceContext* immediateContext{};
 
 	uint8_t framerate = 30; // Framerate of source, can actually be updated live

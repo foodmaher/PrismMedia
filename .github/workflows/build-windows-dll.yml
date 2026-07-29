@@ -79,6 +79,7 @@ jobs:
           Copy-Item "V2.5-REVERSE-PROFILES-TESTING.md" $Package
           Copy-Item "V2.6-INTERNAL-RTT-PROBE.md" $Package
           Copy-Item "V2.7-PARK-ACTIVATION-TEST.md" $Package
+          Copy-Item "V2.8-INTERNAL-CAMERA-TEST.md" $Package
 
           $SpfBridge = "$Package\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |
@@ -87,7 +88,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Package\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 2.7.0 Park Activation Test
+          PrismTextureStreamerFB 2.8.0 Internal Camera Test
 
           Copy the root files and the www folder into:
           <ETS2 or ATS>\bin\win_x64\plugins
@@ -104,7 +105,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-2.7.0-park-activation-test
+          name: PrismTextureStreamerFB-2.8.0-internal-camera-test
           path: package
           if-no-files-found: error
           retention-days: 30

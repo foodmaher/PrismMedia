@@ -23,8 +23,14 @@ namespace
 	constexpr uint32_t kSupportedTimeDateStamp = 0x6A426DE5;
 	constexpr uint32_t kSupportedImageSize = 0x0382D000;
 	constexpr uint32_t kExpectedMirrorScheduleRva = 0x00524DB0;
+	constexpr uint32_t kExpectedActiveMaskRva = 0x00524170;
+	constexpr uint32_t kExpectedResourceInitRva = 0x00533400;
 	constexpr uint32_t kCameraDescriptorOwnerRva = 0x03550398;
+	constexpr uint32_t kMirrorCameraVtableRva = 0x02196F90;
+	constexpr uint32_t kMirrorCameraCloneRva = 0x00846B30;
 	constexpr uint32_t kMirrorSlotCount = 9;
+	constexpr uint32_t kParkSlot = 7;
+	constexpr uint32_t kCloneSourceSlot = 5;
 	constexpr uint32_t kMaximumCandidates = 256;
 
 	constexpr std::array<uint8_t, 34> kMirrorScheduleSignature = {
@@ -33,6 +39,22 @@ namespace
 		0x48, 0x8B, 0x81, 0x18, 0x01, 0x00, 0x00, 0x41,
 		0x8B, 0xE8, 0x4C, 0x8B, 0xFA, 0x48, 0x8B, 0xF1,
 		0x48, 0x85
+	};
+
+	constexpr std::array<uint8_t, 34> kActiveMaskSignature = {
+		0x40, 0x53, 0x48, 0x83, 0xEC, 0x40, 0x48, 0x8B,
+		0xD9, 0x83, 0xFA, 0x02, 0x74, 0x09, 0x83, 0xFA,
+		0x0C, 0x74, 0x04, 0x32, 0xC0, 0xEB, 0x02, 0xB0,
+		0x01, 0x84, 0xC0, 0x0F, 0x84, 0xBF, 0x01, 0x00,
+		0x00, 0x48
+	};
+
+	constexpr std::array<uint8_t, 33> kResourceInitSignature = {
+		0x4C, 0x8B, 0xDC, 0x49, 0x89, 0x5B, 0x18, 0x49,
+		0x89, 0x73, 0x20, 0x55, 0x57, 0x41, 0x54, 0x41,
+		0x56, 0x41, 0x57, 0x49, 0x8D, 0xAB, 0xA8, 0xFE,
+		0xFF, 0xFF, 0x48, 0x81, 0xEC, 0x30, 0x02, 0x00,
+		0x00
 	};
 
 	struct executable_fingerprint_t
@@ -55,6 +77,14 @@ namespace
 			void* requestContext,
 			uint64_t mode,
 			uint64_t fourthArgument);
+	using active_mask_t =
+		uint32_t(__fastcall*)(
+			void* visualInterior,
+			uint32_t state);
+	using resource_init_t =
+		void(__fastcall*)(void* visualInterior);
+	using clone_camera_t =
+		void*(__fastcall*)(void* camera);
 	using om_set_render_targets_t =
 		void(STDMETHODCALLTYPE*)(ID3D11DeviceContext* context,
 			UINT renderTargetViewCount,
@@ -63,15 +93,24 @@ namespace
 
 	std::atomic<bool> g_supportedBuild{};
 	std::atomic<bool> g_mirrorHookInstalled{};
+	std::atomic<bool> g_resourceInitHookInstalled{};
+	std::atomic<bool> g_activeMaskHookInstalled{};
 	std::atomic<bool> g_contextHookInstalled{};
 	std::atomic<bool> g_mirrorScheduleSeen{};
 	std::atomic<bool> g_tracing{};
+	std::atomic<bool> g_parkActivationRequested{};
+	std::atomic<bool> g_parkRenderRequested{};
+	std::atomic<bool> g_parkCameraInstalled{};
+	std::atomic<bool> g_parkResourcePresent{};
+	std::atomic<bool> g_parkMaskForced{};
 	std::atomic<uint32_t> g_timeDateStamp{};
 	std::atomic<uint32_t> g_imageSize{};
 	std::atomic<uint32_t> g_signatureMatches{};
 	std::atomic<uint32_t> g_detectedRva{};
 	std::atomic<uint32_t> g_mirrorSlotMask{};
 	std::atomic<uint64_t> g_mirrorScheduleCount{};
+	std::atomic<uint64_t> g_parkInstallAttempts{};
+	std::atomic<uint64_t> g_parkScheduleCount{};
 	std::atomic<uint64_t> g_lastMirrorScheduleFrame{
 		UINT64_MAX
 	};
@@ -86,9 +125,15 @@ namespace
 	uint8_t* g_executableBase{};
 
 	void* g_mirrorScheduleAddress{};
+	void* g_resourceInitAddress{};
+	void* g_activeMaskAddress{};
 	void* g_omSetRenderTargetsAddress{};
 	mirror_schedule_t g_originalMirrorSchedule{};
+	resource_init_t g_originalResourceInit{};
+	active_mask_t g_originalActiveMask{};
 	om_set_render_targets_t g_originalOmSetRenderTargets{};
+	std::atomic<void*> g_parkVisualInterior{};
+	std::atomic<void*> g_parkCamera{};
 
 	std::mutex g_candidateMutex;
 	std::unordered_map<uintptr_t, candidate_record_t> g_candidates;
@@ -181,6 +226,35 @@ namespace
 		}
 
 		return result;
+	}
+
+	template <size_t Size>
+	bool matches_expected_bytes(
+		uint32_t rva,
+		const std::array<uint8_t, Size>& signature)
+	{
+		if (!g_executableBase ||
+			rva > g_imageSize.load() ||
+			Size > static_cast<size_t>(
+				g_imageSize.load() - rva))
+		{
+			return false;
+		}
+
+		bool matches{};
+		__try
+		{
+			matches =
+				std::memcmp(
+					g_executableBase + rva,
+					signature.data(),
+					Size) == 0;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			matches = false;
+		}
+		return matches;
 	}
 
 	uint32_t capture_mirror_slots(void* visualInterior)
@@ -280,6 +354,12 @@ namespace
 					g_slotHeight[slot].store(
 						height,
 						std::memory_order_relaxed);
+					if (slot == kParkSlot)
+					{
+						g_parkResourcePresent.store(
+							true,
+							std::memory_order_relaxed);
+					}
 				}
 			}
 		}
@@ -288,6 +368,212 @@ namespace
 			// This is a diagnostic only. A changing engine object must never
 			// be allowed to interrupt the game's render scheduler.
 		}
+	}
+
+	bool try_install_park_camera(void* visualInterior)
+	{
+		if (!visualInterior ||
+			!g_parkActivationRequested.load(
+				std::memory_order_relaxed))
+		{
+			return false;
+		}
+
+		g_parkInstallAttempts.fetch_add(
+			1, std::memory_order_relaxed);
+
+		bool installed{};
+		bool alreadyPresent{};
+		bool invalidLayout{};
+		__try
+		{
+			auto* objectBytes =
+				static_cast<uint8_t*>(visualInterior);
+			auto** cameraSlots =
+				*reinterpret_cast<void***>(
+					objectBytes + 0x13B0);
+			const uint64_t cameraCount =
+				*reinterpret_cast<uint64_t*>(
+					objectBytes + 0x13B8);
+			if (!cameraSlots ||
+				cameraCount <= kParkSlot ||
+				cameraCount > 64)
+			{
+				invalidLayout = true;
+			}
+			else if (cameraSlots[kParkSlot])
+			{
+				alreadyPresent = true;
+				g_parkCamera.store(
+					cameraSlots[kParkSlot],
+					std::memory_order_relaxed);
+				installed = true;
+			}
+			else
+			{
+				void* sourceCamera =
+					cameraSlots[kCloneSourceSlot];
+				if (!sourceCamera)
+				{
+					invalidLayout = true;
+				}
+				else
+				{
+					auto** vtable =
+						*reinterpret_cast<void***>(
+							sourceCamera);
+					void* expectedVtable =
+						g_executableBase +
+						kMirrorCameraVtableRva;
+					void* expectedClone =
+						g_executableBase +
+						kMirrorCameraCloneRva;
+					if (vtable != expectedVtable ||
+						vtable[2] != expectedClone)
+					{
+						invalidLayout = true;
+					}
+					else
+					{
+						auto clone =
+							reinterpret_cast<
+								clone_camera_t>(
+								vtable[2]);
+						void* parkCamera =
+							clone(sourceCamera);
+						if (parkCamera &&
+							*reinterpret_cast<void***>(
+								parkCamera) ==
+								expectedVtable)
+						{
+							// The clone is a newly-owned engine object.
+							// Slot 7 participates in the visual-interior
+							// destructor just like slots 0-6, so ownership
+							// is deliberately transferred to the engine.
+							cameraSlots[kParkSlot] =
+								parkCamera;
+							g_parkCamera.store(
+								parkCamera,
+								std::memory_order_relaxed);
+							installed = true;
+						}
+						else
+						{
+							invalidLayout = true;
+						}
+					}
+				}
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			invalidLayout = true;
+			installed = false;
+		}
+
+		g_parkVisualInterior.store(
+			installed ? visualInterior : nullptr,
+			std::memory_order_relaxed);
+		g_parkCameraInstalled.store(
+			installed, std::memory_order_relaxed);
+
+		if (installed)
+		{
+			scs_log(
+				0,
+				alreadyPresent
+					? "[RTT park] Slot 7 already exists; "
+						"using the engine-owned camera."
+					: "[RTT park] Cloned the initialized "
+						"front mirror camera into dormant slot 7.");
+		}
+		else if (invalidLayout)
+		{
+			scs_log(
+				2,
+				"[RTT park] Park-camera activation was "
+				"refused because the checked engine layout "
+				"did not match.");
+		}
+		return installed;
+	}
+
+	void __fastcall hooked_resource_init(void* visualInterior)
+	{
+		if (visualInterior !=
+			g_parkVisualInterior.load(
+				std::memory_order_relaxed))
+		{
+			for (uint32_t slot = 0;
+				slot < kMirrorSlotCount; ++slot)
+			{
+				g_slotWidth[slot].store(
+					0, std::memory_order_relaxed);
+				g_slotHeight[slot].store(
+					0, std::memory_order_relaxed);
+			}
+			g_parkCameraInstalled.store(
+				false, std::memory_order_relaxed);
+			g_parkResourcePresent.store(
+				false, std::memory_order_relaxed);
+			g_parkCamera.store(
+				nullptr, std::memory_order_relaxed);
+		}
+
+		const bool parkInstalled =
+			try_install_park_camera(visualInterior);
+		g_originalResourceInit(visualInterior);
+
+		if (parkInstalled)
+		{
+			capture_camera_slot_descriptors();
+			const bool resourcePresent =
+				g_slotWidth[kParkSlot].load(
+					std::memory_order_relaxed) != 0 &&
+				g_slotHeight[kParkSlot].load(
+					std::memory_order_relaxed) != 0;
+			g_parkResourcePresent.store(
+				resourcePresent,
+				std::memory_order_relaxed);
+			scs_log(
+				resourcePresent ? 0 : 2,
+				"[RTT park] Internal park resource: %s "
+				"(descriptor %ux%u).",
+				resourcePresent
+					? "created"
+					: "not found after initialization",
+				g_slotWidth[kParkSlot].load(),
+				g_slotHeight[kParkSlot].load());
+		}
+	}
+
+	uint32_t __fastcall hooked_active_mask(
+		void* visualInterior,
+		uint32_t state)
+	{
+		uint32_t result =
+			g_originalActiveMask(visualInterior, state);
+		const bool forcePark =
+			(state == 2 || state == 12) &&
+			g_tracing.load(std::memory_order_relaxed) &&
+			g_parkRenderRequested.load(
+				std::memory_order_relaxed) &&
+			g_parkCameraInstalled.load(
+				std::memory_order_relaxed) &&
+			g_parkResourcePresent.load(
+				std::memory_order_relaxed) &&
+			visualInterior ==
+				g_parkVisualInterior.load(
+					std::memory_order_relaxed);
+		if (forcePark)
+		{
+			result |= 1U << kParkSlot;
+			g_parkScheduleCount.fetch_add(
+				1, std::memory_order_relaxed);
+		}
+		g_parkMaskForced.store(
+			forcePark, std::memory_order_relaxed);
+		return result;
 	}
 
 	uintptr_t __fastcall hooked_mirror_schedule(
@@ -400,12 +686,22 @@ namespace
 			for (uint32_t slot = 0;
 				slot < kMirrorSlotCount; ++slot)
 			{
-				if (description.Width ==
-						g_slotWidth[slot].load(
-							std::memory_order_relaxed) &&
-					description.Height ==
-						g_slotHeight[slot].load(
-							std::memory_order_relaxed))
+				const uint32_t slotWidth =
+					g_slotWidth[slot].load(
+						std::memory_order_relaxed);
+				const uint32_t slotHeight =
+					g_slotHeight[slot].load(
+						std::memory_order_relaxed);
+				const bool nominalMatch =
+					description.Width == slotWidth &&
+					description.Height == slotHeight;
+				const bool mirrorScaleTwoMatch =
+					slotWidth <= UINT32_MAX / 2 &&
+					slotHeight <= UINT32_MAX / 2 &&
+					description.Width == slotWidth * 2 &&
+					description.Height == slotHeight * 2;
+				if (slotWidth != 0 && slotHeight != 0 &&
+					(nominalMatch || mirrorScaleTwoMatch))
 				{
 					matchingSlotMask |= 1U << slot;
 				}
@@ -550,11 +846,14 @@ namespace
 			0,
 			"[RTT probe] Trace finished. "
 			"mirror calls=%llu, slot mask=0x%03X, "
+			"park schedules=%llu, "
 			"render-target candidates=%zu",
 			static_cast<unsigned long long>(
 				g_mirrorScheduleCount.load() -
 				g_traceStartedMirrorScheduleCount.load()),
 			g_mirrorSlotMask.load(),
+			static_cast<unsigned long long>(
+				g_parkScheduleCount.load()),
 			results.size());
 
 		for (uint32_t slot = 0;
@@ -652,6 +951,62 @@ namespace dx11::internal_render_probe
 				MH_RemoveHook(g_mirrorScheduleAddress);
 				g_mirrorScheduleAddress = nullptr;
 			}
+
+			if (matches_expected_bytes(
+				kExpectedResourceInitRva,
+				kResourceInitSignature))
+			{
+				g_resourceInitAddress =
+					g_executableBase +
+					kExpectedResourceInitRva;
+				const MH_STATUS createStatus =
+					MH_CreateHook(
+						g_resourceInitAddress,
+						&hooked_resource_init,
+						reinterpret_cast<void**>(
+							&g_originalResourceInit));
+				if (createStatus == MH_OK &&
+					MH_EnableHook(
+						g_resourceInitAddress) == MH_OK)
+				{
+					g_resourceInitHookInstalled.store(
+						true);
+				}
+				else
+				{
+					MH_RemoveHook(
+						g_resourceInitAddress);
+					g_resourceInitAddress = nullptr;
+				}
+			}
+
+			if (matches_expected_bytes(
+				kExpectedActiveMaskRva,
+				kActiveMaskSignature))
+			{
+				g_activeMaskAddress =
+					g_executableBase +
+					kExpectedActiveMaskRva;
+				const MH_STATUS createStatus =
+					MH_CreateHook(
+						g_activeMaskAddress,
+						&hooked_active_mask,
+						reinterpret_cast<void**>(
+							&g_originalActiveMask));
+				if (createStatus == MH_OK &&
+					MH_EnableHook(
+						g_activeMaskAddress) == MH_OK)
+				{
+					g_activeMaskHookInstalled.store(
+						true);
+				}
+				else
+				{
+					MH_RemoveHook(
+						g_activeMaskAddress);
+					g_activeMaskAddress = nullptr;
+				}
+			}
 		}
 
 		// Do not add any D3D11 interception on ATS or a different ETS2
@@ -676,8 +1031,13 @@ namespace dx11::internal_render_probe
 		scs_log(
 			0,
 			"[RTT probe] mirror hook=%s, "
+			"park init hook=%s, park mask hook=%s, "
 			"D3D11 target hook=%s",
 			g_mirrorHookInstalled.load()
+				? "ready" : "unavailable",
+			g_resourceInitHookInstalled.load()
+				? "ready" : "unavailable",
+			g_activeMaskHookInstalled.load()
 				? "ready" : "unavailable",
 			g_contextHookInstalled.load()
 				? "ready" : "unavailable");
@@ -698,6 +1058,18 @@ namespace dx11::internal_render_probe
 			MH_RemoveHook(g_mirrorScheduleAddress);
 			g_mirrorScheduleAddress = nullptr;
 		}
+		if (g_resourceInitAddress)
+		{
+			MH_DisableHook(g_resourceInitAddress);
+			MH_RemoveHook(g_resourceInitAddress);
+			g_resourceInitAddress = nullptr;
+		}
+		if (g_activeMaskAddress)
+		{
+			MH_DisableHook(g_activeMaskAddress);
+			MH_RemoveHook(g_activeMaskAddress);
+			g_activeMaskAddress = nullptr;
+		}
 		if (g_omSetRenderTargetsAddress)
 		{
 			MH_DisableHook(
@@ -708,7 +1080,14 @@ namespace dx11::internal_render_probe
 		}
 
 		g_mirrorHookInstalled.store(false);
+		g_resourceInitHookInstalled.store(false);
+		g_activeMaskHookInstalled.store(false);
 		g_contextHookInstalled.store(false);
+		g_parkCameraInstalled.store(false);
+		g_parkResourcePresent.store(false);
+		g_parkMaskForced.store(false);
+		g_parkVisualInterior.store(nullptr);
+		g_parkCamera.store(nullptr);
 	}
 
 	void on_present_frame()
@@ -731,6 +1110,7 @@ namespace dx11::internal_render_probe
 	{
 		if (!g_supportedBuild.load() ||
 			!g_mirrorHookInstalled.load() ||
+			!g_activeMaskHookInstalled.load() ||
 			!g_contextHookInstalled.load())
 		{
 			return;
@@ -748,13 +1128,18 @@ namespace dx11::internal_render_probe
 		g_traceStartedTick.store(now);
 		g_traceStartedMirrorScheduleCount.store(
 			g_mirrorScheduleCount.load());
+		g_parkScheduleCount.store(
+			0, std::memory_order_relaxed);
+		g_parkMaskForced.store(
+			false, std::memory_order_relaxed);
 		g_traceEndTick.store(
 			now + static_cast<uint64_t>(seconds) * 1000);
 		g_tracing.store(true, std::memory_order_release);
 		scs_log(
 			0,
-			"[RTT probe] Starting %u-second read-only "
-			"render-target trace",
+			"[RTT probe] Starting %u-second "
+			"render-target trace; park scheduling is "
+			"enabled only for this trace",
 			seconds);
 	}
 
@@ -767,6 +1152,20 @@ namespace dx11::internal_render_probe
 		}
 		const auto results = candidates();
 		log_trace_results(results);
+		g_parkMaskForced.store(
+			false, std::memory_order_relaxed);
+	}
+
+	void set_park_activation_requested(bool requested)
+	{
+		g_parkActivationRequested.store(
+			requested, std::memory_order_release);
+	}
+
+	void set_park_render_requested(bool requested)
+	{
+		g_parkRenderRequested.store(
+			requested, std::memory_order_release);
 	}
 
 	status_t status()
@@ -775,11 +1174,25 @@ namespace dx11::internal_render_probe
 		result.supportedBuild = g_supportedBuild.load();
 		result.mirrorHookInstalled =
 			g_mirrorHookInstalled.load();
+		result.resourceInitHookInstalled =
+			g_resourceInitHookInstalled.load();
+		result.activeMaskHookInstalled =
+			g_activeMaskHookInstalled.load();
 		result.mirrorScheduleSeen =
 			g_mirrorScheduleSeen.load();
 		result.contextHookInstalled =
 			g_contextHookInstalled.load();
 		result.tracing = g_tracing.load();
+		result.parkActivationRequested =
+			g_parkActivationRequested.load();
+		result.parkRenderRequested =
+			g_parkRenderRequested.load();
+		result.parkCameraInstalled =
+			g_parkCameraInstalled.load();
+		result.parkResourcePresent =
+			g_parkResourcePresent.load();
+		result.parkMaskForced =
+			g_parkMaskForced.load();
 		result.timeDateStamp = g_timeDateStamp.load();
 		result.imageSize = g_imageSize.load();
 		result.signatureMatches =
@@ -788,6 +1201,10 @@ namespace dx11::internal_render_probe
 		result.mirrorSlotMask = g_mirrorSlotMask.load();
 		result.mirrorScheduleCount =
 			g_mirrorScheduleCount.load();
+		result.parkInstallAttempts =
+			g_parkInstallAttempts.load();
+		result.parkScheduleCount =
+			g_parkScheduleCount.load();
 		result.traceStartedTick =
 			g_traceStartedTick.load();
 		result.traceEndTick = g_traceEndTick.load();

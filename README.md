@@ -182,6 +182,25 @@ This diagnostic is deliberately separate from the finished camera. The runtime
 trace is required to select the correct engine-owned texture before enabling
 camera creation or GPU-to-GPS transfer. See `V2.6-INTERNAL-RTT-PROBE.md`.
 
+## Version 2.7 park-camera activation test
+
+The 2.6 runtime log proved that the tested truck creates slots 0-5 but leaves
+the internal `park` and `park_360` slots empty. Version
+`2.7.0-park-activation-test` adds the next guarded stage:
+
+- a selectable **Internal park-camera activation (experimental)** reverse
+  method;
+- exact byte guards for ETS2's park-resource initializer, camera-mask
+  function, mirror-camera vtable, and clone method;
+- creation of engine-owned slot 7 while the truck interior loads;
+- scheduling of the extra camera only during the explicit 10-second trace; and
+- candidate matching for both nominal and 2x mirror-scale render targets.
+
+This build still does not replace the GPS pixels. Its purpose is to identify
+the exact engine-owned park texture before a GPU-to-GPU conversion is added.
+The stable Window crop reverse method remains available. See
+`V2.7-PARK-ACTIVATION-TEST.md`.
+
 ## Version 2.3 engine-powered media and GPS edge fix
 
 Version `2.3.1-adaptive` added:
@@ -206,8 +225,8 @@ Version `2.3.1-adaptive` added:
   displays
 
 The legacy reverse feature captures a user-calibrated region of the game
-window. Use **Preview / calibrate now** to define that region. Version 2.6's
-internal probe is the migration path to a genuine independent rear-camera
+window. Use **Preview / calibrate now** to define that region. Versions 2.6 and
+2.7 provide the guarded migration path to a genuine independent rear-camera
 texture that will not depend on an on-screen mirror.
 
 Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
@@ -215,7 +234,7 @@ Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-2.6.0-rtt-probe` artifact. This cloud build requires
+`PrismTextureStreamerFB-2.7.0-park-activation-test` artifact. This cloud build requires
 no local Visual Studio installation.
 
 ## Contributing

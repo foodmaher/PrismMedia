@@ -40,6 +40,11 @@ enum class reverse_performance_profile_t : uint8_t {
 	ULTRA
 };
 
+enum class reverse_camera_method_t : uint8_t {
+	WINDOW_CROP = 0,
+	INTERNAL_PARK_PROBE
+};
+
 enum class content_mode_t : uint8_t {
 	WINDOW_CAPTURE = 0,
 	INTEGRATED_MEDIA,
@@ -88,6 +93,8 @@ struct screen_t
 	bool reverseCameraEnabled = false;
 	bool reversePreview = false;
 	bool reverseZeroForwardImpact = true;
+	reverse_camera_method_t reverseCameraMethod =
+		reverse_camera_method_t::WINDOW_CROP;
 	uint64_t reverseLastStartAttemptTick{};
 	reverse_performance_profile_t reversePerformanceProfile =
 		reverse_performance_profile_t::BALANCED;

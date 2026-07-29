@@ -12,6 +12,7 @@ using namespace scs_logging;
 #include "../screens.h"
 #include "../telemetry_state.h"
 #include "../sources/reverse_camera.h"
+#include "internal_render_probe.h"
 
 
 typedef HRESULT(__stdcall* CreateTexture2D_t)(ID3D11Device*, const D3D11_TEXTURE2D_DESC*, const D3D11_SUBRESOURCE_DATA*, ID3D11Texture2D**);
@@ -75,6 +76,8 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 
 void new_frame()
 {
+    bool internalParkActivationRequested{};
+    bool internalParkRenderRequested{};
     std::lock_guard<std::mutex> lock(g_screens_mutex);
 	    for (auto& screen : g_screens)
 	    {
@@ -82,9 +85,19 @@ void new_frame()
 	        const bool reverseRequested =
 	            screen.reverseCameraEnabled &&
 	            (g_reverse_active.load() || screen.reversePreview);
+            const bool internalParkMethod =
+                screen.reverseCameraMethod ==
+                    reverse_camera_method_t::INTERNAL_PARK_PROBE;
+            internalParkActivationRequested |=
+                screen.reverseCameraEnabled &&
+                internalParkMethod;
+            internalParkRenderRequested |=
+                reverseRequested && internalParkMethod;
+            const bool windowReverseRequested =
+                reverseRequested && !internalParkMethod;
 
 	        const uint64_t reverseNowTick = GetTickCount64();
-	        if (reverseRequested && !screen.reverseSource &&
+	        if (windowReverseRequested && !screen.reverseSource &&
 	            (screen.reverseLastStartAttemptTick == 0 ||
 	                reverseNowTick - screen.reverseLastStartAttemptTick >= 2000))
 	        {
@@ -111,7 +124,7 @@ void new_frame()
 	        }
 
 	        const bool reverseActive =
-	            reverseRequested && screen.reverseSource;
+	            windowReverseRequested && screen.reverseSource;
 	        IContentSource* activeSource = reverseActive
 	            ? screen.reverseSource.get()
 	            : screen.source.get();
@@ -335,9 +348,14 @@ void new_frame()
         screen.lastUploadTick = nowTick;
 
 	        const auto sourceStats = activeSource->GetPerformanceStats();
-        screen.totalPluginCpuMs =
-            screen.uploadCpuMs + sourceStats.workerCpuMs;
-    }
+	        screen.totalPluginCpuMs =
+	            screen.uploadCpuMs + sourceStats.workerCpuMs;
+	    }
+
+    internal_render_probe::set_park_activation_requested(
+        internalParkActivationRequested);
+    internal_render_probe::set_park_render_requested(
+        internalParkRenderRequested);
 }
 
 

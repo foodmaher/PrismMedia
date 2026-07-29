@@ -7,6 +7,7 @@
 #include <string>
 
 #include "screens.h"
+#include "dx11/internal_render_probe.h"
 #include "hotkeys.h"
 #include "scs_logging.h"
 #include "sources/media_client.h"
@@ -216,6 +217,17 @@ namespace settings {
                     120.0f, 8000.0f);
             screen.reverseCameraEnabled = GetPrivateProfileIntA(
                 section.c_str(), "ReverseCameraEnabled", 0, path.c_str()) != 0;
+            screen.reverseCameraMethod =
+                static_cast<reverse_camera_method_t>((std::clamp)(
+                    GetPrivateProfileIntA(
+                        section.c_str(), "ReverseCameraMethod",
+                        static_cast<UINT>(
+                            reverse_camera_method_t::WINDOW_CROP),
+                        path.c_str()),
+                    0U,
+                    static_cast<UINT>(
+                        reverse_camera_method_t::
+                            INTERNAL_PARK_PROBE)));
             screen.reverseZeroForwardImpact = GetPrivateProfileIntA(
                 section.c_str(), "ReverseZeroForwardImpact", 1, path.c_str()) != 0;
             screen.reversePerformanceProfile =
@@ -303,6 +315,8 @@ namespace settings {
             }
 
             if (screen.reverseCameraEnabled &&
+                screen.reverseCameraMethod ==
+                    reverse_camera_method_t::WINDOW_CROP &&
                 (!screen.reverseZeroForwardImpact ||
                     g_reverse_active.load()))
             {
@@ -326,10 +340,25 @@ namespace settings {
         }
 
         const auto loadedCount = loaded.size();
+        const bool internalParkRequested =
+            std::any_of(
+                loaded.begin(), loaded.end(),
+                [](const screen_t& screen)
+                {
+                    return screen.reverseCameraEnabled &&
+                        screen.reverseCameraMethod ==
+                            reverse_camera_method_t::
+                                INTERNAL_PARK_PROBE;
+                });
         {
             std::lock_guard<std::mutex> lock(g_screens_mutex);
             g_screens = std::move(loaded);
         }
+        dx11::internal_render_probe::
+            set_park_activation_requested(
+                internalParkRequested);
+        dx11::internal_render_probe::
+            set_park_render_requested(false);
         scs_log(0, "[Settings] Loaded %u saved screen(s)", static_cast<unsigned>(loadedCount));
         return true;
     }
@@ -341,7 +370,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 7);
+        write_number(temporaryPath, "General", "Version", 8);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
@@ -389,6 +418,11 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "AdaptiveAudioExternalLowPassEnabled", screen.adaptiveAudioExternalLowPassEnabled ? 1 : 0);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalMinimumCutoff", screen.adaptiveAudioExternalMinimumCutoff);
             write_number(temporaryPath, section.c_str(), "ReverseCameraEnabled", screen.reverseCameraEnabled ? 1 : 0);
+            write_number(
+                temporaryPath, section.c_str(),
+                "ReverseCameraMethod",
+                static_cast<uint32_t>(
+                    screen.reverseCameraMethod));
             write_number(temporaryPath, section.c_str(), "ReverseZeroForwardImpact", screen.reverseZeroForwardImpact ? 1 : 0);
             write_number(
                 temporaryPath, section.c_str(),

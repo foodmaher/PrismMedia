@@ -25,15 +25,24 @@ namespace dx11::internal_render_probe
 	{
 		bool supportedBuild{};
 		bool mirrorHookInstalled{};
+		bool resourceInitHookInstalled{};
+		bool activeMaskHookInstalled{};
 		bool mirrorScheduleSeen{};
 		bool contextHookInstalled{};
 		bool tracing{};
+		bool parkActivationRequested{};
+		bool parkRenderRequested{};
+		bool parkCameraInstalled{};
+		bool parkResourcePresent{};
+		bool parkMaskForced{};
 		uint32_t timeDateStamp{};
 		uint32_t imageSize{};
 		uint32_t signatureMatches{};
 		uint32_t detectedRva{};
 		uint32_t mirrorSlotMask{};
 		uint64_t mirrorScheduleCount{};
+		uint64_t parkInstallAttempts{};
+		uint64_t parkScheduleCount{};
 		uint64_t traceStartedTick{};
 		uint64_t traceEndTick{};
 		uint64_t frameIndex{};
@@ -47,6 +56,8 @@ namespace dx11::internal_render_probe
 	void on_present_frame();
 	void begin_trace(uint32_t seconds = 10);
 	void end_trace();
+	void set_park_activation_requested(bool requested);
+	void set_park_render_requested(bool requested);
 
 	status_t status();
 	std::vector<candidate_t> candidates();

@@ -15,8 +15,8 @@ namespace dx11 {
 		if (!present::init())
 			return false;
 
-		// The internal render-to-texture probe is optional and guarded to one
-		// exact ETS2 executable. A mismatch never prevents the plugin loading.
+		// The internal park-camera test is optional and guarded to one exact
+		// ETS2 executable. A mismatch never prevents the plugin loading.
 		internal_render_probe::init();
 
 		if (!create_texture_2d::init())

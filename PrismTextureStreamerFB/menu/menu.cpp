@@ -106,6 +106,8 @@ static bool rebuild_reverse_source(screen_t& screen)
 	screen.reverseLastStartAttemptTick = 0;
 
 	if (screen.reverseCameraEnabled &&
+		screen.reverseCameraMethod ==
+			reverse_camera_method_t::WINDOW_CROP &&
 		(!screen.reverseZeroForwardImpact ||
 			g_reverse_active.load() || screen.reversePreview))
 	{
@@ -124,6 +126,18 @@ static bool rebuild_reverse_source(screen_t& screen)
 		screen.reverseSource->SetPaused(
 			!(g_reverse_active.load() || screen.reversePreview));
 	g_screen_source_creation_in_progress = false;
+	if (screen.reverseCameraEnabled &&
+		screen.reverseCameraMethod ==
+			reverse_camera_method_t::INTERNAL_PARK_PROBE)
+	{
+		dx11::internal_render_probe::
+			set_park_activation_requested(true);
+		dx11::internal_render_probe::
+			set_park_render_requested(
+				g_reverse_active.load() ||
+				screen.reversePreview);
+		return true;
+	}
 	return !screen.reverseCameraEnabled ||
 		(screen.reverseZeroForwardImpact &&
 			!g_reverse_active.load() && !screen.reversePreview) ||
@@ -1065,11 +1079,11 @@ void on_frame()
 							ImGui::TextColored(
 								ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
 								"Expected impact: none forward; low while reversing");
-							ImGui::TextWrapped(
-								"The current legacy mode captures a calibrated part of the "
-								"game window. The internal render-to-texture probe below is "
-								"the first safe step toward a real independent rear camera "
-								"that does not move the driver's view.");
+								ImGui::TextWrapped(
+									"The current legacy mode captures a calibrated part of the "
+									"game window. The experimental internal mode now activates "
+									"ETS2's dormant park-camera slot and identifies its GPU "
+									"render target without moving the driver's view.");
 
 							if (ImGui::TreeNode(
 								"Internal render-to-texture probe"))
@@ -1107,6 +1121,28 @@ void on_frame()
 									"D3D11 render-target observer: %s",
 									probeStatus.contextHookInstalled
 										? "ready" : "not available");
+								ImGui::Text(
+									"Park-camera hooks: init %s | scheduler %s",
+									probeStatus.resourceInitHookInstalled
+										? "ready" : "not available",
+									probeStatus.activeMaskHookInstalled
+										? "ready" : "not available");
+								ImGui::Text(
+									"Park activation: requested %s | "
+									"camera %s | resource %s",
+									probeStatus.parkActivationRequested
+										? "yes" : "no",
+									probeStatus.parkCameraInstalled
+										? "installed" : "not installed",
+									probeStatus.parkResourcePresent
+										? "created" : "not created");
+								ImGui::Text(
+									"Park render request: %s | "
+									"trace schedules: %llu",
+									probeStatus.parkRenderRequested
+										? "active" : "inactive",
+									static_cast<unsigned long long>(
+										probeStatus.parkScheduleCount));
 								ImGui::Text(
 									"Scheduler calls seen: %llu",
 									static_cast<unsigned long long>(
@@ -1146,19 +1182,25 @@ void on_frame()
 
 								ImGui::Separator();
 								ImGui::TextWrapped(
-									"Test once: put the truck in reverse, then start "
-									"the 10-second trace. Close this menu and drive "
-									"or steer slightly until it ends. No centre or "
-									"on-screen mirror is required for this probe.");
+									"Select Internal park-camera activation below, save, "
+									"then reload the truck once. Put the truck in reverse "
+									"or enable Preview, start the 10-second trace, and "
+									"close this menu until it ends.");
 								ImGui::TextColored(
 									ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
-									"The trace is read-only. It adds diagnostic "
-									"overhead only during those 10 seconds.");
+									"The dormant camera is scheduled only during the "
+									"10-second trace. Normal forward driving has no "
+									"additional park-camera render cost.");
 
 								const bool canTrace =
 									probeStatus.supportedBuild &&
 									probeStatus.mirrorHookInstalled &&
-									probeStatus.contextHookInstalled;
+									probeStatus.activeMaskHookInstalled &&
+									probeStatus.contextHookInstalled &&
+									(!probeStatus.parkActivationRequested ||
+										(probeStatus.parkCameraInstalled &&
+											probeStatus.parkResourcePresent &&
+											probeStatus.parkRenderRequested));
 								ImGui::BeginDisabled(
 									!canTrace && !probeStatus.tracing);
 								if (!probeStatus.tracing)
@@ -1258,6 +1300,31 @@ void on_frame()
 								ImGui::Text(
 									"Reverse detected: %s",
 									g_reverse_active.load() ? "Yes" : "No");
+								static const char* reverseMethodNames[] = {
+									"Window crop (stable)",
+									"Internal park-camera activation (experimental)"
+								};
+								int reverseMethod = static_cast<int>(
+									screen.reverseCameraMethod);
+								if (ImGui::Combo(
+									"Reverse camera method",
+									&reverseMethod,
+									reverseMethodNames,
+									IM_ARRAYSIZE(reverseMethodNames)))
+								{
+									screen.reverseCameraMethod =
+										static_cast<reverse_camera_method_t>(
+											reverseMethod);
+									if (!rebuild_reverse_source(screen))
+										ImGui::OpenPopup(
+											"Reverse Source Error");
+									saveConfiguration = true;
+								}
+
+								const bool internalParkMethod =
+									screen.reverseCameraMethod ==
+										reverse_camera_method_t::
+											INTERNAL_PARK_PROBE;
 								if (ImGui::Checkbox(
 									"Preview / calibrate now",
 									&screen.reversePreview))
@@ -1275,7 +1342,42 @@ void on_frame()
 												screen.reversePreview));
 								}
 
-								if (ImGui::Checkbox(
+								if (internalParkMethod)
+								{
+									const auto parkStatus =
+										dx11::internal_render_probe::status();
+									ImGui::TextColored(
+										parkStatus.parkCameraInstalled &&
+											parkStatus.parkResourcePresent
+											? ImVec4(
+												0.35f, 0.85f, 0.40f, 1.0f)
+											: ImVec4(
+												1.0f, 0.72f, 0.25f, 1.0f),
+										"Internal slot 7: %s | resource: %s",
+										parkStatus.parkCameraInstalled
+											? "installed" : "waiting",
+										parkStatus.parkResourcePresent
+											? "ready" : "waiting");
+									if (!parkStatus.parkCameraInstalled)
+									{
+										ImGui::TextWrapped(
+											"Save this selection, return to the "
+											"profile/truck menu, and load the truck "
+											"again. ETS2 creates mirror resources "
+											"only while the truck interior loads.");
+									}
+									else
+									{
+										ImGui::TextWrapped(
+											"Activation test ready. The GPS keeps "
+											"its normal media until the park texture "
+											"is identified and connected in the next "
+											"stage.");
+									}
+								}
+								else
+								{
+									if (ImGui::Checkbox(
 									"Zero forward impact",
 									&screen.reverseZeroForwardImpact))
 								{
@@ -1450,6 +1552,7 @@ void on_frame()
 											ImGui::OpenPopup(
 												"Reverse Source Error");
 									}
+								}
 								}
 
 								ImGui::Separator();

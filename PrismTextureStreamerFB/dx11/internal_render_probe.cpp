@@ -133,13 +133,22 @@ namespace
 				continue;
 			}
 
-			const size_t sectionSize = (std::min)(
-				static_cast<size_t>(section->Misc.VirtualSize),
+			const uint32_t sectionRva =
+				static_cast<uint32_t>(
+					section->VirtualAddress);
+			if (sectionRva >= result.imageSize)
+				continue;
+
+			const size_t virtualSize =
 				static_cast<size_t>(
-					result.imageSize -
-					(std::min)(
-						section->VirtualAddress,
-						result.imageSize)));
+					section->Misc.VirtualSize);
+			const size_t remainingImageSize =
+				static_cast<size_t>(
+					result.imageSize - sectionRva);
+			const size_t sectionSize =
+				virtualSize < remainingImageSize
+					? virtualSize
+					: remainingImageSize;
 			if (sectionSize < kMirrorScheduleSignature.size())
 				continue;
 

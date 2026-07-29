@@ -1,5 +1,8 @@
 <h1 align="center">PrismTextureStreamer</h1>
 
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/8aacba7f-6f9a-4187-9ebb-cd3f0b474ba5" />
+
+
 <p align="center">
 A Prism3D plugin that takes over cabin screens (GPS, dashboard, or custom) in
 <b>Euro Truck Simulator 2</b> and <b>American Truck Simulator</b>. It can

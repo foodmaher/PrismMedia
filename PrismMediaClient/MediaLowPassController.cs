@@ -99,7 +99,7 @@ namespace PrismMediaClient
         {
             try
             {
-                if (frame != null && !frame.IsDestroyed())
+                if (frame != null && frame.IsDestroyed() == 0)
                     await frame.ExecuteScriptAsync(script);
             }
             catch

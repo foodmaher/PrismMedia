@@ -1,19 +1,32 @@
-#define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
 #include <SPF/SPF_API/SPF_Camera_API.h>
 #include <SPF/SPF_API/SPF_Manifest_API.h>
 #include <SPF/SPF_API/SPF_Plugin.h>
+#include <SPF/SPF_API/SPF_Telemetry_API.h>
 
 #include "../Shared/PrismCameraBridgeShared.h"
 
 #include <cstring>
+#include <mutex>
 
 namespace
 {
     const SPF_Core_API* g_core{};
+    SPF_Telemetry_Handle* g_telemetryHandle{};
+    SPF_Telemetry_Callback_Handle* g_trailerCallback{};
     HANDLE g_mapping{};
     prism_camera_bridge::SharedState* g_shared{};
+    std::mutex g_trailerMutex;
+
+    struct TrailerSnapshot
+    {
+        bool valid{};
+        uint32_t count{};
+        SPF_DPlacement placement{};
+    };
+
+    TrailerSnapshot g_trailer{};
 
     void BuildManifest(
         SPF_Manifest_Builder_Handle* handle,
@@ -23,14 +36,14 @@ namespace
             return;
 
         api->Info_SetName(handle, "PrismCameraBridge");
-        api->Info_SetVersion(handle, "1.0.0");
+        api->Info_SetVersion(handle, "1.1.0");
         api->Info_SetMinFrameworkVersion(handle, "1.2.0");
         api->Info_SetAuthor(handle, "PrismTextureStreamerFB");
         api->Info_SetDescriptionKey(handle, "");
         api->Info_SetDescriptionLiteral(
             handle,
-            "Publishes the active ETS2/ATS camera position to "
-            "PrismTextureStreamerFB for distance-aware media audio.");
+            "Publishes the active camera and final connected trailer "
+            "placement to PrismTextureStreamerFB.");
         api->Policy_SetAllowUserConfig(handle, false);
     }
 
@@ -60,6 +73,7 @@ namespace
         std::memset(g_shared, 0, sizeof(*g_shared));
         g_shared->magic = prism_camera_bridge::kMagic;
         g_shared->version = prism_camera_bridge::kVersion;
+        g_shared->flags = prism_camera_bridge::kLoaded;
         return true;
     }
 
@@ -70,10 +84,36 @@ namespace
 
         InterlockedIncrement(&g_shared->sequence);
         MemoryBarrier();
-        g_shared->valid = 0;
+        g_shared->flags = 0;
         g_shared->updatedTick = GetTickCount64();
         MemoryBarrier();
         InterlockedIncrement(&g_shared->sequence);
+    }
+
+    void OnTrailers(
+        const SPF_Trailer* trailers,
+        uint32_t count,
+        void*)
+    {
+        TrailerSnapshot next{};
+        next.count = count;
+        if (trailers && count > 0)
+        {
+            // SPF returns the active trailer chain in order. The final
+            // connected entry is the physical tail of singles, doubles,
+            // triples and articulated combinations.
+            for (uint32_t index = 0; index < count; ++index)
+            {
+                if (!trailers[index].data.connected)
+                    continue;
+                next.valid = true;
+                next.placement =
+                    trailers[index].data.world_placement;
+            }
+        }
+
+        std::lock_guard<std::mutex> lock(g_trailerMutex);
+        g_trailer = next;
     }
 
     void OnLoad(const SPF_Load_API*)
@@ -85,35 +125,84 @@ namespace
     {
         g_core = core;
         CreateSharedState();
+        if (g_shared)
+            g_shared->flags =
+                prism_camera_bridge::kLoaded |
+                prism_camera_bridge::kActivated;
+
+        if (core && core->telemetry &&
+            core->telemetry->Tel_GetContext &&
+            core->telemetry->Tel_RegisterForTrailers)
+        {
+            g_telemetryHandle =
+                core->telemetry->Tel_GetContext(
+                    "PrismCameraBridge");
+            if (g_telemetryHandle)
+            {
+                g_trailerCallback =
+                    core->telemetry->Tel_RegisterForTrailers(
+                        g_telemetryHandle, OnTrailers, nullptr);
+            }
+        }
     }
 
     void OnUpdate()
     {
-        if (!g_core || !g_core->camera || !CreateSharedState())
+        if (!CreateSharedState())
             return;
 
         float x{};
         float y{};
         float z{};
         SPF_CameraType cameraType{};
-        const bool valid =
+        const bool cameraValid =
+            g_core && g_core->camera &&
             g_core->camera->Cam_GetCameraWorldCoordinates &&
             g_core->camera->Cam_GetCurrentCamera &&
             g_core->camera->Cam_GetCameraWorldCoordinates(&x, &y, &z) &&
             g_core->camera->Cam_GetCurrentCamera(&cameraType);
 
+        TrailerSnapshot trailer{};
+        {
+            std::lock_guard<std::mutex> lock(g_trailerMutex);
+            trailer = g_trailer;
+        }
+
+        uint32_t flags = prism_camera_bridge::kLoaded;
+        if (g_core)
+            flags |= prism_camera_bridge::kActivated;
+        if (cameraValid)
+            flags |= prism_camera_bridge::kCameraValid;
+        if (g_trailerCallback)
+            flags |= prism_camera_bridge::kTelemetryRegistered;
+        if (trailer.valid)
+            flags |= prism_camera_bridge::kTrailerValid;
+
         InterlockedIncrement(&g_shared->sequence);
         MemoryBarrier();
         g_shared->magic = prism_camera_bridge::kMagic;
         g_shared->version = prism_camera_bridge::kVersion;
-        g_shared->valid = valid ? 1U : 0U;
+        g_shared->flags = flags;
         g_shared->updatedTick = GetTickCount64();
-        if (valid)
+        if (cameraValid)
         {
             g_shared->cameraX = x;
             g_shared->cameraY = y;
             g_shared->cameraZ = z;
             g_shared->cameraType = static_cast<int32_t>(cameraType);
+        }
+        g_shared->trailerCount = trailer.count;
+        if (trailer.valid)
+        {
+            g_shared->trailerX = trailer.placement.position.x;
+            g_shared->trailerY = trailer.placement.position.y;
+            g_shared->trailerZ = trailer.placement.position.z;
+            g_shared->trailerHeading =
+                trailer.placement.orientation.heading;
+            g_shared->trailerPitch =
+                trailer.placement.orientation.pitch;
+            g_shared->trailerRoll =
+                trailer.placement.orientation.roll;
         }
         MemoryBarrier();
         InterlockedIncrement(&g_shared->sequence);
@@ -133,6 +222,12 @@ namespace
             g_mapping = nullptr;
         }
         g_core = nullptr;
+        g_telemetryHandle = nullptr;
+        g_trailerCallback = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_trailerMutex);
+            g_trailer = {};
+        }
     }
 }
 

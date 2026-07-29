@@ -14,9 +14,11 @@ namespace dx11 {
 		if (!present::init())
 			return false;
 
-		if (!create_texture_2d::init())
-			return false;
-	}
+			if (!create_texture_2d::init())
+				return false;
+
+			return true;
+		}
 
 	inline void shutdown()
 	{

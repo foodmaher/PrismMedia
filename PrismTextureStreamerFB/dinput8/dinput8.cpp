@@ -62,6 +62,7 @@ namespace dinput8 {
         LPVOID setCursorPosFunc = GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetCursorPos");
         MH_CreateHook(setCursorPosFunc, &hookSetCursorPos, (LPVOID*)&originalSetCursorPos);
         MH_EnableHook(setCursorPosFunc);
+        return true;
     }
 
     void shutdown() {

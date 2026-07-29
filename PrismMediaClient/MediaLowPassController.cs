@@ -99,6 +99,8 @@ namespace PrismMediaClient
         {
             try
             {
+                // WebView2 exposes IsDestroyed as an HRESULT-style integer in
+                // the net462/net48 projection used by the Windows runner.
                 if (frame != null && frame.IsDestroyed() == 0)
                     await frame.ExecuteScriptAsync(script);
             }

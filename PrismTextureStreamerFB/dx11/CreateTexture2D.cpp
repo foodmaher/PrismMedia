@@ -92,8 +92,8 @@ void new_frame()
 	            screen.reverseLastStartAttemptTick = reverseNowTick;
 	            screen.reverseSource = sources::CreateReverseCameraSource(
 	                screen.reverseFramerate,
-	                screen.targetLiveTextureWidth,
-	                screen.targetLiveTextureHeight,
+	                screen.reverseCaptureWidth,
+	                screen.reverseCaptureHeight,
 	                screen.reverseCropLeft,
 	                screen.reverseCropTop,
 	                screen.reverseCropWidth,

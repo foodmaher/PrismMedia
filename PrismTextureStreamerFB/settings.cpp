@@ -218,9 +218,30 @@ namespace settings {
                 section.c_str(), "ReverseCameraEnabled", 0, path.c_str()) != 0;
             screen.reverseZeroForwardImpact = GetPrivateProfileIntA(
                 section.c_str(), "ReverseZeroForwardImpact", 1, path.c_str()) != 0;
+            screen.reversePerformanceProfile =
+                static_cast<reverse_performance_profile_t>((std::clamp)(
+                    GetPrivateProfileIntA(
+                        section.c_str(), "ReversePerformanceProfile",
+                        static_cast<UINT>(
+                            reverse_performance_profile_t::BALANCED),
+                        path.c_str()),
+                    0U,
+                    static_cast<UINT>(
+                        reverse_performance_profile_t::ULTRA)));
+            screen.reverseCaptureWidth = (std::clamp)(
+                GetPrivateProfileIntA(
+                    section.c_str(), "ReverseCaptureWidth",
+                    640, path.c_str()),
+                256U, 1920U);
+            screen.reverseCaptureHeight = (std::clamp)(
+                GetPrivateProfileIntA(
+                    section.c_str(), "ReverseCaptureHeight",
+                    360, path.c_str()),
+                144U, 1080U);
             screen.reverseFramerate = static_cast<uint8_t>((std::clamp)(
-                GetPrivateProfileIntA(section.c_str(), "ReverseFramerate", 20, path.c_str()),
+                GetPrivateProfileIntA(section.c_str(), "ReverseFramerate", 15, path.c_str()),
                 5U, 60U));
+            apply_reverse_performance_profile(screen);
             screen.reverseCropLeft = (std::clamp)(
                 read_float(path, section.c_str(), "ReverseCropLeft", 0.30f),
                 0.0f, 0.98f);
@@ -289,8 +310,8 @@ namespace settings {
                 screen.reverseLastStartAttemptTick = GetTickCount64();
                 screen.reverseSource = sources::CreateReverseCameraSource(
                     screen.reverseFramerate,
-                    screen.targetLiveTextureWidth,
-                    screen.targetLiveTextureHeight,
+                    screen.reverseCaptureWidth,
+                    screen.reverseCaptureHeight,
                     screen.reverseCropLeft,
                     screen.reverseCropTop,
                     screen.reverseCropWidth,
@@ -320,7 +341,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 6);
+        write_number(temporaryPath, "General", "Version", 7);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
@@ -369,6 +390,13 @@ namespace settings {
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalMinimumCutoff", screen.adaptiveAudioExternalMinimumCutoff);
             write_number(temporaryPath, section.c_str(), "ReverseCameraEnabled", screen.reverseCameraEnabled ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "ReverseZeroForwardImpact", screen.reverseZeroForwardImpact ? 1 : 0);
+            write_number(
+                temporaryPath, section.c_str(),
+                "ReversePerformanceProfile",
+                static_cast<uint32_t>(
+                    screen.reversePerformanceProfile));
+            write_number(temporaryPath, section.c_str(), "ReverseCaptureWidth", screen.reverseCaptureWidth);
+            write_number(temporaryPath, section.c_str(), "ReverseCaptureHeight", screen.reverseCaptureHeight);
             write_number(temporaryPath, section.c_str(), "ReverseFramerate", screen.reverseFramerate);
             write_float(temporaryPath, section.c_str(), "ReverseCropLeft", screen.reverseCropLeft);
             write_float(temporaryPath, section.c_str(), "ReverseCropTop", screen.reverseCropTop);

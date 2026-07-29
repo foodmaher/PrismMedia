@@ -22,6 +22,17 @@ inline std::atomic<float> g_camera_world_y{};
 inline std::atomic<float> g_camera_world_z{};
 inline std::atomic<int> g_camera_type{ -1 };
 inline std::atomic<uint64_t> g_last_camera_bridge_tick{};
+inline std::atomic<bool> g_camera_bridge_mapping_present{};
+inline std::atomic<bool> g_camera_bridge_activated{};
+inline std::atomic<bool> g_camera_bridge_telemetry_registered{};
+inline std::atomic<bool> g_camera_bridge_trailer_valid{};
+inline std::atomic<uint32_t> g_camera_bridge_trailer_count{};
+inline std::atomic<double> g_last_trailer_world_x{};
+inline std::atomic<double> g_last_trailer_world_y{};
+inline std::atomic<double> g_last_trailer_world_z{};
+inline std::atomic<double> g_last_trailer_heading{};
+inline std::atomic<double> g_last_trailer_pitch{};
+inline std::atomic<double> g_last_trailer_roll{};
 
 // SCS truck placement and the per-truck driver-head anchor calibrated from
 // the live interior camera. The anchor follows the truck while the player

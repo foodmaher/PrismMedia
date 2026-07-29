@@ -32,6 +32,8 @@ using namespace scs_logging;
 
 static std::atomic<bool> menu_visible{};
 static int hotkey_binding_index = -1;
+static bool configuration_save_pending = false;
+static uint64_t configuration_last_change_tick = 0;
 
 static bool rebuild_source(screen_t& screen)
 {
@@ -109,8 +111,8 @@ static bool rebuild_reverse_source(screen_t& screen)
 		screen.reverseLastStartAttemptTick = GetTickCount64();
 		screen.reverseSource = sources::CreateReverseCameraSource(
 			screen.reverseFramerate,
-			screen.targetLiveTextureWidth,
-			screen.targetLiveTextureHeight,
+			screen.reverseCaptureWidth,
+			screen.reverseCaptureHeight,
 			screen.reverseCropLeft,
 			screen.reverseCropTop,
 			screen.reverseCropWidth,
@@ -313,15 +315,15 @@ void on_frame()
 							screen.targetLiveTextureWidth,
 							screen.targetLiveTextureHeight);
 					}
-					if (screen.reverseSource)
-					{
-						screen.reverseSource->SetFramerate(
-							screen.reverseFramerate);
-						screen.reverseSource->SetOutputSize(
-							screen.targetLiveTextureWidth,
-							screen.targetLiveTextureHeight);
-						screen.reverseSource->SetCaptureRegion(
-							screen.reverseCropLeft,
+						if (screen.reverseSource)
+						{
+							screen.reverseSource->SetFramerate(
+								screen.reverseFramerate);
+							screen.reverseSource->SetOutputSize(
+								screen.reverseCaptureWidth,
+								screen.reverseCaptureHeight);
+							screen.reverseSource->SetCaptureRegion(
+								screen.reverseCropLeft,
 							screen.reverseCropTop,
 							screen.reverseCropWidth,
 							screen.reverseCropHeight);
@@ -1006,10 +1008,27 @@ void on_frame()
 									}
 									else
 									{
-										ImGui::TextColored(
-											ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-											"SPF bridge not detected; using fixed "
-											"outside volume.");
+										if (!g_camera_bridge_mapping_present.load())
+										{
+											ImGui::TextColored(
+												ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+												"SPF bridge is not loaded; using fixed "
+												"outside volume.");
+										}
+										else if (!g_camera_bridge_activated.load())
+										{
+											ImGui::TextColored(
+												ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+												"SPF found the bridge, but it is disabled. "
+												"Enable it in Delete > Plugins.");
+										}
+										else
+										{
+											ImGui::TextColored(
+												ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+												"SPF camera data is not ready; using fixed "
+												"outside volume.");
+										}
 									}
 								}
 								else
@@ -1099,19 +1118,108 @@ void on_frame()
 									ImGui::EndTooltip();
 								}
 
-								uint8_t reverseFpsMin = 5;
-								uint8_t reverseFpsMax = 60;
-								if (ImGui::SliderScalar(
-									"Reverse view FPS",
-									ImGuiDataType_U8,
-									&screen.reverseFramerate,
-									&reverseFpsMin,
-									&reverseFpsMax))
+								static const char* reverseProfileNames[] = {
+									"Custom",
+									"Economy (426x240 @ 10)",
+									"Balanced (640x360 @ 15)",
+									"Quality (960x540 @ 20)",
+									"Ultra (1280x720 @ 30)"
+								};
+								int reverseProfile = static_cast<int>(
+									screen.reversePerformanceProfile);
+								if (ImGui::Combo(
+									"Reverse performance profile",
+									&reverseProfile,
+									reverseProfileNames,
+									IM_ARRAYSIZE(reverseProfileNames)))
 								{
-									if (screen.reverseSource)
-										screen.reverseSource->SetFramerate(
-											screen.reverseFramerate);
+									screen.reversePerformanceProfile =
+										static_cast<reverse_performance_profile_t>(
+											reverseProfile);
+									apply_reverse_performance_profile(screen);
+									if (!rebuild_reverse_source(screen))
+										ImGui::OpenPopup(
+											"Reverse Source Error");
 									saveConfiguration = true;
+								}
+
+								switch (screen.reversePerformanceProfile)
+								{
+								case reverse_performance_profile_t::ECONOMY:
+									ImGui::TextColored(
+										ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
+										"Impact: Very low. Best for weak GPUs or 30 FPS gameplay.");
+									break;
+								case reverse_performance_profile_t::BALANCED:
+									ImGui::TextColored(
+										ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
+										"Impact: Low. Recommended for normal reversing.");
+									break;
+								case reverse_performance_profile_t::QUALITY:
+									ImGui::TextColored(
+										ImVec4(0.95f, 0.78f, 0.25f, 1.0f),
+										"Impact: Medium. Clearer image and smoother motion.");
+									break;
+								case reverse_performance_profile_t::ULTRA:
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.48f, 0.25f, 1.0f),
+										"Impact: High. Use only when substantial GPU headroom exists.");
+									break;
+								case reverse_performance_profile_t::CUSTOM:
+								default:
+									ImGui::TextColored(
+										ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
+										"Impact depends on custom resolution and FPS.");
+									break;
+								}
+								ImGui::Text(
+									"Capture: %ux%u at %u FPS",
+									screen.reverseCaptureWidth,
+									screen.reverseCaptureHeight,
+									screen.reverseFramerate);
+
+								if (screen.reversePerformanceProfile ==
+									reverse_performance_profile_t::CUSTOM)
+								{
+									int reverseWidth = static_cast<int>(
+										screen.reverseCaptureWidth);
+									int reverseHeight = static_cast<int>(
+										screen.reverseCaptureHeight);
+									int reverseFps = static_cast<int>(
+										screen.reverseFramerate);
+									bool customCaptureChanged = false;
+									bool customCaptureFinished = false;
+									customCaptureChanged |= ImGui::SliderInt(
+										"Reverse capture width",
+										&reverseWidth, 256, 1920);
+									customCaptureFinished |=
+										ImGui::IsItemDeactivatedAfterEdit();
+									customCaptureChanged |= ImGui::SliderInt(
+										"Reverse capture height",
+										&reverseHeight, 144, 1080);
+									customCaptureFinished |=
+										ImGui::IsItemDeactivatedAfterEdit();
+									customCaptureChanged |= ImGui::SliderInt(
+										"Reverse view FPS",
+										&reverseFps, 5, 60);
+									customCaptureFinished |=
+										ImGui::IsItemDeactivatedAfterEdit();
+									if (customCaptureChanged)
+									{
+										screen.reverseCaptureWidth =
+											static_cast<uint32_t>(reverseWidth);
+										screen.reverseCaptureHeight =
+											static_cast<uint32_t>(reverseHeight);
+										screen.reverseFramerate =
+											static_cast<uint8_t>(reverseFps);
+										saveConfiguration = true;
+									}
+									if (customCaptureFinished)
+									{
+										if (!rebuild_reverse_source(screen))
+											ImGui::OpenPopup(
+												"Reverse Source Error");
+									}
 								}
 
 								bool cropChanged = false;
@@ -1168,6 +1276,48 @@ void on_frame()
 												"Reverse Source Error");
 									}
 								}
+
+								ImGui::Separator();
+								ImGui::TextWrapped(
+									"SPF trailer-aware camera tracking");
+								if (!g_camera_bridge_mapping_present.load())
+								{
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+										"SPF bridge is not loaded.");
+								}
+								else if (!g_camera_bridge_activated.load())
+								{
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+										"SPF found the bridge, but it is not activated.");
+								}
+								else if (!g_camera_bridge_telemetry_registered.load())
+								{
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.35f, 0.25f, 1.0f),
+										"SPF trailer telemetry registration failed.");
+								}
+								else if (g_camera_bridge_trailer_valid.load())
+								{
+									ImGui::TextColored(
+										ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
+										"Tail trailer anchor ready (%u trailer%s).",
+										g_camera_bridge_trailer_count.load(),
+										g_camera_bridge_trailer_count.load() == 1
+											? "" : "s");
+								}
+								else
+								{
+									ImGui::TextColored(
+										ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
+										"No connected trailer; truck anchor would be used.");
+								}
+								ImGui::TextWrapped(
+									"SPF supplies the live tail position, but SPF 1.2 "
+									"does not expose an independent camera render texture. "
+									"The working feed therefore remains the virtual side "
+									"mirror and never changes the driver's main camera.");
 							}
 							ImGui::TreePop();
 						}
@@ -1245,11 +1395,17 @@ void on_frame()
 					}
 
 						if (ImGui::BeginPopupModal("Source Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-						ImGui::TextWrapped("Failed to use source, check the console for more details");
-						if (ImGui::Button("OK", ImVec2(120, 0))) {
-							ImGui::CloseCurrentPopup();
+							ImGui::TextWrapped("Failed to use source, check the console for more details");
+							if (ImGui::Button("OK", ImVec2(120, 0))) {
+								ImGui::CloseCurrentPopup();
+							}
+							ImGui::EndPopup();
 						}
-						if (ImGui::BeginPopupModal("Reverse Source Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+
+						if (ImGui::BeginPopupModal(
+							"Reverse Source Error", nullptr,
+							ImGuiWindowFlags_AlwaysAutoResize))
+						{
 							ImGui::TextWrapped(
 								"Failed to capture the game window for the reverse "
 								"mirror. Use DX11 windowed/borderless mode and check "
@@ -1258,8 +1414,6 @@ void on_frame()
 								ImGui::CloseCurrentPopup();
 							ImGui::EndPopup();
 						}
-						ImGui::EndPopup();
-					}
 
 
 					if (ImGui::Button("Remove")) {
@@ -1294,7 +1448,25 @@ void on_frame()
 	}
 
 	if (saveConfiguration)
-		settings::save();
+	{
+		configuration_save_pending = true;
+		configuration_last_change_tick = GetTickCount64();
+	}
+
+	if (configuration_save_pending)
+	{
+		const uint64_t now = GetTickCount64();
+		const bool timedOut =
+			configuration_last_change_tick != 0 &&
+			now >= configuration_last_change_tick &&
+			now - configuration_last_change_tick >= 1000;
+		if (!ImGui::IsAnyItemActive() || timedOut)
+		{
+			settings::save();
+			configuration_save_pending = false;
+			configuration_last_change_tick = 0;
+		}
+	}
 }
 
 namespace Gui {

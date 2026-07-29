@@ -26,6 +26,11 @@ namespace
             g_mapping = nullptr;
         }
         g_camera_bridge_connected = false;
+        g_camera_bridge_mapping_present = false;
+        g_camera_bridge_activated = false;
+        g_camera_bridge_telemetry_registered = false;
+        g_camera_bridge_trailer_valid = false;
+        g_camera_bridge_trailer_count = 0;
     }
 
     bool try_open_mapping(uint64_t now)
@@ -64,8 +69,10 @@ namespace camera_bridge
         if (!try_open_mapping(now))
         {
             g_camera_bridge_connected = false;
+            g_camera_bridge_mapping_present = false;
             return;
         }
+        g_camera_bridge_mapping_present = true;
 
         prism_camera_bridge::SharedState snapshot{};
         bool copied{};
@@ -87,21 +94,54 @@ namespace camera_bridge
             }
         }
 
-        const bool valid =
+        const bool fresh =
             copied &&
             snapshot.magic == prism_camera_bridge::kMagic &&
             snapshot.version == prism_camera_bridge::kVersion &&
-            snapshot.valid != 0 &&
             now >= snapshot.updatedTick &&
             now - snapshot.updatedTick <= 1000;
-        g_camera_bridge_connected = valid;
-        if (!valid)
+        if (!fresh)
+        {
+            g_camera_bridge_connected = false;
+            g_camera_bridge_activated = false;
+            g_camera_bridge_telemetry_registered = false;
+            g_camera_bridge_trailer_valid = false;
+            g_camera_bridge_trailer_count = 0;
             return;
+        }
 
-        g_camera_world_x = snapshot.cameraX;
-        g_camera_world_y = snapshot.cameraY;
-        g_camera_world_z = snapshot.cameraZ;
-        g_camera_type = snapshot.cameraType;
+        const bool cameraValid =
+            (snapshot.flags &
+                prism_camera_bridge::kCameraValid) != 0;
+        g_camera_bridge_connected = cameraValid;
+        g_camera_bridge_activated =
+            (snapshot.flags &
+                prism_camera_bridge::kActivated) != 0;
+        g_camera_bridge_telemetry_registered =
+            (snapshot.flags &
+                prism_camera_bridge::kTelemetryRegistered) != 0;
+        const bool trailerValid =
+            (snapshot.flags &
+                prism_camera_bridge::kTrailerValid) != 0;
+        g_camera_bridge_trailer_valid = trailerValid;
+        g_camera_bridge_trailer_count = snapshot.trailerCount;
+
+        if (cameraValid)
+        {
+            g_camera_world_x = snapshot.cameraX;
+            g_camera_world_y = snapshot.cameraY;
+            g_camera_world_z = snapshot.cameraZ;
+            g_camera_type = snapshot.cameraType;
+        }
+        if (trailerValid)
+        {
+            g_last_trailer_world_x = snapshot.trailerX;
+            g_last_trailer_world_y = snapshot.trailerY;
+            g_last_trailer_world_z = snapshot.trailerZ;
+            g_last_trailer_heading = snapshot.trailerHeading;
+            g_last_trailer_pitch = snapshot.trailerPitch;
+            g_last_trailer_roll = snapshot.trailerRoll;
+        }
         g_last_camera_bridge_tick = snapshot.updatedTick;
     }
 

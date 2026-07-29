@@ -32,6 +32,14 @@ enum class performance_profile_t : uint8_t {
 	SMOOTH
 };
 
+enum class reverse_performance_profile_t : uint8_t {
+	CUSTOM = 0,
+	ECONOMY,
+	BALANCED,
+	QUALITY,
+	ULTRA
+};
+
 enum class content_mode_t : uint8_t {
 	WINDOW_CAPTURE = 0,
 	INTEGRATED_MEDIA,
@@ -81,7 +89,11 @@ struct screen_t
 	bool reversePreview = false;
 	bool reverseZeroForwardImpact = true;
 	uint64_t reverseLastStartAttemptTick{};
-	uint8_t reverseFramerate = 20;
+	reverse_performance_profile_t reversePerformanceProfile =
+		reverse_performance_profile_t::BALANCED;
+	uint32_t reverseCaptureWidth = 640;
+	uint32_t reverseCaptureHeight = 360;
+	uint8_t reverseFramerate = 15;
 	float reverseCropLeft = 0.30f;
 	float reverseCropTop = 0.02f;
 	float reverseCropWidth = 0.40f;
@@ -116,6 +128,36 @@ struct screen_t
 	uint32_t liveTextureWidth{};
 	uint32_t liveTextureHeight{};
 };
+
+inline void apply_reverse_performance_profile(screen_t& screen)
+{
+	switch (screen.reversePerformanceProfile)
+	{
+	case reverse_performance_profile_t::ECONOMY:
+		screen.reverseCaptureWidth = 426;
+		screen.reverseCaptureHeight = 240;
+		screen.reverseFramerate = 10;
+		break;
+	case reverse_performance_profile_t::BALANCED:
+		screen.reverseCaptureWidth = 640;
+		screen.reverseCaptureHeight = 360;
+		screen.reverseFramerate = 15;
+		break;
+	case reverse_performance_profile_t::QUALITY:
+		screen.reverseCaptureWidth = 960;
+		screen.reverseCaptureHeight = 540;
+		screen.reverseFramerate = 20;
+		break;
+	case reverse_performance_profile_t::ULTRA:
+		screen.reverseCaptureWidth = 1280;
+		screen.reverseCaptureHeight = 720;
+		screen.reverseFramerate = 30;
+		break;
+	case reverse_performance_profile_t::CUSTOM:
+	default:
+		break;
+	}
+}
 
 inline std::atomic<bool> g_screen_source_creation_in_progress{}; // Mainly for WGC to prevent deadlock on create texture 2d
 inline std::mutex g_screens_mutex;

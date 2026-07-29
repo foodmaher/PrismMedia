@@ -1,4 +1,4 @@
-# PrismTextureStreamerFB 2.4 Performance and Adaptive Features Guide
+# PrismTextureStreamerFB 2.5 Performance and Adaptive Features Guide
 
 ## Choose the playback method
 
@@ -137,5 +137,16 @@ than creating another 3D scene render.
 5. Adjust left, top, width, and height until only the mirror is visible.
 6. Disable preview. The source now wakes automatically in reverse.
 
-Use 15–20 FPS for the smallest impact. The mirror view is truck/trailer aware
-because ETS2/ATS renders it; it is not a physically mounted trailer-tail camera.
+Use one of the saved reverse profiles:
+
+- **Economy:** 426x240 at 10 FPS — very low impact
+- **Balanced:** 640x360 at 15 FPS — recommended
+- **Quality:** 960x540 at 20 FPS — medium impact
+- **Ultra:** 1280x720 at 30 FPS — high impact
+- **Custom:** user-controlled resolution and FPS
+
+The mirror view is truck/trailer aware because ETS2/ATS renders it; it is not
+a physically mounted trailer-tail camera. The SPF bridge now also publishes
+the live final-trailer transform. SPF 1.2 does not expose an independent
+camera render texture, so using its free camera directly would replace the
+driver's main view. Prism deliberately avoids that unsafe/flickering approach.

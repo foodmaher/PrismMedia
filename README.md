@@ -144,6 +144,26 @@ and copy `PrismCameraBridge.dll` to
 `bin\win_x64\plugins\spfPlugins\PrismCameraBridge`. See
 `SPF-BRIDGE-INSTALL.txt` in the build artifact.
 
+## Version 2.5 reverse profiles and trailer tracking
+
+Version `2.5.0-reverse-profiles` adds:
+
+- Economy `426x240 @ 10 FPS`, Balanced `640x360 @ 15 FPS`, Quality
+  `960x540 @ 20 FPS`, Ultra `1280x720 @ 30 FPS`, and Custom reverse profiles
+- Separate reverse-capture resolution, independent of the normal media profile
+- Deferred configuration writes so dragging a slider no longer writes the INI
+  once per rendered frame
+- SPF tracking for the live placement and orientation of the final connected
+  trailer in singles, doubles, triples, and articulated combinations
+- Clear SPF bridge lifecycle and trailer-telemetry diagnostics in the menu
+
+The documented SPF 1.2 camera API controls the active player camera and does
+not expose a second camera render target. For that reason, this release does
+not switch the player's view or present an unstable flickering camera as a
+finished feature. The working low-overhead reverse source remains a selected
+F2 virtual side mirror. The published tail transform is the foundation for a
+future validated mirror-render hook.
+
 ## Version 2.3 engine-powered media and GPS edge fix
 
 Version `2.3.1-adaptive` added:
@@ -178,7 +198,7 @@ Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-2.4.0-distance-audio` artifact. This cloud build requires
+`PrismTextureStreamerFB-2.5.0-reverse-profiles` artifact. This cloud build requires
 no local Visual Studio installation.
 
 ## Contributing

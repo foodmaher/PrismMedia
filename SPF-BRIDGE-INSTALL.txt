@@ -24,10 +24,22 @@ distance-controlled low-pass effect.
    bin\win_x64\plugins\spfPlugins\PrismCameraBridge\
        PrismCameraBridge.dll
 
-4. Start a driving session, switch to interior camera 1 once, and open:
+4. Start the game and press Delete to open SPF Framework. Open Plugins,
+   find PrismCameraBridge, and switch it ON. SPF discovers new plugins but
+   may leave them disabled until the user explicitly enables them.
+
+5. Fully restart the game after enabling the bridge.
+
+6. Start a driving session, switch to interior camera 1 once, and open:
    Ctrl+F8 > your screen > Adaptive Cabin Audio
 
    The menu should show the exact camera distance when you switch outside.
+
+The same bridge also publishes the live placement of the last connected
+trailer. Prism uses this as the safe data foundation for trailer-aware camera
+development. SPF 1.2 does not expose an independent render-to-texture camera,
+so the current working GPS reverse feed still uses an F2 virtual side mirror
+and never replaces the driver's main camera.
 
 If SPF or the companion is missing, Prism automatically falls back to its
 fixed outside-volume setting. Game audio is never passed through the filter.

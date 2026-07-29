@@ -36,7 +36,7 @@ if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-2.4.0'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-2.5.0'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }
@@ -46,6 +46,7 @@ Copy-Item (Join-Path $ClientDirectory '*') $Package -Recurse
 Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Package
 Copy-Item (Join-Path $ProjectRoot 'V2.3-ADAPTIVE-TESTING.md') $Package
 Copy-Item (Join-Path $ProjectRoot 'V2.4-DISTANCE-AUDIO-TESTING.md') $Package
+Copy-Item (Join-Path $ProjectRoot 'V2.5-REVERSE-PROFILES-TESTING.md') $Package
 $SpfBridge = Join-Path $Package 'SPF-OPTIONAL\PrismCameraBridge'
 New-Item -ItemType Directory -Path $SpfBridge -Force | Out-Null
 Copy-Item $BridgeDll $SpfBridge

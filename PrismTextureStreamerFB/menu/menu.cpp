@@ -1082,9 +1082,10 @@ void on_frame()
 								ImGui::TextWrapped(
 									"The current legacy mode captures a calibrated part of the "
 									"game window. The experimental internal mode activates "
-									"ETS2's dormant park-camera slot and transfers its GPU "
-									"render target directly to the GPS without moving the "
-									"driver's view or reading pixels back to the CPU.");
+									"ETS2's dormant park-camera slot for diagnostics. In the "
+									"v2.8.1 crash hotfix, direct GPU transfer to the GPS is "
+									"disabled to protect the D3D11 device during loading and "
+									"display-mode changes.");
 
 							if (ImGui::TreeNode(
 								"Internal render-to-texture probe"))
@@ -1183,9 +1184,10 @@ void on_frame()
 
 								ImGui::Separator();
 								ImGui::TextWrapped(
-									"The trace is now optional diagnostics. The internal "
-									"camera is displayed automatically in reverse or Preview "
-									"after its colour target is captured during truck load.");
+									"The internal path is diagnostic-only in this hotfix. "
+									"Use Window crop (stable) for a visible reverse image. "
+									"The trace remains available for developing a safe "
+									"readback bridge.");
 								ImGui::TextColored(
 									ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
 									"Normal forward driving has no additional park-camera "
@@ -1301,7 +1303,7 @@ void on_frame()
 									g_reverse_active.load() ? "Yes" : "No");
 								static const char* reverseMethodNames[] = {
 									"Window crop (stable)",
-									"Internal park camera (GPU, experimental)"
+									"Internal park camera (diagnostic only)"
 								};
 								int reverseMethod = static_cast<int>(
 									screen.reverseCameraMethod);
@@ -1343,6 +1345,10 @@ void on_frame()
 
 								if (internalParkMethod)
 								{
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+										"v2.8.1 safety mode: internal GPS output disabled; "
+										"select Window crop for a visible reverse image.");
 									const auto parkStatus =
 										dx11::internal_render_probe::status();
 									ImGui::TextColored(
@@ -1477,9 +1483,8 @@ void on_frame()
 									ImGui::TextWrapped(
 										"Park-camera render cost is zero forward: slot 7 "
 										"is scheduled only in reverse or Preview. Normal "
-										"media uses one small GPU texture copy. "
-										"If the GPU target fails, the GPS retains its "
-										"normal media instead of turning black.");
+										"media returns to the stable direct dynamic-texture "
+										"upload path with no extra GPU texture copy.");
 								}
 								else
 								{

@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "2.8.0-internal-camera-test";
+inline const char* g_version = "2.8.1-loading-crash-hotfix";

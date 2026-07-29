@@ -221,6 +221,15 @@ The internal offsets remain locked to the exact supported ETS2 executable.
 Other ETS2 builds and ATS continue to use **Window crop (stable)**. See
 `V2.8-INTERNAL-CAMERA-TEST.md`.
 
+### Version 2.8.1 loading-crash hotfix
+
+The supplied v2.8 crash log showed `DXGI_ERROR_DEVICE_REMOVED` during the
+loading-screen swap-chain resize. Version `2.8.1-loading-crash-hotfix` restores
+the stable v2.7 dynamic GPS upload texture and disables direct internal-camera
+GPU output. The internal slot remains available for diagnostics; use **Window
+crop (stable)** for a visible reverse feed in this hotfix. See
+`V2.8.1-LOADING-CRASH-HOTFIX.md`.
+
 ## Version 2.3 engine-powered media and GPS edge fix
 
 Version `2.3.1-adaptive` added:
@@ -255,8 +264,8 @@ Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-2.8.0-internal-camera-test` artifact. This cloud build requires
-no local Visual Studio installation.
+`PrismTextureStreamerFB-2.8.1-loading-crash-hotfix` artifact. This cloud build
+requires no local Visual Studio installation.
 
 ## Contributing
 PRs and issues are welcome, keep in mind:

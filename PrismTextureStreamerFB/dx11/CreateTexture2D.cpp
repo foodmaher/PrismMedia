@@ -41,74 +41,20 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 
             D3D11_TEXTURE2D_DESC modifiedDesc = *pDesc;
             modifiedDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            modifiedDesc.Usage = D3D11_USAGE_DEFAULT;
-            modifiedDesc.CPUAccessFlags = 0;
+            // Preserve the stable v2.7 resource contract. Making this
+            // game-owned replacement render-target capable caused
+            // DXGI_ERROR_DEVICE_REMOVED during swap-chain resize on systems
+            // with other DXGI hooks.
+            modifiedDesc.Usage = D3D11_USAGE_DYNAMIC;
+            modifiedDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
             modifiedDesc.MiscFlags = 0;
-            modifiedDesc.BindFlags =
-                D3D11_BIND_SHADER_RESOURCE |
-                D3D11_BIND_RENDER_TARGET;
+            modifiedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
             modifiedDesc.Width = screen.targetLiveTextureWidth;
             modifiedDesc.Height = screen.targetLiveTextureHeight;
 
             HRESULT hr = CreateTexture2D_Original(pDevice, &modifiedDesc, pInitialData, ppTexture2D);
             if (SUCCEEDED(hr) && ppTexture2D && *ppTexture2D)
             {
-                D3D11_TEXTURE2D_DESC uploadDesc = modifiedDesc;
-                uploadDesc.Usage = D3D11_USAGE_DYNAMIC;
-                uploadDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-                uploadDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                ID3D11Texture2D* uploadTexture{};
-                ID3D11RenderTargetView* renderTarget{};
-                HRESULT resourceHr = CreateTexture2D_Original(
-                    pDevice, &uploadDesc, nullptr, &uploadTexture);
-                if (SUCCEEDED(resourceHr))
-                {
-                    resourceHr = pDevice->CreateRenderTargetView(
-                        *ppTexture2D, nullptr, &renderTarget);
-                }
-
-                bool gpuOutputReady =
-                    SUCCEEDED(resourceHr) &&
-                    uploadTexture &&
-                    renderTarget;
-                if (!gpuOutputReady)
-                {
-                    if (uploadTexture)
-                        uploadTexture->Release();
-                    if (renderTarget)
-                        renderTarget->Release();
-
-                    // Keep the established CPU upload path as a fail-safe.
-                    // Internal park display will report unavailable, while
-                    // normal media continues to work instead of showing black.
-                    (*ppTexture2D)->Release();
-                    *ppTexture2D = nullptr;
-                    D3D11_TEXTURE2D_DESC fallbackDesc = modifiedDesc;
-                    fallbackDesc.Usage = D3D11_USAGE_DYNAMIC;
-                    fallbackDesc.CPUAccessFlags =
-                        D3D11_CPU_ACCESS_WRITE;
-                    fallbackDesc.BindFlags =
-                        D3D11_BIND_SHADER_RESOURCE;
-                    hr = CreateTexture2D_Original(
-                        pDevice,
-                        &fallbackDesc,
-                        nullptr,
-                        ppTexture2D);
-                    if (FAILED(hr) || !*ppTexture2D)
-                    {
-                        scs_log(
-                            2,
-                            "[dx11::create_texture_2d] GPU output and "
-                            "fallback creation failed for %s, "
-                            "hr=0x%08X",
-                            screen.original_texture.c_str(),
-                            hr);
-                        return hr;
-                    }
-                    uploadTexture = *ppTexture2D;
-                    uploadTexture->AddRef();
-                }
-
                 if (screen.liveTexture) screen.liveTexture->Release();
                 if (screen.uploadTexture) screen.uploadTexture->Release();
                 if (screen.liveTextureRenderTarget)
@@ -121,16 +67,15 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 
                 screen.liveTexture = *ppTexture2D;
                 screen.liveTexture->AddRef(); // own a ref independent of the games
-                screen.uploadTexture = uploadTexture;
-                screen.liveTextureRenderTarget = renderTarget;
+                screen.uploadTexture = nullptr;
+                screen.liveTextureRenderTarget = nullptr;
                 pDevice->GetImmediateContext(&screen.immediateContext);
 
                 scs_log(
                     0,
                     "[dx11::create_texture_2d] matched texture '%s' "
-                    "(GPU park output %s)",
-                    screen.original_texture.c_str(),
-                    gpuOutputReady ? "ready" : "unavailable; CPU fallback");
+                    "(safe dynamic upload)",
+                    screen.original_texture.c_str());
             }
             else {
                 scs_log(2, "[dx11::create_texture_2d] rewrite of %s FAILED, hr=0x%08X", screen.original_texture.c_str(), hr);
@@ -139,14 +84,8 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
         }
     }
 
-    const HRESULT result = CreateTexture2D_Original(
+    return CreateTexture2D_Original(
         pDevice, pDesc, pInitialData, ppTexture2D);
-    if (SUCCEEDED(result) && ppTexture2D && *ppTexture2D)
-    {
-        dx11::internal_render_probe::on_texture_created(
-            *ppTexture2D);
-    }
-    return result;
 }
 
 
@@ -210,9 +149,7 @@ void new_frame()
 	        const bool reverseActive =
 	            windowReverseRequested && screen.reverseSource;
 
-        if (!screen.liveTexture ||
-            !screen.uploadTexture ||
-            !screen.immediateContext)
+        if (!screen.liveTexture || !screen.immediateContext)
             continue;
 
         if (reverseRequested && internalParkMethod)
@@ -233,17 +170,11 @@ void new_frame()
             if (!shouldBlit)
                 continue;
 
-            g_screen_source_creation_in_progress = true;
-            const bool parkBlitSucceeded =
-                dx11::internal_render_probe::blit_park_texture(
-                screen.immediateContext,
-                screen.liveTexture,
-                screen.liveTextureRenderTarget,
-                screen.flipVertical,
-                screen.brightness,
-                static_cast<uint32_t>(screen.scaleMode),
-                screen.edgeBleedGuard);
-            g_screen_source_creation_in_progress = false;
+            // The v2.8.1 hotfix leaves the internal camera scheduler and
+            // diagnostics active, but never binds the GPS replacement as a
+            // render target. A readback-safe display bridge will replace this
+            // disabled GPU blit after it is validated independently.
+            const bool parkBlitSucceeded = false;
             if (parkBlitSucceeded)
             {
                 screen.internalParkLastBlitTick = nowTick;
@@ -415,7 +346,7 @@ void new_frame()
 
         D3D11_MAPPED_SUBRESOURCE mapped;
         if (FAILED(screen.immediateContext->Map(
-            screen.uploadTexture,
+            screen.liveTexture,
             0,
             D3D11_MAP_WRITE_DISCARD,
             0,
@@ -506,13 +437,7 @@ void new_frame()
         }
 
         screen.immediateContext->Unmap(
-            screen.uploadTexture, 0);
-        if (screen.uploadTexture != screen.liveTexture)
-        {
-            screen.immediateContext->CopyResource(
-                screen.liveTexture,
-                screen.uploadTexture);
-        }
+            screen.liveTexture, 0);
         screen.hasUploadedFrame = true;
         ++screen.uploadedFrames;
 

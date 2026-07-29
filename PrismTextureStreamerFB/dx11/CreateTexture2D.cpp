@@ -352,9 +352,9 @@ void new_frame()
 	            screen.uploadCpuMs + sourceStats.workerCpuMs;
 	    }
 
-    internal_render_probe::set_park_activation_requested(
+    dx11::internal_render_probe::set_park_activation_requested(
         internalParkActivationRequested);
-    internal_render_probe::set_park_render_requested(
+    dx11::internal_render_probe::set_park_render_requested(
         internalParkRenderRequested);
 }
 

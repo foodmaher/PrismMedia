@@ -228,6 +228,15 @@ namespace settings {
                     static_cast<UINT>(
                         reverse_camera_method_t::
                             INTERNAL_PARK_PROBE)));
+            screen.reverseInternalTargetVariant =
+                static_cast<uint8_t>((std::clamp)(
+                    GetPrivateProfileIntA(
+                        section.c_str(),
+                        "ReverseInternalTargetVariant",
+                        1,
+                        path.c_str()),
+                    0U,
+                    4U));
             screen.reverseZeroForwardImpact = GetPrivateProfileIntA(
                 section.c_str(), "ReverseZeroForwardImpact", 1, path.c_str()) != 0;
             screen.reversePerformanceProfile =
@@ -370,7 +379,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 8);
+        write_number(temporaryPath, "General", "Version", 9);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
@@ -423,6 +432,10 @@ namespace settings {
                 "ReverseCameraMethod",
                 static_cast<uint32_t>(
                     screen.reverseCameraMethod));
+            write_number(
+                temporaryPath, section.c_str(),
+                "ReverseInternalTargetVariant",
+                screen.reverseInternalTargetVariant);
             write_number(temporaryPath, section.c_str(), "ReverseZeroForwardImpact", screen.reverseZeroForwardImpact ? 1 : 0);
             write_number(
                 temporaryPath, section.c_str(),

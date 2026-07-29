@@ -37,6 +37,8 @@ namespace
 	constexpr uint32_t kParkSlot = 7;
 	constexpr uint32_t kCloneSourceSlot = 5;
 	constexpr uint32_t kMaximumCandidates = 256;
+	constexpr uint32_t kMaximumParkTargetCandidates = 4;
+	constexpr uint32_t kNoParkTargetCandidate = UINT32_MAX;
 
 	constexpr std::array<uint8_t, 34> kMirrorScheduleSignature = {
 		0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x41,
@@ -121,6 +123,7 @@ namespace
 	std::atomic<uint64_t> g_lastParkScheduleTick{};
 	std::atomic<uint64_t> g_lastParkForcedFrame{UINT64_MAX};
 	std::atomic<uint32_t> g_parkTargetFramerate{15};
+	std::atomic<uint32_t> g_parkTargetVariant{1};
 	std::atomic<bool> g_parkColorTargetReady{};
 	std::atomic<bool> g_parkCompositorReady{};
 	std::atomic<uint32_t> g_parkTargetWidth{};
@@ -159,6 +162,19 @@ namespace
 	std::mutex g_parkTextureMutex;
 	ID3D11Texture2D* g_parkColorTexture{};
 	uint32_t g_parkColorTextureScore{};
+	struct park_target_candidate_t
+	{
+		ID3D11Texture2D* texture{};
+		uint64_t observationCount{};
+		uint64_t lastObservedFrame{UINT64_MAX};
+	};
+	std::array<
+		park_target_candidate_t,
+		kMaximumParkTargetCandidates> g_parkTargetCandidates{};
+	uint32_t g_parkTargetCandidateCount{};
+	uint32_t g_parkSelectedCandidate{
+		kNoParkTargetCandidate
+	};
 	ID3D11Device* g_compositorDevice{};
 	ID3D11Texture2D* g_parkSampleTexture{};
 	ID3D11ShaderResourceView* g_parkSampleView{};
@@ -345,6 +361,14 @@ float4 ps_main(PixelInput input) : SV_TARGET
 	void release_park_color_target_locked()
 	{
 		release_com_object(g_parkColorTexture);
+		for (auto& candidate : g_parkTargetCandidates)
+		{
+			release_com_object(candidate.texture);
+			candidate.observationCount = 0;
+			candidate.lastObservedFrame = UINT64_MAX;
+		}
+		g_parkTargetCandidateCount = 0;
+		g_parkSelectedCandidate = kNoParkTargetCandidate;
 		g_parkColorTextureScore = 0;
 		g_parkColorTargetReady.store(
 			false, std::memory_order_relaxed);
@@ -359,6 +383,57 @@ float4 ps_main(PixelInput input) : SV_TARGET
 	{
 		std::lock_guard<std::mutex> lock(g_parkTextureMutex);
 		release_park_color_target_locked();
+	}
+
+	void select_park_target_locked(
+		uint32_t candidateIndex,
+		uint64_t currentFrame)
+	{
+		if (candidateIndex >= g_parkTargetCandidateCount)
+			return;
+
+		auto& candidate =
+			g_parkTargetCandidates[candidateIndex];
+		if (!candidate.texture)
+			return;
+
+		const bool changed =
+			g_parkColorTexture != candidate.texture;
+		g_parkSelectedCandidate = candidateIndex;
+		if (changed)
+		{
+			release_com_object(g_parkColorTexture);
+			g_parkColorTexture = candidate.texture;
+			g_parkColorTexture->AddRef();
+			g_parkSubmittedFrame = UINT64_MAX;
+		}
+
+		D3D11_TEXTURE2D_DESC description{};
+		g_parkColorTexture->GetDesc(&description);
+		g_parkObservedFrame = currentFrame;
+		g_parkTargetWidth.store(
+			description.Width, std::memory_order_relaxed);
+		g_parkTargetHeight.store(
+			description.Height, std::memory_order_relaxed);
+		g_parkTargetFormat.store(
+			static_cast<uint32_t>(description.Format),
+			std::memory_order_relaxed);
+		const bool firstTarget =
+			!g_parkColorTargetReady.exchange(
+				true, std::memory_order_acq_rel);
+		if (changed || firstTarget)
+		{
+			scs_log(
+				0,
+				"[RTT park] Selected target candidate %c: "
+				"%ux%u %s.",
+				static_cast<char>('A' + candidateIndex),
+				description.Width,
+				description.Height,
+				dx11::internal_render_probe::format_name(
+					static_cast<uint32_t>(
+						description.Format)));
+		}
 	}
 
 	float decode_unsigned_float(
@@ -584,34 +659,58 @@ float4 ps_main(PixelInput input) : SV_TARGET
 
 		std::lock_guard<std::mutex> lock(
 			g_parkTextureMutex);
-		if (g_parkColorTexture != texture)
+		uint32_t candidateIndex =
+			kNoParkTargetCandidate;
+		for (uint32_t index = 0;
+			index < g_parkTargetCandidateCount; ++index)
 		{
-			release_com_object(g_parkColorTexture);
-			g_parkColorTexture = texture;
-			g_parkColorTexture->AddRef();
+			if (g_parkTargetCandidates[index].texture ==
+				texture)
+			{
+				candidateIndex = index;
+				break;
+			}
 		}
-		g_parkObservedFrame = currentFrame;
-		g_parkTargetWidth.store(
-			description.Width, std::memory_order_relaxed);
-		g_parkTargetHeight.store(
-			description.Height, std::memory_order_relaxed);
-		g_parkTargetFormat.store(
-			static_cast<uint32_t>(description.Format),
-			std::memory_order_relaxed);
-		const bool firstTarget =
-			!g_parkColorTargetReady.exchange(
-				true, std::memory_order_acq_rel);
-		if (firstTarget)
+
+		if (candidateIndex == kNoParkTargetCandidate)
 		{
+			if (g_parkTargetCandidateCount >=
+				kMaximumParkTargetCandidates)
+			{
+				return;
+			}
+			candidateIndex = g_parkTargetCandidateCount++;
+			auto& candidate =
+				g_parkTargetCandidates[candidateIndex];
+			candidate.texture = texture;
+			candidate.texture->AddRef();
+			candidate.observationCount = 0;
+			candidate.lastObservedFrame = currentFrame;
 			scs_log(
 				0,
-				"[RTT park] Observed the live park colour "
-				"target: %ux%u %s.",
+				"[RTT park] Discovered target candidate %c: "
+				"%ux%u %s.",
+				static_cast<char>('A' + candidateIndex),
 				description.Width,
 				description.Height,
 				dx11::internal_render_probe::format_name(
 					static_cast<uint32_t>(
 						description.Format)));
+		}
+
+		auto& candidate =
+			g_parkTargetCandidates[candidateIndex];
+		++candidate.observationCount;
+		candidate.lastObservedFrame = currentFrame;
+
+		const uint32_t variant =
+			g_parkTargetVariant.load(
+				std::memory_order_relaxed);
+		if (variant == 0 ||
+			candidateIndex == variant - 1)
+		{
+			select_park_target_locked(
+				candidateIndex, currentFrame);
 		}
 	}
 
@@ -2014,6 +2113,58 @@ namespace dx11::internal_render_probe
 			std::memory_order_release);
 	}
 
+	void set_park_target_variant(uint32_t variant)
+	{
+		variant = (std::min)(
+			variant, kMaximumParkTargetCandidates);
+		const uint32_t previous =
+			g_parkTargetVariant.exchange(
+				variant, std::memory_order_acq_rel);
+		if (previous == variant)
+			return;
+
+		std::lock_guard<std::mutex> lock(
+			g_parkTextureMutex);
+		release_com_object(g_parkColorTexture);
+		g_parkSelectedCandidate =
+			kNoParkTargetCandidate;
+		g_parkObservedFrame = UINT64_MAX;
+		g_parkSubmittedFrame = UINT64_MAX;
+		g_parkColorTargetReady.store(
+			false, std::memory_order_relaxed);
+		g_parkTargetWidth.store(
+			0, std::memory_order_relaxed);
+		g_parkTargetHeight.store(
+			0, std::memory_order_relaxed);
+		g_parkTargetFormat.store(
+			0, std::memory_order_relaxed);
+
+		if (variant != 0 &&
+			variant <= g_parkTargetCandidateCount)
+		{
+			const auto& candidate =
+				g_parkTargetCandidates[variant - 1];
+			select_park_target_locked(
+				variant - 1,
+				candidate.lastObservedFrame);
+		}
+
+		if (variant == 0)
+		{
+			scs_log(
+				0,
+				"[RTT park] Target selector changed to Auto.");
+		}
+		else
+		{
+			scs_log(
+				0,
+				"[RTT park] Target selector changed to "
+				"candidate %c.",
+				static_cast<char>('A' + variant - 1));
+		}
+	}
+
 	void on_texture_created(ID3D11Texture2D* texture)
 	{
 		if (!texture ||
@@ -2280,6 +2431,13 @@ namespace dx11::internal_render_probe
 				g_parkTextureMutex);
 			result.parkReadbackReady =
 				g_parkReadbackReady;
+			result.parkTargetCandidateCount =
+				g_parkTargetCandidateCount;
+			result.parkSelectedCandidate =
+				g_parkSelectedCandidate ==
+					kNoParkTargetCandidate
+				? 0
+				: g_parkSelectedCandidate + 1;
 		}
 		result.timeDateStamp = g_timeDateStamp.load();
 		result.imageSize = g_imageSize.load();
@@ -2309,6 +2467,8 @@ namespace dx11::internal_render_probe
 			g_parkTargetFormat.load();
 		result.parkTargetFramerate =
 			g_parkTargetFramerate.load();
+		result.parkTargetVariant =
+			g_parkTargetVariant.load();
 		for (uint32_t slot = 0;
 			slot < kMirrorSlotCount; ++slot)
 		{

@@ -94,6 +94,7 @@ void new_frame()
     bool internalParkActivationRequested{};
     bool internalParkRenderRequested{};
     uint32_t internalParkTargetFramerate = 1;
+    uint32_t internalParkTargetVariant = 1;
     std::lock_guard<std::mutex> lock(g_screens_mutex);
 	    for (auto& screen : g_screens)
 	    {
@@ -115,6 +116,8 @@ void new_frame()
                     internalParkTargetFramerate,
                     static_cast<uint32_t>(
                         screen.reverseFramerate));
+                internalParkTargetVariant =
+                    screen.reverseInternalTargetVariant;
             }
             const bool windowReverseRequested =
                 reverseRequested && !internalParkMethod;
@@ -453,6 +456,8 @@ void new_frame()
         internalParkRenderRequested);
     dx11::internal_render_probe::set_park_target_framerate(
         internalParkTargetFramerate);
+    dx11::internal_render_probe::set_park_target_variant(
+        internalParkTargetVariant);
 }
 
 

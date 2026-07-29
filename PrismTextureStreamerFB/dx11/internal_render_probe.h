@@ -60,6 +60,9 @@ namespace dx11::internal_render_probe
 		uint32_t parkTargetHeight{};
 		uint32_t parkTargetFormat{};
 		uint32_t parkTargetFramerate{};
+		uint32_t parkTargetVariant{};
+		uint32_t parkTargetCandidateCount{};
+		uint32_t parkSelectedCandidate{};
 		uint32_t slotWidth[9]{};
 		uint32_t slotHeight[9]{};
 	};
@@ -72,6 +75,7 @@ namespace dx11::internal_render_probe
 	void set_park_activation_requested(bool requested);
 	void set_park_render_requested(bool requested);
 	void set_park_target_framerate(uint32_t framerate);
+	void set_park_target_variant(uint32_t variant);
 	void on_texture_created(ID3D11Texture2D* texture);
 	bool copy_park_frame(
 		std::vector<uint8_t>& destination,

@@ -248,6 +248,20 @@ The staging resources exist only after reverse/Preview is requested. Forward
 driving retains zero park-camera render/readback work. See
 `V2.9-SAFE-READBACK-TEST.md`.
 
+### Version 2.9.1 park-target selector
+
+The first v2.9 test proved that slot 7 renders and that safe readback remains
+stable, but ETS2 exposes more than one 256x256 HDR target during the same park
+pass. Following the last matching target can therefore show a flat grey
+intermediate buffer.
+
+Version `2.9.1-park-target-selector-test` records the distinct matching buffers
+as Candidate A-D and adds a saved **Internal colour target** setting. Candidate
+A is the default for ETS2 1.60.1.7 based on the supplied render trace. If it is
+not the rear colour image, switch to B, then C/D while Preview remains enabled.
+Changing candidates does not add another render or readback pass. See
+`V2.9.1-PARK-TARGET-SELECTOR.md`.
+
 ## Version 2.3 engine-powered media and GPS edge fix
 
 Version `2.3.1-adaptive` added:
@@ -282,7 +296,7 @@ Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-2.9.0-safe-readback-test` artifact. This cloud build
+`PrismTextureStreamerFB-2.9.1-park-target-selector-test` artifact. This cloud build
 requires no local Visual Studio installation.
 
 ## Contributing

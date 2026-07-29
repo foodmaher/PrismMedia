@@ -82,6 +82,7 @@ jobs:
           Copy-Item "V2.8-INTERNAL-CAMERA-TEST.md" $Package
           Copy-Item "V2.8.1-LOADING-CRASH-HOTFIX.md" $Package
           Copy-Item "V2.9-SAFE-READBACK-TEST.md" $Package
+          Copy-Item "V2.9.1-PARK-TARGET-SELECTOR.md" $Package
 
           $SpfBridge = "$Package\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |
@@ -90,7 +91,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Package\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 2.9.0 Safe Readback Test
+          PrismTextureStreamerFB 2.9.1 Park Target Selector Test
 
           Copy the root files and the www folder into:
           <ETS2 or ATS>\bin\win_x64\plugins
@@ -107,7 +108,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-2.9.0-safe-readback-test
+          name: PrismTextureStreamerFB-2.9.1-park-target-selector-test
           path: package
           if-no-files-found: error
           retention-days: 30

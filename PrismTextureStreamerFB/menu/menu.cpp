@@ -1407,6 +1407,63 @@ void on_frame()
 									}
 
 									static const char*
+										internalTargetNames[] = {
+											"Auto (last matching buffer)",
+											"Candidate A (recommended)",
+											"Candidate B",
+											"Candidate C",
+											"Candidate D"
+										};
+									int internalTarget =
+										static_cast<int>(
+											screen.
+												reverseInternalTargetVariant);
+									if (ImGui::Combo(
+										"Internal colour target",
+										&internalTarget,
+										internalTargetNames,
+										IM_ARRAYSIZE(
+											internalTargetNames)))
+									{
+										screen.reverseInternalTargetVariant =
+											static_cast<uint8_t>(
+												internalTarget);
+										dx11::internal_render_probe::
+											set_park_target_variant(
+												static_cast<uint32_t>(
+													internalTarget));
+										saveConfiguration = true;
+									}
+									if (parkStatus.
+										parkSelectedCandidate != 0)
+									{
+										ImGui::Text(
+											"Matching buffers found: %u | "
+											"active: Candidate %c",
+											parkStatus.
+												parkTargetCandidateCount,
+											static_cast<char>(
+												'A' +
+												parkStatus.
+													parkSelectedCandidate -
+												1));
+									}
+									else
+									{
+										ImGui::Text(
+											"Matching buffers found: %u | "
+											"active: waiting",
+											parkStatus.
+												parkTargetCandidateCount);
+									}
+									ImGui::TextWrapped(
+										"Candidate A is the first park-sized HDR "
+										"buffer and is recommended for this ETS2 "
+										"build. If the picture is flat or grey, try "
+										"B, then C/D. Selection is saved and does "
+										"not change the readback performance cost.");
+
+									static const char*
 										internalReverseProfileNames[] = {
 											"Custom FPS",
 											"Economy (10 FPS)",

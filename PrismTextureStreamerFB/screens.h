@@ -100,6 +100,8 @@ struct screen_t
 	bool reverseZeroForwardImpact = true;
 	reverse_camera_method_t reverseCameraMethod =
 		reverse_camera_method_t::WINDOW_CROP;
+	// 0 follows the last matching target. 1-4 pin a discovered target.
+	uint8_t reverseInternalTargetVariant = 1;
 	uint64_t reverseLastStartAttemptTick{};
 	reverse_performance_profile_t reversePerformanceProfile =
 		reverse_performance_profile_t::BALANCED;

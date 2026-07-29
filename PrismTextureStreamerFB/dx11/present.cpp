@@ -1,4 +1,5 @@
 #include "dx11.h"
+#include "internal_render_probe.h"
 #include "../win32/win32.h"
 #include <MinHook/MinHook.h>
 #include "../scs_logging.h"
@@ -25,6 +26,8 @@ typedef HRESULT(__stdcall* present_t)(IDXGISwapChain*, UINT, UINT);
 static present_t original_present{};
 HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
 {
+    dx11::internal_render_probe::on_present_frame();
+
     static bool init{};
     if (!init) {
         DXGI_SWAP_CHAIN_DESC desc;

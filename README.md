@@ -24,6 +24,8 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Pause and resume media automatically with the truck engine
 - Prevent full-screen video colours from bleeding into the GPS bezel
 - Automatically replace media with a calibrated reverse-mirror view in reverse
+- Diagnose ETS2's internal `park`/`park_360` render-to-texture path without
+  changing the driver's camera
 - See live measured plugin CPU/readback cost and estimated FPS loss
 - Adjust target resolution and framerate
 - Apply changes 
@@ -164,6 +166,22 @@ finished feature. The working low-overhead reverse source remains a selected
 F2 virtual side mirror. The published tail transform is the foundation for a
 future validated mirror-render hook.
 
+## Version 2.6 internal render-to-texture probe
+
+Version `2.6.0-rtt-probe` adds a read-only, version-guarded diagnostic for the
+true in-game reverse-camera path. The supplied ETS2 1.60.1.7 executable contains
+nine internal camera slots, including `park` and `park_360`. This build:
+
+- enables the internal scheduler hook only for the exact analyzed executable;
+- reports the camera slots that ETS2 actually creates for the current truck;
+- records D3D11 render-target bindings for a user-controlled 10-second trace;
+- ranks candidate GPU textures and writes full results to `game.log.txt`; and
+- performs no pixel readback and never moves the player's active camera.
+
+This diagnostic is deliberately separate from the finished camera. The runtime
+trace is required to select the correct engine-owned texture before enabling
+camera creation or GPU-to-GPS transfer. See `V2.6-INTERNAL-RTT-PROBE.md`.
+
 ## Version 2.3 engine-powered media and GPS edge fix
 
 Version `2.3.1-adaptive` added:
@@ -187,18 +205,17 @@ Version `2.3.1-adaptive` added:
 - A configurable opaque edge guard that stops video-colour bleed around GPS
   displays
 
-The reverse feature deliberately reuses the game's virtual mirror instead of
-creating an undocumented extra world camera. This lets the game handle truck
-models, connected trailers and articulation. Enable the virtual mirror with
-**F2**, then use **Preview / calibrate now** if its rectangle differs at your
-resolution or UI scale.
+The legacy reverse feature captures a user-calibrated region of the game
+window. Use **Preview / calibrate now** to define that region. Version 2.6's
+internal probe is the migration path to a genuine independent rear-camera
+texture that will not depend on an on-screen mirror.
 
 Use `build-release.ps1` on Windows with Visual Studio 2022 Build Tools and the
 **Desktop development with C++** workload to produce the x64 release DLL.
 
 Alternatively, open the repository's **Actions** tab, select
 **Build Windows DLL**, choose **Run workflow**, and download the resulting
-`PrismTextureStreamerFB-2.5.0-reverse-profiles` artifact. This cloud build requires
+`PrismTextureStreamerFB-2.6.0-rtt-probe` artifact. This cloud build requires
 no local Visual Studio installation.
 
 ## Contributing

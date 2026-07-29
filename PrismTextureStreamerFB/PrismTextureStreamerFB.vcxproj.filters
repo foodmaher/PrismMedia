@@ -56,6 +56,9 @@
     <ClCompile Include="dx11\CreateTexture2D.cpp">
       <Filter>Source Files\dx11</Filter>
     </ClCompile>
+    <ClCompile Include="dx11\internal_render_probe.cpp">
+      <Filter>Source Files\dx11</Filter>
+    </ClCompile>
     <ClCompile Include="sources\window.cpp">
       <Filter>Source Files\sources</Filter>
     </ClCompile>
@@ -104,6 +107,9 @@
       <Filter>Source Files\misc</Filter>
     </ClInclude>
     <ClInclude Include="dx11\CreateTexture2D.h">
+      <Filter>Source Files\dx11</Filter>
+    </ClInclude>
+    <ClInclude Include="dx11\internal_render_probe.h">
       <Filter>Source Files\dx11</Filter>
     </ClInclude>
     <ClInclude Include="sources\window.h">

@@ -11,6 +11,7 @@
 using namespace scs_logging;
 
 #include "../prism/prism.h"
+#include "../dx11/internal_render_probe.h"
 #include "../dx11/present.h"
 #include "../dinput8/dinput8.h"
 
@@ -1059,15 +1060,189 @@ void on_frame()
 							ImGui::TreePop();
 						}
 
-						if (ImGui::TreeNode("Automatic Reverse Mirror"))
+						if (ImGui::TreeNode("Automatic Reverse Camera"))
 						{
 							ImGui::TextColored(
 								ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
 								"Expected impact: none forward; low while reversing");
 							ImGui::TextWrapped(
-								"Reuses the game's fixed virtual-mirror picture, so the "
-								"game handles every truck, trailer and articulation angle. "
-								"Enable the virtual mirror with F2 first.");
+								"The current legacy mode captures a calibrated part of the "
+								"game window. The internal render-to-texture probe below is "
+								"the first safe step toward a real independent rear camera "
+								"that does not move the driver's view.");
+
+							if (ImGui::TreeNode(
+								"Internal render-to-texture probe"))
+							{
+								const auto probeStatus =
+									dx11::internal_render_probe::status();
+								if (probeStatus.supportedBuild)
+								{
+									ImGui::TextColored(
+										ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
+										"Exact ETS2 1.60.1.7 build recognized.");
+								}
+								else
+								{
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.30f, 0.30f, 1.0f),
+										"This ETS2 executable is not supported by "
+										"the internal probe.");
+									ImGui::Text(
+										"Timestamp 0x%08X | image 0x%08X | "
+										"signature matches %u",
+										probeStatus.timeDateStamp,
+										probeStatus.imageSize,
+										probeStatus.signatureMatches);
+								}
+
+								ImGui::Text(
+									"Internal camera scheduler: %s",
+									probeStatus.mirrorHookInstalled
+										? (probeStatus.mirrorScheduleSeen
+											? "detected and active"
+											: "hooked; waiting for gameplay")
+										: "not hooked");
+								ImGui::Text(
+									"D3D11 render-target observer: %s",
+									probeStatus.contextHookInstalled
+										? "ready" : "not available");
+								ImGui::Text(
+									"Scheduler calls seen: %llu",
+									static_cast<unsigned long long>(
+										probeStatus.mirrorScheduleCount));
+
+								if (probeStatus.mirrorScheduleSeen)
+								{
+									ImGui::Text(
+										"Internal camera slots present "
+										"(mask 0x%03X):",
+										probeStatus.mirrorSlotMask);
+									bool anySlot{};
+									for (uint32_t slot = 0;
+										slot < 9; ++slot)
+									{
+										if ((probeStatus.mirrorSlotMask &
+											(1U << slot)) == 0)
+										{
+											continue;
+										}
+										ImGui::SameLine();
+										ImGui::Text(
+											"%s%s(%ux%u)",
+											anySlot ? "," : "",
+											dx11::internal_render_probe::
+												slot_name(slot),
+											probeStatus.slotWidth[slot],
+											probeStatus.slotHeight[slot]);
+										anySlot = true;
+									}
+									if (!anySlot)
+									{
+										ImGui::SameLine();
+										ImGui::TextUnformatted("none yet");
+									}
+								}
+
+								ImGui::Separator();
+								ImGui::TextWrapped(
+									"Test once: put the truck in reverse, then start "
+									"the 10-second trace. Close this menu and drive "
+									"or steer slightly until it ends. No centre or "
+									"on-screen mirror is required for this probe.");
+								ImGui::TextColored(
+									ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
+									"The trace is read-only. It adds diagnostic "
+									"overhead only during those 10 seconds.");
+
+								const bool canTrace =
+									probeStatus.supportedBuild &&
+									probeStatus.mirrorHookInstalled &&
+									probeStatus.contextHookInstalled;
+								ImGui::BeginDisabled(
+									!canTrace && !probeStatus.tracing);
+								if (!probeStatus.tracing)
+								{
+									if (ImGui::Button(
+										"Start 10-second RTT trace"))
+									{
+										dx11::internal_render_probe::
+											begin_trace(10);
+									}
+								}
+								else
+								{
+									const uint64_t now = GetTickCount64();
+									const uint64_t millisecondsLeft =
+										probeStatus.traceEndTick > now
+											? probeStatus.traceEndTick - now
+											: 0;
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+										"Tracing: %.1f seconds left | "
+										"%zu targets observed",
+										static_cast<double>(
+											millisecondsLeft) / 1000.0,
+										probeStatus.candidateCount);
+									ImGui::SameLine();
+									if (ImGui::Button("Stop RTT trace"))
+									{
+										dx11::internal_render_probe::
+											end_trace();
+									}
+								}
+								ImGui::EndDisabled();
+
+								if (!probeStatus.tracing &&
+									probeStatus.candidateCount > 0)
+								{
+									const auto candidates =
+										dx11::internal_render_probe::
+											candidates();
+									ImGui::Separator();
+									ImGui::Text(
+										"Best render-target candidates "
+										"(%zu total):",
+										candidates.size());
+									const size_t shown = (std::min)(
+										candidates.size(),
+										static_cast<size_t>(12));
+									for (size_t index = 0;
+										index < shown; ++index)
+									{
+										const auto& candidate =
+											candidates[index];
+										ImGui::Text(
+											"#%u  %ux%u  %s  "
+											"slot 0x%03X  binds %llu  "
+											"inside/near %llu/%llu",
+											candidate.id,
+											candidate.width,
+											candidate.height,
+											dx11::internal_render_probe::
+												format_name(
+													candidate.format),
+											candidate.
+												matchingCameraSlotMask,
+											static_cast<
+												unsigned long long>(
+													candidate.bindCount),
+											static_cast<
+												unsigned long long>(
+													candidate.
+														duringMirrorScheduleBindCount),
+											static_cast<
+												unsigned long long>(
+													candidate.
+														nearMirrorBindCount));
+									}
+									ImGui::TextWrapped(
+										"Full results were written to game.log.txt. "
+										"Send that file back so the real park-camera "
+										"texture can be selected safely.");
+								}
+								ImGui::TreePop();
+							}
 
 							if (ImGui::Checkbox(
 								"Show reverse view on this screen",
@@ -1314,10 +1489,12 @@ void on_frame()
 										"No connected trailer; truck anchor would be used.");
 								}
 								ImGui::TextWrapped(
-									"SPF supplies the live tail position, but SPF 1.2 "
-									"does not expose an independent camera render texture. "
-									"The working feed therefore remains the virtual side "
-									"mirror and never changes the driver's main camera.");
+									"SPF supplies the live tail position. ETS2 itself owns "
+									"the independent park/park_360 render path; the probe "
+									"above identifies its GPU texture before the plugin "
+									"creates a trailer-aware camera. Until that validation "
+									"is complete, the legacy calibrated window capture "
+									"remains available.");
 							}
 							ImGui::TreePop();
 						}

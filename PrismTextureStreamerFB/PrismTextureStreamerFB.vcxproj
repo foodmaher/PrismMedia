@@ -144,6 +144,7 @@
     <ClCompile Include="dinput8\dinput8.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="dx11\CreateTexture2D.cpp" />
+    <ClCompile Include="dx11\internal_render_probe.cpp" />
     <ClCompile Include="dx11\present.cpp" />
     <ClCompile Include="hotkeys.cpp" />
     <ClCompile Include="menu\menu.cpp" />
@@ -164,6 +165,7 @@
     <ClInclude Include="dinput8\dinput8.h" />
     <ClInclude Include="dx11\CreateTexture2D.h" />
     <ClInclude Include="dx11\dx11.h" />
+    <ClInclude Include="dx11\internal_render_probe.h" />
     <ClInclude Include="dx11\present.h" />
     <ClInclude Include="hotkeys.h" />
     <ClInclude Include="menu\menu.h" />

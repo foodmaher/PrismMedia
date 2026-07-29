@@ -1,4 +1,4 @@
-# PrismTextureStreamerFB 2.5 Performance and Adaptive Features Guide
+# PrismTextureStreamerFB 2.6 Performance and Adaptive Features Guide
 
 ## Choose the playback method
 
@@ -124,14 +124,14 @@ Integrated Media Client capture worker also sleeps while engine-paused.
 Engine control is inactive in game menus and before the driving session starts,
 so **Volume in menus / before driving** continues to control that state.
 
-## Automatic reverse mirror
+## Automatic reverse camera
 
-The reverse view captures only the game's fixed virtual-mirror rectangle and is
-paused outside reverse gear. This is intentionally cheaper and more compatible
+The legacy reverse view captures a calibrated rectangle of the game window and
+is paused outside reverse gear. This is intentionally cheaper and more compatible
 than creating another 3D scene render.
 
 1. Enable the game's virtual mirror with **F2**.
-2. Open **Automatic Reverse Mirror** on the target plugin screen.
+2. Open **Automatic Reverse Camera** on the target plugin screen.
 3. Enable **Show reverse view on this screen**.
 4. Use **Preview / calibrate now**.
 5. Adjust left, top, width, and height until only the mirror is visible.
@@ -146,7 +146,7 @@ Use one of the saved reverse profiles:
 - **Custom:** user-controlled resolution and FPS
 
 The mirror view is truck/trailer aware because ETS2/ATS renders it; it is not
-a physically mounted trailer-tail camera. The SPF bridge now also publishes
+a physically mounted trailer-tail camera. The SPF bridge publishes
 the live final-trailer transform. SPF 1.2 does not expose an independent
 camera render texture, so using its free camera directly would replace the
 driver's main view. Prism deliberately avoids that unsafe/flickering approach.

@@ -77,6 +77,7 @@ jobs:
           Copy-Item "V2.3-ADAPTIVE-TESTING.md" $Package
           Copy-Item "V2.4-DISTANCE-AUDIO-TESTING.md" $Package
           Copy-Item "V2.5-REVERSE-PROFILES-TESTING.md" $Package
+          Copy-Item "V2.6-INTERNAL-RTT-PROBE.md" $Package
 
           $SpfBridge = "$Package\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |
@@ -85,7 +86,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Package\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 2.5.0
+          PrismTextureStreamerFB 2.6.0 RTT Probe
 
           Copy the root files and the www folder into:
           <ETS2 or ATS>\bin\win_x64\plugins
@@ -102,7 +103,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-2.5.0-reverse-profiles
+          name: PrismTextureStreamerFB-2.6.0-rtt-probe
           path: package
           if-no-files-found: error
           retention-days: 30

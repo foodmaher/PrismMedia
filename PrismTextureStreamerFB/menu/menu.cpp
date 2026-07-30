@@ -514,7 +514,7 @@ void on_frame()
 
 					const char* contentModes[] = {
 						"Window Capture (most compatible)",
-						"Integrated Media Client (recommended for YouTube)",
+						"Integrated Media Client (YouTube / Spotify)",
 						"Native Direct Media (lowest overhead)"
 					};
 					int selectedContentMode = static_cast<int>(screen.contentMode);
@@ -545,8 +545,8 @@ void on_frame()
 							ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
 							"Expected impact: Low / Medium");
 						ImGui::TextWrapped(
-							"Recommended for YouTube and playlists. Uses the official "
-							"YouTube embedded player in a clean hardware-accelerated "
+							"Recommended for YouTube and Spotify playlists. Uses the "
+							"official embedded players in a clean hardware-accelerated "
 							"helper, avoiding a full browser, tabs and extensions. "
 							"One optimized Windows capture transfer is still required.");
 						if (!sources::IsMediaClientInstalled())
@@ -753,7 +753,7 @@ void on_frame()
 						if (ImGui::InputTextWithHint(
 							"##media_url",
 							screen.contentMode == content_mode_t::INTEGRATED_MEDIA
-								? "YouTube / playlist / file / direct URL"
+								? "YouTube / Spotify / playlist / file / direct URL"
 								: "Local file path or direct media URL",
 							&screen.mediaUrl))
 							unsavedChanges = true;
@@ -1404,6 +1404,77 @@ void on_frame()
 											static_cast<unsigned long long>(
 												parkStatus.
 													parkReadbackBusySkips));
+									}
+
+									ImGui::SeparatorText(
+										"Prism rear-camera accessory");
+									if (ImGui::Checkbox(
+										"Camera kit installed on this vehicle",
+										&screen.reverseCameraKitInstalled))
+									{
+										saveConfiguration = true;
+									}
+									ImGui::TextWrapped(
+										"Enable this after fitting the Prism camera "
+										"accessory in the truck shop. The render "
+										"camera is then moved from the mirror clone "
+										"to the truck or final connected trailer.");
+									if (screen.reverseCameraKitInstalled)
+									{
+										if (ImGui::Checkbox(
+											"Follow final connected trailer",
+											&screen.reverseTrailerAwareMount))
+										{
+											saveConfiguration = true;
+										}
+										if (ImGui::SliderFloat(
+											"Mount left / right",
+											&screen.reverseMountLateral,
+											-5.0f, 5.0f, "%.2f m"))
+											saveConfiguration = true;
+										if (ImGui::SliderFloat(
+											"Mount height",
+											&screen.reverseMountHeight,
+											-2.0f, 8.0f, "%.2f m"))
+											saveConfiguration = true;
+										if (ImGui::SliderFloat(
+											"Mount forward / rear",
+											&screen.reverseMountLongitudinal,
+											-8.0f, 8.0f, "%.2f m"))
+											saveConfiguration = true;
+										if (ImGui::SliderFloat(
+											"Camera yaw",
+											&screen.reverseMountYaw,
+											-360.0f, 360.0f, "%.1f deg"))
+											saveConfiguration = true;
+										if (ImGui::SliderFloat(
+											"Camera pitch",
+											&screen.reverseMountPitch,
+											-89.0f, 89.0f, "%.1f deg"))
+											saveConfiguration = true;
+										if (ImGui::Button(
+											"Reset rear mount"))
+										{
+											screen.reverseMountLateral = 0.0f;
+											screen.reverseMountHeight = 2.6f;
+											screen.reverseMountLongitudinal =
+												-0.35f;
+											screen.reverseMountYaw = 180.0f;
+											screen.reverseMountPitch = -8.0f;
+											saveConfiguration = true;
+										}
+										ImGui::TextColored(
+											g_camera_bridge_truck_valid.load() &&
+												g_camera_bridge_trailer_valid.load()
+												? ImVec4(
+													0.35f, 0.85f, 0.40f, 1.0f)
+												: ImVec4(
+													0.95f, 0.68f, 0.20f, 1.0f),
+											"SPF mount tracking: %s",
+											g_camera_bridge_truck_valid.load() &&
+												g_camera_bridge_trailer_valid.load()
+												? "truck + trailer ready"
+												: "truck-only fallback");
 									}
 
 									static const char*

@@ -3,7 +3,7 @@
 <p align="center">
 A Prism3D plugin that takes over cabin screens (GPS, dashboard, or custom) in
 <b>Euro Truck Simulator 2</b> and <b>American Truck Simulator</b>. It can
-capture a window, play YouTube through a lightweight integrated client, or
+capture a window, play YouTube or Spotify through a lightweight integrated client, or
 decode direct media without window capture.
 </p>
 
@@ -14,6 +14,7 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Add a **GPS** screen, **Dashboard** screen, or a **Custom** screen (The target `.tobj` MUST be a functional screen from a UI Script, such as `/ui/gps.sii`)
 - Pick a running application window as the source for that screen
 - Play YouTube videos/playlists without running a full browser
+- Play Spotify tracks, albums, podcasts and playlists through Spotify Embed
 - Play local files or direct stream URLs through Windows Media Foundation
 - Control media and assign keys for Play/Pause, Next, Previous, Mute and Volume
 - Spatialize Integrated Media Client sound from the driver's live head pose
@@ -68,8 +69,8 @@ The GPS/dashboard/custom screens are normally only drawn under specific in game 
 
 - **Window Capture** uses modern Windows Graphics Capture by default, with
   `PrintWindow` available only as a compatibility fallback.
-- **Integrated Media Client** hosts the official YouTube embedded player or an
-  HTML5 video element in a minimal hardware-accelerated WebView2 process. The
+- **Integrated Media Client** hosts the official YouTube or Spotify embedded
+  player, or an HTML5 video element in a minimal hardware-accelerated WebView2 process. The
   plugin captures this one clean surface rather than a full browser.
 - **Native Direct Media** uses Media Foundation and D3D11 hardware decoding for
   local files and direct media URLs. It bypasses window capture completely.

@@ -385,7 +385,7 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                     ? (std::clamp)(
                         spatialAudioScreen->
                             adaptiveAudioExternalMinimumCutoff,
-                        120.0f, 8000.0f)
+                        20.0f, 8000.0f)
                     : 20000.0f;
 
                 const bool useExactDistance =
@@ -424,7 +424,7 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                         const float minimumCutoff = (std::clamp)(
                             spatialAudioScreen->
                                 adaptiveAudioExternalMinimumCutoff,
-                            120.0f, 8000.0f);
+                            20.0f, 8000.0f);
                         const float logCutoff =
                             std::log(20000.0f) +
                             blend *

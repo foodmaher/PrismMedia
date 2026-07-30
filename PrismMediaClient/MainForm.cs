@@ -91,12 +91,10 @@ namespace PrismMediaClient
         {
             get
             {
-                const int WsExToolWindow = 0x00000080;
                 const int WsExNoActivate = 0x08000000;
                 CreateParams parameters = base.CreateParams;
                 if (silentStart)
-                    parameters.ExStyle |=
-                        WsExToolWindow | WsExNoActivate;
+                    parameters.ExStyle |= WsExNoActivate;
                 return parameters;
             }
         }

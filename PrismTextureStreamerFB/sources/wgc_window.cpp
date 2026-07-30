@@ -40,8 +40,12 @@ static HWND FindWindowByNameAndTitle(const char* exeName, const char* windowTitl
         if (!IsWindowVisible(hwnd))
             return TRUE;
 
-        LONG exStyle = GetWindowLongA(hwnd, GWL_EXSTYLE);
-        if (exStyle & WS_EX_TOOLWINDOW)
+        const LONG exStyle = GetWindowLongA(hwnd, GWL_EXSTYLE);
+        // The integrated media helper deliberately uses a non-activating tool
+        // window so it can start without stealing focus or adding a taskbar
+        // button. Permit such a window only for an exact-title lookup; broad
+        // application enumeration must continue to hide utility windows.
+        if ((exStyle & WS_EX_TOOLWINDOW) && !data->windowTitle)
             return TRUE;
 
         bool titleMatch{};

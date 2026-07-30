@@ -94,7 +94,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Package\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 3.2 Media Library
+          PrismTextureStreamerFB 3.2.1 GPS Capture Hotfix
 
           Copy the root files and the www folder into:
           <ETS2 or ATS>\bin\win_x64\plugins
@@ -111,7 +111,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-3.2.0-media-library
+          name: PrismTextureStreamerFB-3.2.1-gps-capture-hotfix
           path: package
           if-no-files-found: error
           retention-days: 30

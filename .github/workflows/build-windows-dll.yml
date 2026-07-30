@@ -83,10 +83,7 @@ jobs:
           Copy-Item "V2.8.1-LOADING-CRASH-HOTFIX.md" $Package
           Copy-Item "V2.9-SAFE-READBACK-TEST.md" $Package
           Copy-Item "V2.9.1-PARK-TARGET-SELECTOR.md" $Package
-          Copy-Item "V3.0-REAR-CAMERA-KIT.md" $Package
           Copy-Item "V3.0.1-STANDALONE-DX11.md" $Package
-          Copy-Item "PrismRearCameraAccessory" `
-              "$Package\MOD-SOURCE\PrismRearCameraAccessory" -Recurse
 
           $SpfBridge = "$Package\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |

@@ -95,13 +95,6 @@ void new_frame()
     bool internalParkRenderRequested{};
     uint32_t internalParkTargetFramerate = 1;
     uint32_t internalParkTargetVariant = 1;
-    bool internalParkCameraKitInstalled{};
-    bool internalParkTrailerAwareMount{true};
-    float internalParkMountLateral{};
-    float internalParkMountHeight{2.6f};
-    float internalParkMountLongitudinal{-0.35f};
-    float internalParkMountYaw{180.0f};
-    float internalParkMountPitch{-8.0f};
     std::lock_guard<std::mutex> lock(g_screens_mutex);
 	    for (auto& screen : g_screens)
 	    {
@@ -125,18 +118,6 @@ void new_frame()
                         screen.reverseFramerate));
                 internalParkTargetVariant =
                     screen.reverseInternalTargetVariant;
-                internalParkCameraKitInstalled =
-                    screen.reverseCameraKitInstalled;
-                internalParkTrailerAwareMount =
-                    screen.reverseTrailerAwareMount;
-                internalParkMountLateral =
-                    screen.reverseMountLateral;
-                internalParkMountHeight =
-                    screen.reverseMountHeight;
-                internalParkMountLongitudinal =
-                    screen.reverseMountLongitudinal;
-                internalParkMountYaw = screen.reverseMountYaw;
-                internalParkMountPitch = screen.reverseMountPitch;
             }
             const bool windowReverseRequested =
                 reverseRequested && !internalParkMethod;
@@ -477,14 +458,6 @@ void new_frame()
         internalParkTargetFramerate);
     dx11::internal_render_probe::set_park_target_variant(
         internalParkTargetVariant);
-    dx11::internal_render_probe::set_park_camera_mount(
-        internalParkCameraKitInstalled,
-        internalParkTrailerAwareMount,
-        internalParkMountLateral,
-        internalParkMountHeight,
-        internalParkMountLongitudinal,
-        internalParkMountYaw,
-        internalParkMountPitch);
 }
 
 

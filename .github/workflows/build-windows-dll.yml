@@ -83,6 +83,10 @@ jobs:
           Copy-Item "V2.8.1-LOADING-CRASH-HOTFIX.md" $Package
           Copy-Item "V2.9-SAFE-READBACK-TEST.md" $Package
           Copy-Item "V2.9.1-PARK-TARGET-SELECTOR.md" $Package
+          Copy-Item "V3.0-REAR-CAMERA-KIT.md" $Package
+          Copy-Item "V3.0.1-STANDALONE-DX11.md" $Package
+          Copy-Item "PrismRearCameraAccessory" `
+              "$Package\MOD-SOURCE\PrismRearCameraAccessory" -Recurse
 
           $SpfBridge = "$Package\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |
@@ -91,7 +95,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Package\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 2.9.1 Park Target Selector Test
+          PrismTextureStreamerFB 3.0.1 Standalone DX11 Test
 
           Copy the root files and the www folder into:
           <ETS2 or ATS>\bin\win_x64\plugins
@@ -108,7 +112,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-2.9.1-park-target-selector-test
+          name: PrismTextureStreamerFB-3.0.1-standalone-dx11-test
           path: package
           if-no-files-found: error
           retention-days: 30

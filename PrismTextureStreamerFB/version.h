@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "2.9.1-park-target-selector-test";
+inline const char* g_version = "3.0.1-standalone-dx11-test";

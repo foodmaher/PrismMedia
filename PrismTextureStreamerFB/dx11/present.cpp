@@ -22,6 +22,61 @@ static ID3D11RenderTargetView* mainRenderTargetView{};
 static void* present_function_address{};
 static void* resize_buffers_function_address{};
 
+namespace
+{
+    constexpr wchar_t kProbeWindowClass[] =
+        L"PrismTextureStreamerDX11Probe";
+
+    HWND create_probe_window(HINSTANCE instance)
+    {
+        WNDCLASSEXW windowClass{};
+        windowClass.cbSize = sizeof(windowClass);
+        windowClass.style = CS_OWNDC;
+        windowClass.lpfnWndProc = DefWindowProcW;
+        windowClass.hInstance = instance;
+        windowClass.lpszClassName = kProbeWindowClass;
+
+        if (!RegisterClassExW(&windowClass) &&
+            GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        {
+            scs_log(
+                2,
+                "[dx11::present] RegisterClassExW failed: %lu",
+                GetLastError());
+            return nullptr;
+        }
+
+        HWND window = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            kProbeWindowClass,
+            L"Prism DX11 probe",
+            WS_POPUP,
+            0,
+            0,
+            8,
+            8,
+            nullptr,
+            nullptr,
+            instance,
+            nullptr);
+        if (!window)
+        {
+            scs_log(
+                2,
+                "[dx11::present] CreateWindowExW failed: %lu",
+                GetLastError());
+        }
+        return window;
+    }
+
+    void destroy_probe_window(HWND window, HINSTANCE instance)
+    {
+        if (window)
+            DestroyWindow(window);
+        UnregisterClassW(kProbeWindowClass, instance);
+    }
+}
+
 typedef HRESULT(__stdcall* present_t)(IDXGISwapChain*, UINT, UINT);
 static present_t original_present{};
 HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
@@ -32,13 +87,15 @@ HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
         HRESULT result = SwapChain->GetDesc(&desc);
         if (!SUCCEEDED(result)) {
             scs_log(2, "Failed to get description.");
-            return result;
+            return original_present(
+                SwapChain, SyncInterval, Flags);
         }
 
         result = SwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&device);
         if (!SUCCEEDED(result)) {
             scs_log(2, "Failed to get device.");
-            return result;
+            return original_present(
+                SwapChain, SyncInterval, Flags);
         }
 
         device->GetImmediateContext(&context);
@@ -49,14 +106,24 @@ HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
         result = SwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&backBuffer);
         if (!SUCCEEDED(result)) {
             scs_log(2, "Failed to create back buffer.");
-            return result;
+            device->Release();
+            device = nullptr;
+            context->Release();
+            context = nullptr;
+            return original_present(
+                SwapChain, SyncInterval, Flags);
         }
 
         result = device->CreateRenderTargetView(backBuffer, NULL, &mainRenderTargetView);
         if (!SUCCEEDED(result)) {
             scs_log(2, "Failed to create render target view.");
             backBuffer->Release();
-            return result;
+            device->Release();
+            device = nullptr;
+            context->Release();
+            context = nullptr;
+            return original_present(
+                SwapChain, SyncInterval, Flags);
         }
 
         backBuffer->Release();
@@ -149,17 +216,30 @@ namespace dx11::present {
         IDXGISwapChain* swapChain{};
         ID3D11Device* device{};
         ID3D11DeviceContext* context{};
+        const HINSTANCE instance =
+            GetModuleHandleW(nullptr);
+        const HWND probeWindow =
+            create_probe_window(instance);
+        if (!probeWindow)
+            return false;
 
         DXGI_SWAP_CHAIN_DESC desc = {};
         desc.BufferCount = 1;
+        desc.BufferDesc.Width = 8;
+        desc.BufferDesc.Height = 8;
         desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.BufferDesc.RefreshRate.Numerator = 60;
+        desc.BufferDesc.RefreshRate.Denominator = 1;
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        desc.OutputWindow = GetForegroundWindow();
+        desc.OutputWindow = probeWindow;
         desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
         desc.Windowed = TRUE;
 
         D3D_FEATURE_LEVEL level;
-        if (FAILED(D3D11CreateDeviceAndSwapChain(
+        const HRESULT createResult =
+            D3D11CreateDeviceAndSwapChain(
             nullptr,
             D3D_DRIVER_TYPE_HARDWARE,
             nullptr,
@@ -172,34 +252,102 @@ namespace dx11::present {
             &device,
             &level,
             &context
-        ))) {
-            scs_log(0, "[dx11::present] D3D11CreateDeviceAndSwapChain failed.");
+        );
+        if (FAILED(createResult)) {
+            scs_log(
+                2,
+                "[dx11::present] Private probe swap chain "
+                "creation failed: 0x%08X",
+                static_cast<unsigned int>(createResult));
+            destroy_probe_window(probeWindow, instance);
             return false;
         }
 
         void** vtable = *reinterpret_cast<void***>(swapChain);
         present_function_address = vtable[8];
-        MH_CreateHook(
+        MH_STATUS hookResult = MH_CreateHook(
             present_function_address,
             &hooked_present,
             reinterpret_cast<void**>(&original_present)
         );
-        MH_EnableHook(present_function_address);
+        if (hookResult != MH_OK)
+        {
+            scs_log(
+                2,
+                "[dx11::present] Present hook creation failed: %d",
+                static_cast<int>(hookResult));
+            context->Release();
+            device->Release();
+            swapChain->Release();
+            destroy_probe_window(probeWindow, instance);
+            return false;
+        }
+        hookResult = MH_EnableHook(present_function_address);
+        if (hookResult != MH_OK)
+        {
+            scs_log(
+                2,
+                "[dx11::present] Present hook enable failed: %d",
+                static_cast<int>(hookResult));
+            MH_RemoveHook(present_function_address);
+            context->Release();
+            device->Release();
+            swapChain->Release();
+            destroy_probe_window(probeWindow, instance);
+            return false;
+        }
 
         resize_buffers_function_address = vtable[13];
-        MH_CreateHook(
+        hookResult = MH_CreateHook(
             resize_buffers_function_address,
             &hooked_resize_buffers,
             reinterpret_cast<void**>(&original_resize_buffers)
         );
-        MH_EnableHook(resize_buffers_function_address);
+        if (hookResult != MH_OK)
+        {
+            scs_log(
+                2,
+                "[dx11::present] ResizeBuffers hook creation "
+                "failed: %d",
+                static_cast<int>(hookResult));
+            MH_DisableHook(present_function_address);
+            MH_RemoveHook(present_function_address);
+            context->Release();
+            device->Release();
+            swapChain->Release();
+            destroy_probe_window(probeWindow, instance);
+            return false;
+        }
+        hookResult = MH_EnableHook(
+            resize_buffers_function_address);
+        if (hookResult != MH_OK)
+        {
+            scs_log(
+                2,
+                "[dx11::present] ResizeBuffers hook enable "
+                "failed: %d",
+                static_cast<int>(hookResult));
+            MH_RemoveHook(resize_buffers_function_address);
+            MH_DisableHook(present_function_address);
+            MH_RemoveHook(present_function_address);
+            context->Release();
+            device->Release();
+            swapChain->Release();
+            destroy_probe_window(probeWindow, instance);
+            return false;
+        }
 
 
         // Have vtable, just get rid of fakes
         context->Release();
         device->Release();
         swapChain->Release();
+        destroy_probe_window(probeWindow, instance);
 
+        scs_log(
+            0,
+            "[dx11::present] Standalone DX11 hooks installed "
+            "using private probe window.");
         return true;
 	}
 

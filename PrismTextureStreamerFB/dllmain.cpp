@@ -648,7 +648,17 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
     dinput8::init();
 
     scs_log(0, "Starting DX11 hooks...");
-    dx11::init();
+    if (!dx11::init()) {
+        scs_log(
+            2,
+            "DX11 hook initialization failed. The plugin will "
+            "not apply screen overrides, preventing a black GPS.");
+        dinput8::shutdown();
+        MH_DisableHook(MH_ALL_HOOKS);
+        MH_RemoveHook(MH_ALL_HOOKS);
+        MH_Uninitialize();
+        return SCS_RESULT_generic_error;
+    }
 
     scs_log(0, "Starting Prism3D hooks...");
     prism::init();

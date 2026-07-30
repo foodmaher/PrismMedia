@@ -95,6 +95,13 @@ void new_frame()
     bool internalParkRenderRequested{};
     uint32_t internalParkTargetFramerate = 1;
     uint32_t internalParkTargetVariant = 1;
+    bool internalParkCameraKitInstalled{};
+    bool internalParkTrailerAwareMount{true};
+    float internalParkMountLateral{};
+    float internalParkMountHeight{2.6f};
+    float internalParkMountLongitudinal{-0.35f};
+    float internalParkMountYaw{180.0f};
+    float internalParkMountPitch{-8.0f};
     std::lock_guard<std::mutex> lock(g_screens_mutex);
 	    for (auto& screen : g_screens)
 	    {
@@ -118,6 +125,18 @@ void new_frame()
                         screen.reverseFramerate));
                 internalParkTargetVariant =
                     screen.reverseInternalTargetVariant;
+                internalParkCameraKitInstalled =
+                    screen.reverseCameraKitInstalled;
+                internalParkTrailerAwareMount =
+                    screen.reverseTrailerAwareMount;
+                internalParkMountLateral =
+                    screen.reverseMountLateral;
+                internalParkMountHeight =
+                    screen.reverseMountHeight;
+                internalParkMountLongitudinal =
+                    screen.reverseMountLongitudinal;
+                internalParkMountYaw = screen.reverseMountYaw;
+                internalParkMountPitch = screen.reverseMountPitch;
             }
             const bool windowReverseRequested =
                 reverseRequested && !internalParkMethod;
@@ -458,6 +477,14 @@ void new_frame()
         internalParkTargetFramerate);
     dx11::internal_render_probe::set_park_target_variant(
         internalParkTargetVariant);
+    dx11::internal_render_probe::set_park_camera_mount(
+        internalParkCameraKitInstalled,
+        internalParkTrailerAwareMount,
+        internalParkMountLateral,
+        internalParkMountHeight,
+        internalParkMountLongitudinal,
+        internalParkMountYaw,
+        internalParkMountPitch);
 }
 
 
@@ -481,8 +508,35 @@ namespace dx11::create_texture_2d {
         void** deviceVtbl = *reinterpret_cast<void***>(pDummyDevice);
         void* createTexture2DAddr = deviceVtbl[5];
 
-        MH_CreateHook(createTexture2DAddr, &HookedCreateTexture2D, reinterpret_cast<LPVOID*>(&CreateTexture2D_Original));
-        MH_EnableHook(createTexture2DAddr);
+        MH_STATUS hookResult = MH_CreateHook(
+            createTexture2DAddr,
+            &HookedCreateTexture2D,
+            reinterpret_cast<LPVOID*>(
+                &CreateTexture2D_Original));
+        if (hookResult != MH_OK)
+        {
+            scs_log(
+                2,
+                "[dx11::create_texture_2d] Hook creation "
+                "failed: %d",
+                static_cast<int>(hookResult));
+            pDummyContext->Release();
+            pDummyDevice->Release();
+            return false;
+        }
+        hookResult = MH_EnableHook(createTexture2DAddr);
+        if (hookResult != MH_OK)
+        {
+            scs_log(
+                2,
+                "[dx11::create_texture_2d] Hook enable "
+                "failed: %d",
+                static_cast<int>(hookResult));
+            MH_RemoveHook(createTexture2DAddr);
+            pDummyContext->Release();
+            pDummyDevice->Release();
+            return false;
+        }
 
         pDummyContext->Release();
         pDummyDevice->Release();

@@ -86,6 +86,8 @@ performance statistics.
   already installed on Windows 10/11)
 - Optional: SPF Framework 1.2+ for exact external-camera position. The main
   plugin retains fixed outside-volume fallback without it.
+- ReShade is not required. The plugin creates a private hidden DirectX 11
+  probe window to install its own Present and texture hooks.
 
 ## Known issues
 - Fingerprinting textures by dimensions/format means any other texture in the game that happens to match GPS/dashboard's size and format exactly would get caught too which is unlikely (if using unqiue dimentions), but not impossible.

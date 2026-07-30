@@ -52,6 +52,11 @@ enum class content_mode_t : uint8_t {
 	NATIVE_DIRECT_MEDIA
 };
 
+enum class media_service_t : uint8_t {
+	YOUTUBE = 0,
+	SPOTIFY
+};
+
 struct screen_t
 {
 	screen_type_t type{};
@@ -65,6 +70,11 @@ struct screen_t
 	std::string source_application_name;
 	std::string source_application_display_name;
 	std::string mediaUrl;
+	media_service_t mediaService = media_service_t::YOUTUBE;
+	std::vector<std::string> youtubeUrls;
+	std::vector<std::string> spotifyUrls;
+	uint32_t selectedYoutubeUrl{};
+	uint32_t selectedSpotifyUrl{};
 	std::unique_ptr<IContentSource> source;
 	std::vector<uint8_t> frameScratch;
 	uint32_t frameScratchWidth{};
@@ -102,6 +112,13 @@ struct screen_t
 		reverse_camera_method_t::WINDOW_CROP;
 	// 0 follows the last matching target. 1-4 pin a discovered target.
 	uint8_t reverseInternalTargetVariant = 1;
+	bool reverseCameraKitInstalled = false;
+	bool reverseTrailerAwareMount = true;
+	float reverseMountLateral = 0.0f;
+	float reverseMountHeight = 2.6f;
+	float reverseMountLongitudinal = -0.35f;
+	float reverseMountYaw = 180.0f;
+	float reverseMountPitch = -8.0f;
 	uint64_t reverseLastStartAttemptTick{};
 	reverse_performance_profile_t reversePerformanceProfile =
 		reverse_performance_profile_t::BALANCED;

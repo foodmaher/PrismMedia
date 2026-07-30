@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <iterator>
 #include <map>
 
 #include "../version.h"
@@ -749,6 +750,110 @@ void on_frame()
 					}
 					else
 					{
+						if (screen.contentMode ==
+							content_mode_t::INTEGRATED_MEDIA)
+						{
+							const char* mediaServices[] = {
+								"YouTube", "Spotify"
+							};
+							int selectedService =
+								static_cast<int>(screen.mediaService);
+							if (ImGui::Combo(
+								"Media Service", &selectedService,
+								mediaServices,
+								IM_ARRAYSIZE(mediaServices)))
+							{
+								screen.mediaService =
+									static_cast<media_service_t>(
+										selectedService);
+								auto& selectedUrls =
+									screen.mediaService ==
+										media_service_t::YOUTUBE
+									? screen.youtubeUrls
+									: screen.spotifyUrls;
+								uint32_t& selectedIndex =
+									screen.mediaService ==
+										media_service_t::YOUTUBE
+									? screen.selectedYoutubeUrl
+									: screen.selectedSpotifyUrl;
+								if (!selectedUrls.empty())
+								{
+									selectedIndex = (std::min)(
+										selectedIndex,
+										static_cast<uint32_t>(
+											selectedUrls.size() - 1));
+									screen.mediaUrl =
+										selectedUrls[selectedIndex];
+								}
+								else
+								{
+									screen.mediaUrl.clear();
+								}
+								if (screen.source &&
+									!screen.mediaUrl.empty())
+								{
+									screen.source->LoadMedia(
+										screen.mediaUrl);
+								}
+								saveConfiguration = true;
+							}
+
+							auto& mediaUrls =
+								screen.mediaService ==
+									media_service_t::YOUTUBE
+								? screen.youtubeUrls
+								: screen.spotifyUrls;
+							uint32_t& selectedMediaUrl =
+								screen.mediaService ==
+									media_service_t::YOUTUBE
+								? screen.selectedYoutubeUrl
+								: screen.selectedSpotifyUrl;
+							if (!mediaUrls.empty())
+							{
+								selectedMediaUrl = (std::min)(
+									selectedMediaUrl,
+									static_cast<uint32_t>(
+										mediaUrls.size() - 1));
+							}
+
+							const char* selectedUrlPreview =
+								mediaUrls.empty()
+								? "No saved links"
+								: mediaUrls[selectedMediaUrl].c_str();
+							if (ImGui::BeginCombo(
+								"Saved Links", selectedUrlPreview))
+							{
+								for (size_t urlIndex = 0;
+									urlIndex < mediaUrls.size();
+									++urlIndex)
+								{
+									const bool selected =
+										urlIndex == selectedMediaUrl;
+									const std::string label =
+										std::to_string(urlIndex + 1) +
+										". " + mediaUrls[urlIndex] +
+										"##media_link_" +
+										std::to_string(urlIndex);
+									if (ImGui::Selectable(
+										label.c_str(), selected))
+									{
+										selectedMediaUrl =
+											static_cast<uint32_t>(
+												urlIndex);
+										screen.mediaUrl =
+											mediaUrls[urlIndex];
+										if (screen.source)
+											screen.source->LoadMedia(
+												screen.mediaUrl);
+										saveConfiguration = true;
+									}
+									if (selected)
+										ImGui::SetItemDefaultFocus();
+								}
+								ImGui::EndCombo();
+							}
+						}
+
 						ImGui::SetNextItemWidth(-120.0f);
 						if (ImGui::InputTextWithHint(
 							"##media_url",
@@ -772,6 +877,91 @@ void on_frame()
 								sourceChanged = true;
 							}
 							saveConfiguration = true;
+						}
+
+						if (screen.contentMode ==
+							content_mode_t::INTEGRATED_MEDIA)
+						{
+							auto& mediaUrls =
+								screen.mediaService ==
+									media_service_t::YOUTUBE
+								? screen.youtubeUrls
+								: screen.spotifyUrls;
+							uint32_t& selectedMediaUrl =
+								screen.mediaService ==
+									media_service_t::YOUTUBE
+								? screen.selectedYoutubeUrl
+								: screen.selectedSpotifyUrl;
+
+							if (ImGui::Button("Add Link") &&
+								!screen.mediaUrl.empty())
+							{
+								const auto existing = std::find(
+									mediaUrls.begin(), mediaUrls.end(),
+									screen.mediaUrl);
+								if (existing == mediaUrls.end())
+								{
+									mediaUrls.push_back(screen.mediaUrl);
+									selectedMediaUrl =
+										static_cast<uint32_t>(
+											mediaUrls.size() - 1);
+								}
+								else
+								{
+									selectedMediaUrl =
+										static_cast<uint32_t>(
+											std::distance(
+												mediaUrls.begin(),
+												existing));
+								}
+								saveConfiguration = true;
+							}
+							ImGui::SameLine();
+							if (ImGui::Button("Update Selected") &&
+								!screen.mediaUrl.empty() &&
+								!mediaUrls.empty())
+							{
+								selectedMediaUrl = (std::min)(
+									selectedMediaUrl,
+									static_cast<uint32_t>(
+										mediaUrls.size() - 1));
+								mediaUrls[selectedMediaUrl] =
+									screen.mediaUrl;
+								saveConfiguration = true;
+							}
+							ImGui::SameLine();
+							if (ImGui::Button("Remove Selected") &&
+								!mediaUrls.empty())
+							{
+								selectedMediaUrl = (std::min)(
+									selectedMediaUrl,
+									static_cast<uint32_t>(
+										mediaUrls.size() - 1));
+								mediaUrls.erase(
+									mediaUrls.begin() +
+									selectedMediaUrl);
+								if (mediaUrls.empty())
+								{
+									selectedMediaUrl = 0;
+									screen.mediaUrl.clear();
+								}
+								else
+								{
+									selectedMediaUrl = (std::min)(
+										selectedMediaUrl,
+										static_cast<uint32_t>(
+											mediaUrls.size() - 1));
+									screen.mediaUrl =
+										mediaUrls[selectedMediaUrl];
+								}
+								saveConfiguration = true;
+							}
+							ImGui::TextDisabled(
+								"%s links: %zu",
+								screen.mediaService ==
+									media_service_t::YOUTUBE
+									? "YouTube" : "Spotify",
+								mediaUrls.size());
 						}
 					}
 
@@ -954,7 +1144,7 @@ void on_frame()
 										ImGui::SliderFloat(
 											"Far-distance cutoff",
 											&screen.adaptiveAudioExternalMinimumCutoff,
-											120.0f, 4000.0f, "%.0f Hz",
+											20.0f, 4000.0f, "%.0f Hz",
 											ImGuiSliderFlags_Logarithmic |
 												ImGuiSliderFlags_AlwaysClamp))
 										saveConfiguration = true;
@@ -1404,77 +1594,6 @@ void on_frame()
 											static_cast<unsigned long long>(
 												parkStatus.
 													parkReadbackBusySkips));
-									}
-
-									ImGui::SeparatorText(
-										"Prism rear-camera accessory");
-									if (ImGui::Checkbox(
-										"Camera kit installed on this vehicle",
-										&screen.reverseCameraKitInstalled))
-									{
-										saveConfiguration = true;
-									}
-									ImGui::TextWrapped(
-										"Enable this after fitting the Prism camera "
-										"accessory in the truck shop. The render "
-										"camera is then moved from the mirror clone "
-										"to the truck or final connected trailer.");
-									if (screen.reverseCameraKitInstalled)
-									{
-										if (ImGui::Checkbox(
-											"Follow final connected trailer",
-											&screen.reverseTrailerAwareMount))
-										{
-											saveConfiguration = true;
-										}
-										if (ImGui::SliderFloat(
-											"Mount left / right",
-											&screen.reverseMountLateral,
-											-5.0f, 5.0f, "%.2f m"))
-											saveConfiguration = true;
-										if (ImGui::SliderFloat(
-											"Mount height",
-											&screen.reverseMountHeight,
-											-2.0f, 8.0f, "%.2f m"))
-											saveConfiguration = true;
-										if (ImGui::SliderFloat(
-											"Mount forward / rear",
-											&screen.reverseMountLongitudinal,
-											-8.0f, 8.0f, "%.2f m"))
-											saveConfiguration = true;
-										if (ImGui::SliderFloat(
-											"Camera yaw",
-											&screen.reverseMountYaw,
-											-360.0f, 360.0f, "%.1f deg"))
-											saveConfiguration = true;
-										if (ImGui::SliderFloat(
-											"Camera pitch",
-											&screen.reverseMountPitch,
-											-89.0f, 89.0f, "%.1f deg"))
-											saveConfiguration = true;
-										if (ImGui::Button(
-											"Reset rear mount"))
-										{
-											screen.reverseMountLateral = 0.0f;
-											screen.reverseMountHeight = 2.6f;
-											screen.reverseMountLongitudinal =
-												-0.35f;
-											screen.reverseMountYaw = 180.0f;
-											screen.reverseMountPitch = -8.0f;
-											saveConfiguration = true;
-										}
-										ImGui::TextColored(
-											g_camera_bridge_truck_valid.load() &&
-												g_camera_bridge_trailer_valid.load()
-												? ImVec4(
-													0.35f, 0.85f, 0.40f, 1.0f)
-												: ImVec4(
-													0.95f, 0.68f, 0.20f, 1.0f),
-											"SPF mount tracking: %s",
-											g_camera_bridge_truck_valid.load() &&
-												g_camera_bridge_trailer_valid.load()
-												? "truck + trailer ready"
-												: "truck-only fallback");
 									}
 
 									static const char*

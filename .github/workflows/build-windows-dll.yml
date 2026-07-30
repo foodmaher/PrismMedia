@@ -85,6 +85,7 @@ jobs:
           Copy-Item "V2.9.1-PARK-TARGET-SELECTOR.md" $Package
           Copy-Item "V3.0.1-STANDALONE-DX11.md" $Package
           Copy-Item "V3.1-SPOTIFY-EMBED.md" $Package
+          Copy-Item "V3.2-MEDIA-LIBRARY.md" $Package
 
           $SpfBridge = "$Package\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |
@@ -93,7 +94,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Package\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 3.1 Spotify Embed Test
+          PrismTextureStreamerFB 3.2 Media Library
 
           Copy the root files and the www folder into:
           <ETS2 or ATS>\bin\win_x64\plugins
@@ -110,7 +111,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-3.1.0-spotify-embed-test
+          name: PrismTextureStreamerFB-3.2.0-media-library
           path: package
           if-no-files-found: error
           retention-days: 30

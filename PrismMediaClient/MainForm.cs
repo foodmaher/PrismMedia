@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Globalization;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
@@ -30,10 +31,18 @@ namespace PrismMediaClient
         private readonly AdaptiveAudioController adaptiveAudio =
             new AdaptiveAudioController();
         private MediaLowPassController lowPass;
+        private readonly Timer parentMonitor = new Timer();
+        private int parentProcessId;
+        private readonly bool silentStart;
         private bool ready;
 
-        internal MainForm(string initialUrl)
+        internal MainForm(
+            string initialUrl,
+            int parentProcessId,
+            bool silentStart)
         {
+            this.parentProcessId = parentProcessId;
+            this.silentStart = silentStart;
             Text = "Prism Media Client";
             StartPosition = FormStartPosition.CenterScreen;
             Width = 1280;
@@ -54,6 +63,42 @@ namespace PrismMediaClient
             if (!string.IsNullOrWhiteSpace(initialUrl))
                 pendingCommands.Enqueue("load|" + initialUrl);
             Shown += async (_, __) => await InitializePlayerAsync();
+            parentMonitor.Interval = 1000;
+            parentMonitor.Tick += (_, __) =>
+            {
+                if (this.parentProcessId <= 0)
+                    return;
+                try
+                {
+                    using (Process parent =
+                        Process.GetProcessById(this.parentProcessId))
+                    {
+                        if (parent.HasExited)
+                            Close();
+                    }
+                }
+                catch (ArgumentException)
+                {
+                    Close();
+                }
+            };
+            parentMonitor.Start();
+        }
+
+        protected override bool ShowWithoutActivation => silentStart;
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                const int WsExToolWindow = 0x00000080;
+                const int WsExNoActivate = 0x08000000;
+                CreateParams parameters = base.CreateParams;
+                if (silentStart)
+                    parameters.ExStyle |=
+                        WsExToolWindow | WsExNoActivate;
+                return parameters;
+            }
         }
 
         private async Task InitializePlayerAsync()
@@ -136,6 +181,18 @@ namespace PrismMediaClient
 
         private async Task ApplyCommandAsync(string command)
         {
+            if (command.StartsWith("parent|", StringComparison.Ordinal))
+            {
+                if (int.TryParse(
+                    command.Substring(7),
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out int newParentProcessId))
+                {
+                    parentProcessId = newParentProcessId;
+                }
+                return;
+            }
             if (command.StartsWith("spatial|", StringComparison.Ordinal))
             {
                 string[] parts = command.Split('|');
@@ -180,6 +237,8 @@ namespace PrismMediaClient
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            parentMonitor.Stop();
+            parentMonitor.Dispose();
             lowPass?.Dispose();
             adaptiveAudio.Dispose();
             base.OnFormClosed(e);

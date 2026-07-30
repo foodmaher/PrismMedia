@@ -88,7 +88,7 @@
     }
 
     window.prismSetLowPass = (cutoff, enabled) => {
-        state.cutoff = Math.max(120, Math.min(20000, Number(cutoff) || 20000));
+        state.cutoff = Math.max(20, Math.min(20000, Number(cutoff) || 20000));
         state.enabled = Boolean(enabled) && state.cutoff < 19500;
         updateNodes();
         if (state.enabled)

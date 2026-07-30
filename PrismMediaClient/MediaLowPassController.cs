@@ -34,7 +34,7 @@ namespace PrismMediaClient
         internal void SetDesired(bool spatialEnabled, float desiredCutoffHz)
         {
             cutoffHz = Math.Max(
-                120.0f, Math.Min(20000.0f, desiredCutoffHz));
+                20.0f, Math.Min(20000.0f, desiredCutoffHz));
             enabled = spatialEnabled && cutoffHz < 19500.0f;
             _ = ApplyEverywhereAsync();
         }

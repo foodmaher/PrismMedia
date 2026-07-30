@@ -64,7 +64,8 @@ namespace {
     bool launch_media_client()
     {
         if (find_media_client())
-            return true;
+            return send_payload(
+                "parent|" + std::to_string(GetCurrentProcessId()));
 
         const std::string executable =
             module_directory() + sources::kMediaClientExecutable;
@@ -74,9 +75,13 @@ namespace {
             return false;
         }
 
-        std::string commandLine = "\"" + executable + "\"";
+        std::string commandLine =
+            "\"" + executable + "\" --silent --parent-pid " +
+            std::to_string(GetCurrentProcessId());
         STARTUPINFOA startup{};
         startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESHOWWINDOW;
+        startup.wShowWindow = SW_SHOWNOACTIVATE;
         PROCESS_INFORMATION process{};
         if (!CreateProcessA(
             executable.c_str(), commandLine.data(), nullptr, nullptr, FALSE,
@@ -92,7 +97,12 @@ namespace {
         for (int attempt = 0; attempt < 160; ++attempt)
         {
             if (find_media_client())
+            {
+                send_payload(
+                    "parent|" +
+                    std::to_string(GetCurrentProcessId()));
                 return true;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         scs_log(2, "[MediaClient] Timed out waiting for helper window");
@@ -205,7 +215,7 @@ namespace {
         {
             gain = (std::clamp)(gain, 0.0f, 1.0f);
             pan = (std::clamp)(pan, -1.0f, 1.0f);
-            lowpassHz = (std::clamp)(lowpassHz, 120.0f, 20000.0f);
+            lowpassHz = (std::clamp)(lowpassHz, 20.0f, 20000.0f);
 
             const uint64_t now = GetTickCount64();
             const bool stateChanged = enabled != m_spatialEnabled;

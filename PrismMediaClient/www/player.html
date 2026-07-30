@@ -321,15 +321,15 @@
           youtubePlayer.nextVideo();
         else if (activeSource === "spotify")
           showStatus(
-            "Spotify Embed does not expose Next. Use its on-screen playlist controls.");
+            "Spotify Next is handled by the plugin saved-link list.");
         else
           direct.currentTime = Math.min(direct.duration || Infinity, direct.currentTime + 30);
       } else if (command === "previous") {
         if (activeSource === "youtube" && youtubeReady)
           youtubePlayer.previousVideo();
-        else if (activeSource === "spotify" &&
-                 spotifyReady && spotifyController)
-          spotifyController.restart();
+        else if (activeSource === "spotify")
+          showStatus(
+            "Spotify Previous is handled by the plugin saved-link list.");
         else
           direct.currentTime = Math.max(0, direct.currentTime - 30);
       } else if (command === "mute") {

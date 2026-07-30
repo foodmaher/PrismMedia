@@ -377,16 +377,24 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
             else if (externalCamera)
             {
                 float gain = (std::clamp)(
-                    spatialAudioScreen->adaptiveAudioOutsideVolume,
+                    spatialAudioScreen->
+                        adaptiveAudioExternalNearVolume,
                     0.0f, 1.0f);
+                const float nearCutoff = (std::clamp)(
+                    spatialAudioScreen->
+                        adaptiveAudioExternalNearCutoff,
+                    20.0f, 20000.0f);
                 float lowpassHz =
                     spatialAudioScreen->
                         adaptiveAudioExternalLowPassEnabled
-                    ? (std::clamp)(
+                    ? nearCutoff
+                    : 20000.0f;
+                const float farCutoff = (std::min)(
+                    nearCutoff,
+                    (std::clamp)(
                         spatialAudioScreen->
                             adaptiveAudioExternalMinimumCutoff,
-                        20.0f, 8000.0f)
-                    : 20000.0f;
+                        20.0f, 8000.0f));
 
                 const bool useExactDistance =
                     spatialAudioScreen->
@@ -415,21 +423,21 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                         spatialAudioScreen->
                             adaptiveAudioOutsideVolume,
                         0.0f, 1.0f);
+                    const float nearGain = (std::clamp)(
+                        spatialAudioScreen->
+                            adaptiveAudioExternalNearVolume,
+                        0.0f, 1.0f);
                     gain = minimumGain +
-                        (1.0f - minimumGain) * audible;
+                        (nearGain - minimumGain) * audible;
 
                     if (spatialAudioScreen->
                         adaptiveAudioExternalLowPassEnabled)
                     {
-                        const float minimumCutoff = (std::clamp)(
-                            spatialAudioScreen->
-                                adaptiveAudioExternalMinimumCutoff,
-                            20.0f, 8000.0f);
                         const float logCutoff =
-                            std::log(20000.0f) +
+                            std::log(nearCutoff) +
                             blend *
-                                (std::log(minimumCutoff) -
-                                    std::log(20000.0f));
+                                (std::log(farCutoff) -
+                                    std::log(nearCutoff));
                         lowpassHz = std::exp(logCutoff);
                     }
                     else

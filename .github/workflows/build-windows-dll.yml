@@ -86,6 +86,7 @@ jobs:
           Copy-Item "V3.0.1-STANDALONE-DX11.md" $Package
           Copy-Item "V3.1-SPOTIFY-EMBED.md" $Package
           Copy-Item "V3.2-MEDIA-LIBRARY.md" $Package
+          Copy-Item "V3.3-DYNAMIC-OUTSIDE-AUDIO.md" $Package
 
           $SpfBridge = "$Package\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |
@@ -94,7 +95,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Package\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 3.2.1 GPS Capture Hotfix
+          PrismTextureStreamerFB 3.3 Dynamic Outside Audio
 
           Copy the root files and the www folder into:
           <ETS2 or ATS>\bin\win_x64\plugins
@@ -111,7 +112,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-3.2.1-gps-capture-hotfix
+          name: PrismTextureStreamerFB-3.3.0-dynamic-outside-audio
           path: package
           if-no-files-found: error
           retention-days: 30

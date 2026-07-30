@@ -3,6 +3,7 @@
 
 #include "screens.h"
 
+#include <algorithm>
 #include <array>
 #include <mutex>
 
@@ -61,6 +62,40 @@ std::string hotkey_name(const hotkey_binding_t& binding)
     return result + "VK " + std::to_string(binding.virtualKey);
 }
 
+bool dispatch_media_command(
+    screen_t& screen,
+    media_command_t command)
+{
+    if (!screen.source ||
+        !screen.source->SupportsMediaControls())
+        return false;
+
+    const bool changeSpotifyLink =
+        screen.contentMode == content_mode_t::INTEGRATED_MEDIA &&
+        screen.mediaService == media_service_t::SPOTIFY &&
+        (command == media_command_t::NEXT ||
+            command == media_command_t::PREVIOUS);
+    if (!changeSpotifyLink)
+        return screen.source->SendMediaCommand(command);
+
+    if (screen.spotifyUrls.empty())
+        return false;
+
+    const size_t count = screen.spotifyUrls.size();
+    size_t selected = (std::min)(
+        static_cast<size_t>(screen.selectedSpotifyUrl),
+        count - 1);
+    if (command == media_command_t::NEXT)
+        selected = (selected + 1) % count;
+    else
+        selected = selected == 0 ? count - 1 : selected - 1;
+
+    screen.selectedSpotifyUrl =
+        static_cast<uint32_t>(selected);
+    screen.mediaUrl = screen.spotifyUrls[selected];
+    return screen.source->LoadMedia(screen.mediaUrl);
+}
+
 namespace {
     bool binding_pressed(const hotkey_binding_t& binding)
     {
@@ -92,12 +127,21 @@ namespace {
                 fallback = screen.source.get();
             if (screen.hotkeyTarget)
             {
-                screen.source->SendMediaCommand(command);
+                dispatch_media_command(screen, command);
                 return;
             }
         }
         if (fallback)
-            fallback->SendMediaCommand(command);
+        {
+            for (auto& screen : g_screens)
+            {
+                if (screen.source.get() == fallback)
+                {
+                    dispatch_media_command(screen, command);
+                    break;
+                }
+            }
+        }
     }
 }
 

@@ -974,31 +974,56 @@ void on_frame()
 
 						if (screen.source && screen.source->SupportsMediaControls())
 					{
-						ImGui::Text("Status: %s",
-							screen.source->GetStatusText().c_str());
-						if (ImGui::Button("Play / Pause"))
-							screen.source->SendMediaCommand(
-								media_command_t::PLAY_PAUSE);
-						ImGui::SameLine();
-						if (ImGui::Button("Previous"))
-							screen.source->SendMediaCommand(
-								media_command_t::PREVIOUS);
-						ImGui::SameLine();
-						if (ImGui::Button("Next"))
-							screen.source->SendMediaCommand(
-								media_command_t::NEXT);
-						ImGui::SameLine();
-						if (ImGui::Button("Mute"))
-							screen.source->SendMediaCommand(
-								media_command_t::MUTE);
-						ImGui::SameLine();
-						if (ImGui::Button("Vol -"))
-							screen.source->SendMediaCommand(
-								media_command_t::VOLUME_DOWN);
-						ImGui::SameLine();
-						if (ImGui::Button("Vol +"))
-							screen.source->SendMediaCommand(
-								media_command_t::VOLUME_UP);
+							ImGui::Text("Status: %s",
+								screen.source->GetStatusText().c_str());
+							if (ImGui::Button("Play / Pause"))
+								dispatch_media_command(
+									screen,
+									media_command_t::PLAY_PAUSE);
+							ImGui::SameLine();
+							if (ImGui::Button("Previous"))
+							{
+								dispatch_media_command(
+									screen,
+									media_command_t::PREVIOUS);
+								if (screen.mediaService ==
+									media_service_t::SPOTIFY)
+									saveConfiguration = true;
+							}
+							ImGui::SameLine();
+							if (ImGui::Button("Next"))
+							{
+								dispatch_media_command(
+									screen,
+									media_command_t::NEXT);
+								if (screen.mediaService ==
+									media_service_t::SPOTIFY)
+									saveConfiguration = true;
+							}
+							ImGui::SameLine();
+							if (ImGui::Button("Mute"))
+								dispatch_media_command(
+									screen,
+									media_command_t::MUTE);
+							ImGui::SameLine();
+							if (ImGui::Button("Vol -"))
+								dispatch_media_command(
+									screen,
+									media_command_t::VOLUME_DOWN);
+							ImGui::SameLine();
+							if (ImGui::Button("Vol +"))
+								dispatch_media_command(
+									screen,
+									media_command_t::VOLUME_UP);
+							if (screen.contentMode ==
+								content_mode_t::INTEGRATED_MEDIA &&
+								screen.mediaService ==
+									media_service_t::SPOTIFY)
+							{
+								ImGui::TextDisabled(
+									"Spotify Next/Previous cycles saved Spotify "
+									"links; Spotify Embed cannot skip tracks.");
+							}
 
 						bool isHotkeyTarget = screen.hotkeyTarget;
 						if (ImGui::Checkbox(
@@ -1118,6 +1143,37 @@ void on_frame()
 									0.0f, 1.0f, "%.2f",
 									ImGuiSliderFlags_AlwaysClamp))
 									saveConfiguration = true;
+								if (ImGui::SliderFloat(
+									"Outside-cab volume at 0 m",
+									&screen.adaptiveAudioExternalNearVolume,
+									0.0f, 1.0f, "%.2f",
+									ImGuiSliderFlags_AlwaysClamp))
+									saveConfiguration = true;
+								if (ImGui::IsItemHovered())
+								{
+									ImGui::BeginTooltip();
+									ImGui::TextWrapped(
+										"Maximum media volume heard from an external "
+										"camera beside the closed truck.");
+									ImGui::EndTooltip();
+								}
+								if (ImGui::SliderFloat(
+									"Outside-cab cutoff at 0 m",
+									&screen.adaptiveAudioExternalNearCutoff,
+									20.0f, 20000.0f, "%.0f Hz",
+									ImGuiSliderFlags_Logarithmic |
+										ImGuiSliderFlags_AlwaysClamp))
+									saveConfiguration = true;
+								if (ImGui::IsItemHovered())
+								{
+									ImGui::BeginTooltip();
+									ImGui::TextWrapped(
+										"Closed-cab muffling applied even when the "
+										"external camera is touching the truck. "
+										"The user-selected near and far cutoffs "
+										"are scaled dynamically with distance.");
+									ImGui::EndTooltip();
+								}
 								if (ImGui::Checkbox(
 									"Use exact external-camera distance (SPF)",
 									&screen.adaptiveAudioExternalDistanceEnabled))
@@ -1125,13 +1181,13 @@ void on_frame()
 								if (screen.adaptiveAudioExternalDistanceEnabled)
 								{
 									if (ImGui::SliderFloat(
-										"Full-volume distance",
+										"Near-value distance",
 										&screen.adaptiveAudioExternalFullVolumeDistance,
 										0.0f, 10.0f, "%.1f m",
 										ImGuiSliderFlags_AlwaysClamp))
 										saveConfiguration = true;
 									if (ImGui::SliderFloat(
-										"Mute / minimum-volume distance",
+										"Far-value distance",
 										&screen.adaptiveAudioExternalMuteDistance,
 										2.0f, 50.0f, "%.1f m",
 										ImGuiSliderFlags_AlwaysClamp))
@@ -1144,7 +1200,12 @@ void on_frame()
 										ImGui::SliderFloat(
 											"Far-distance cutoff",
 											&screen.adaptiveAudioExternalMinimumCutoff,
-											20.0f, 4000.0f, "%.0f Hz",
+											20.0f,
+											(std::max)(
+												20.0f,
+												screen.
+													adaptiveAudioExternalNearCutoff),
+											"%.0f Hz",
 											ImGuiSliderFlags_Logarithmic |
 												ImGuiSliderFlags_AlwaysClamp))
 										saveConfiguration = true;

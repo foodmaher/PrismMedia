@@ -274,6 +274,20 @@ namespace settings {
                     section.c_str(),
                     "AdaptiveAudioExternalDistanceEnabled",
                     1, path.c_str()) != 0;
+            screen.adaptiveAudioExternalNearVolume =
+                (std::clamp)(
+                    read_float(
+                        path, section.c_str(),
+                        "AdaptiveAudioExternalNearVolume",
+                        0.35f),
+                    0.0f, 1.0f);
+            screen.adaptiveAudioExternalNearCutoff =
+                (std::clamp)(
+                    read_float(
+                        path, section.c_str(),
+                        "AdaptiveAudioExternalNearCutoff",
+                        1200.0f),
+                    20.0f, 20000.0f);
             screen.adaptiveAudioExternalFullVolumeDistance =
                 (std::clamp)(
                     read_float(
@@ -298,7 +312,7 @@ namespace settings {
                     read_float(
                         path, section.c_str(),
                         "AdaptiveAudioExternalMinimumCutoff",
-                        650.0f),
+                        120.0f),
                     20.0f, 8000.0f);
             screen.reverseCameraEnabled = GetPrivateProfileIntA(
                 section.c_str(), "ReverseCameraEnabled", 0, path.c_str()) != 0;
@@ -492,7 +506,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 10);
+        write_number(temporaryPath, "General", "Version", 11);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
@@ -535,6 +549,8 @@ namespace settings {
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioOutsideVolume", screen.adaptiveAudioOutsideVolume);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioMenuVolume", screen.adaptiveAudioMenuVolume);
             write_number(temporaryPath, section.c_str(), "AdaptiveAudioExternalDistanceEnabled", screen.adaptiveAudioExternalDistanceEnabled ? 1 : 0);
+            write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalNearVolume", screen.adaptiveAudioExternalNearVolume);
+            write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalNearCutoff", screen.adaptiveAudioExternalNearCutoff);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalFullVolumeDistance", screen.adaptiveAudioExternalFullVolumeDistance);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalMuteDistance", screen.adaptiveAudioExternalMuteDistance);
             write_number(temporaryPath, section.c_str(), "AdaptiveAudioExternalLowPassEnabled", screen.adaptiveAudioExternalLowPassEnabled ? 1 : 0);

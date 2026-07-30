@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <string>
 
+struct screen_t;
+
 struct hotkey_binding_t
 {
     UINT virtualKey{};
@@ -28,4 +30,7 @@ inline bool g_is_binding_hotkey{};
 size_t media_command_index(media_command_t command);
 const char* media_command_name(media_command_t command);
 std::string hotkey_name(const hotkey_binding_t& binding);
+bool dispatch_media_command(
+    screen_t& screen,
+    media_command_t command);
 void process_media_hotkeys(bool menu_visible);

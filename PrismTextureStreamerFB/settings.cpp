@@ -17,7 +17,7 @@
 #include "sources/window.h"
 #include "sources/wgc_window.h"
 #include "telemetry_state.h"
-#include "wind_audio.h"
+#include "environment_audio.h"
 
 using namespace scs_logging;
 
@@ -156,81 +156,24 @@ namespace settings {
                 section.c_str(), "Shift", binding.shift ? 1 : 0, path.c_str()) != 0;
         }
 
-        g_wind_audio_settings.enabled = GetPrivateProfileIntA(
-            "WindAudio", "Enabled",
-            g_wind_audio_settings.enabled ? 1 : 0,
-            path.c_str()) != 0;
-        g_wind_audio_settings.stationaryFiles = read_url_list(
-            path, "WindAudio", "StationaryFile");
-        g_wind_audio_settings.cityFiles = read_url_list(
-            path, "WindAudio", "CityFile");
-        g_wind_audio_settings.highwayFiles = read_url_list(
-            path, "WindAudio", "HighwayFile");
-        if (g_wind_audio_settings.stationaryFiles.empty() &&
-            g_wind_audio_settings.cityFiles.empty() &&
-            g_wind_audio_settings.highwayFiles.empty())
         {
-            // Import the v3.4 custom loop once. Procedural noise is no longer
-            // generated or used as a fallback.
-            const std::string legacyCustom = read_string(
-                path, "WindAudio", "CustomSoundPath");
-            if (!legacyCustom.empty())
-                g_wind_audio_settings.cityFiles.push_back(legacyCustom);
+            std::lock_guard<std::mutex> environmentLock(
+                g_environment_audio_settings_mutex);
+            g_environment_audio_settings.enabled = GetPrivateProfileIntA(
+                "EnvironmentAudio", "Enabled",
+                g_environment_audio_settings.enabled ? 1 : 0,
+                path.c_str()) != 0;
+            g_environment_audio_settings.interiorEffect = (std::clamp)(
+                read_float(
+                    path, "EnvironmentAudio", "InteriorEffect",
+                    g_environment_audio_settings.interiorEffect),
+                0.0f, 1.0f);
+            g_environment_audio_settings.exteriorEffect = (std::clamp)(
+                read_float(
+                    path, "EnvironmentAudio", "ExteriorEffect",
+                    g_environment_audio_settings.exteriorEffect),
+                0.0f, 1.0f);
         }
-        g_wind_audio_settings.masterVolume = (std::clamp)(
-            read_float(path, "WindAudio", "MasterVolume", 0.65f),
-            0.0f, 1.0f);
-        g_wind_audio_settings.stationaryVolume = (std::clamp)(
-            read_float(path, "WindAudio", "StationaryVolume", 0.45f),
-            0.0f, 1.0f);
-        g_wind_audio_settings.cityVolume = (std::clamp)(
-            read_float(path, "WindAudio", "CityVolume", 0.75f),
-            0.0f, 1.0f);
-        g_wind_audio_settings.highwayVolume = (std::clamp)(
-            read_float(path, "WindAudio", "HighwayVolume", 1.0f),
-            0.0f, 1.0f);
-        g_wind_audio_settings.stationaryFadeKmh = (std::clamp)(
-            read_float(path, "WindAudio", "StationaryFadeKmh", 8.0f),
-            1.0f, 30.0f);
-        g_wind_audio_settings.highwayStartKmh = (std::clamp)(
-            read_float(path, "WindAudio", "HighwayStartKmh", 55.0f),
-            10.0f, 150.0f);
-        g_wind_audio_settings.highwayFullKmh = (std::clamp)(
-            read_float(path, "WindAudio", "HighwayFullKmh", 90.0f),
-            20.0f, 200.0f);
-        g_wind_audio_settings.stereoSeparation = (std::clamp)(
-            read_float(path, "WindAudio", "StereoSeparation", 0.85f),
-            0.0f, 1.0f);
-        g_wind_audio_settings.mediaDucking = (std::clamp)(
-            read_float(path, "WindAudio", "MediaDucking", 1.0f),
-            0.0f, 1.0f);
-        g_wind_audio_settings.windowTravelSeconds = (std::clamp)(
-            read_float(path, "WindAudio", "WindowTravelSeconds", 2.8f),
-            0.5f, 10.0f);
-        g_wind_audio_settings.leftWindowOpen = (std::clamp)(
-            read_float(path, "WindAudio", "LeftWindowOpen", 0.0f),
-            0.0f, 1.0f);
-        g_wind_audio_settings.rightWindowOpen = (std::clamp)(
-            read_float(path, "WindAudio", "RightWindowOpen", 0.0f),
-            0.0f, 1.0f);
-        for (size_t index = 0; index < g_window_hotkeys.size(); ++index)
-        {
-            const std::string section =
-                "WindowHotkey" + std::to_string(index);
-            auto& binding = g_window_hotkeys[index];
-            binding.virtualKey = GetPrivateProfileIntA(
-                section.c_str(), "Key", binding.virtualKey, path.c_str());
-            binding.control = GetPrivateProfileIntA(
-                section.c_str(), "Control",
-                binding.control ? 1 : 0, path.c_str()) != 0;
-            binding.alt = GetPrivateProfileIntA(
-                section.c_str(), "Alt",
-                binding.alt ? 1 : 0, path.c_str()) != 0;
-            binding.shift = GetPrivateProfileIntA(
-                section.c_str(), "Shift",
-                binding.shift ? 1 : 0, path.c_str()) != 0;
-        }
-        wind_audio::sync_from_settings();
 
         const int count = (std::min)(GetPrivateProfileIntA("General", "ScreenCount", 0, path.c_str()), 16U);
         if (count <= 0)
@@ -583,7 +526,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 13);
+        write_number(temporaryPath, "General", "Version", 14);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
@@ -596,78 +539,21 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "Shift", binding.shift ? 1 : 0);
         }
 
-		wind_audio_settings_t windSettings;
+		environment_audio_settings_t environmentSettings;
 		{
-			std::lock_guard<std::recursive_mutex> windLock(
-				g_wind_audio_settings_mutex);
-			windSettings = g_wind_audio_settings;
+			std::lock_guard<std::mutex> environmentLock(
+				g_environment_audio_settings_mutex);
+			environmentSettings = g_environment_audio_settings;
 		}
         write_number(
-            temporaryPath, "WindAudio", "Enabled",
-            windSettings.enabled ? 1 : 0);
-        write_url_list(
-            temporaryPath, "WindAudio", "StationaryFile",
-            windSettings.stationaryFiles);
-        write_url_list(
-            temporaryPath, "WindAudio", "CityFile",
-            windSettings.cityFiles);
-        write_url_list(
-            temporaryPath, "WindAudio", "HighwayFile",
-            windSettings.highwayFiles);
+            temporaryPath, "EnvironmentAudio", "Enabled",
+            environmentSettings.enabled ? 1 : 0);
         write_float(
-            temporaryPath, "WindAudio", "MasterVolume",
-            windSettings.masterVolume);
+            temporaryPath, "EnvironmentAudio", "InteriorEffect",
+            environmentSettings.interiorEffect);
         write_float(
-            temporaryPath, "WindAudio", "StationaryVolume",
-            windSettings.stationaryVolume);
-        write_float(
-            temporaryPath, "WindAudio", "CityVolume",
-            windSettings.cityVolume);
-        write_float(
-            temporaryPath, "WindAudio", "HighwayVolume",
-            windSettings.highwayVolume);
-        write_float(
-            temporaryPath, "WindAudio", "StationaryFadeKmh",
-            windSettings.stationaryFadeKmh);
-        write_float(
-            temporaryPath, "WindAudio", "HighwayStartKmh",
-            windSettings.highwayStartKmh);
-        write_float(
-            temporaryPath, "WindAudio", "HighwayFullKmh",
-            windSettings.highwayFullKmh);
-        write_float(
-            temporaryPath, "WindAudio", "StereoSeparation",
-            windSettings.stereoSeparation);
-        write_float(
-            temporaryPath, "WindAudio", "MediaDucking",
-            windSettings.mediaDucking);
-        write_float(
-            temporaryPath, "WindAudio", "WindowTravelSeconds",
-            windSettings.windowTravelSeconds);
-        write_float(
-            temporaryPath, "WindAudio", "LeftWindowOpen",
-            g_wind_left_open.load());
-        write_float(
-            temporaryPath, "WindAudio", "RightWindowOpen",
-            g_wind_right_open.load());
-        for (size_t index = 0; index < g_window_hotkeys.size(); ++index)
-        {
-            const std::string section =
-                "WindowHotkey" + std::to_string(index);
-            const auto& binding = g_window_hotkeys[index];
-            write_number(
-                temporaryPath, section.c_str(), "Key",
-                binding.virtualKey);
-            write_number(
-                temporaryPath, section.c_str(), "Control",
-                binding.control ? 1 : 0);
-            write_number(
-                temporaryPath, section.c_str(), "Alt",
-                binding.alt ? 1 : 0);
-            write_number(
-                temporaryPath, section.c_str(), "Shift",
-                binding.shift ? 1 : 0);
-        }
+            temporaryPath, "EnvironmentAudio", "ExteriorEffect",
+            environmentSettings.exteriorEffect);
 
         for (size_t i = 0; i < g_screens.size(); ++i)
         {

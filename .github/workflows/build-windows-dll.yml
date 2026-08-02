@@ -81,7 +81,7 @@ jobs:
               Remove-Item -Force
           Copy-Item "PERFORMANCE-NOTES.md" $Docs
           Copy-Item "V3.3-DYNAMIC-OUTSIDE-AUDIO.md" $Docs
-          Copy-Item "V3.5-ENVIRONMENT-AUDIO.md" $Docs
+          Copy-Item "V3.6-TELEMETRY-ENVIRONMENT.md" $Docs
 
           $SpfBridge = "$Runtime\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |
@@ -90,7 +90,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Runtime\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 3.5 Environment Audio
+          PrismTextureStreamerFB 3.6 Telemetry Environment
 
           Copy PrismTextureStreamerFB.dll AND the PrismTextureStreamerFB
           folder into:
@@ -109,7 +109,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-3.5.0-environment-audio
+          name: PrismTextureStreamerFB-3.6.0-telemetry-environment
           path: package
           if-no-files-found: error
           retention-days: 30

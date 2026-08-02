@@ -1,0 +1,13 @@
+PrismTextureStreamerFB v3.6 source update
+
+1. Extract this ZIP into the ROOT of your PrismTextureStreamerFB repository.
+   Allow Windows to replace matching files.
+2. Double-click APPLY-V3.6-UPDATE.bat.
+   This removes the five obsolete wind/environment-file source files.
+3. Open GitHub Desktop. Commit every added, changed and deleted file, then push.
+4. In GitHub Actions, run Build Windows DLL and download:
+   PrismTextureStreamerFB-3.6.0-telemetry-environment
+
+The new Environment-Aware Media Volume section has no external sound files.
+It uses live speed and wheel-ground telemetry to reduce media independently in
+interior and exterior cameras.

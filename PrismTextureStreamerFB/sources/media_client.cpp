@@ -18,6 +18,7 @@ using namespace scs_logging;
 
 namespace {
     constexpr ULONG_PTR kPrismCopyDataId = 0x50524953;
+    constexpr UINT kPrismEnvironmentMessage = WM_APP + 0x351;
 
     std::string module_directory()
     {
@@ -84,14 +85,13 @@ namespace {
             SMTO_ABORTIFHUNG | SMTO_BLOCK, timeout_ms, &ignored) != 0;
     }
 
-    bool launch_media_client(bool audio_only = false)
+    bool launch_media_client()
     {
         if (find_media_client())
         {
             const bool parentSent = send_payload(
                 "parent|" + std::to_string(GetCurrentProcessId()));
-            if (!audio_only)
-                send_payload("initialize", 100);
+            send_payload("initialize", 100);
             return parentSent;
         }
 
@@ -105,8 +105,6 @@ namespace {
         std::string commandLine =
             "\"" + executable + "\" --silent --parent-pid " +
             std::to_string(GetCurrentProcessId());
-        if (audio_only)
-            commandLine += " --audio-only";
         STARTUPINFOA startup{};
         startup.cb = sizeof(startup);
         startup.dwFlags = STARTF_USESHOWWINDOW;
@@ -326,66 +324,17 @@ namespace sources {
             INVALID_FILE_ATTRIBUTES;
     }
 
-    bool SetMediaClientWindLibrary(
-        const std::vector<std::string>& stationary_files,
-        const std::vector<std::string>& city_files,
-        const std::vector<std::string>& highway_files)
+    bool SetMediaClientDucking(float gain)
     {
-        if (!launch_media_client(true))
+        const HWND window = find_media_client();
+        if (!window)
             return false;
 
-        const auto sendList = [](const char* name,
-            const std::vector<std::string>& files)
-        {
-            std::string payload = "windlibrary|";
-            payload += name;
-            payload += '|';
-            for (size_t index = 0; index < files.size(); ++index)
-            {
-                if (index != 0)
-                    payload += '\n';
-                payload += files[index];
-            }
-            return send_payload(payload, 100);
-        };
-
-        return sendList("stationary", stationary_files) &&
-            sendList("city", city_files) &&
-            sendList("highway", highway_files);
-    }
-
-    bool SetMediaClientWindState(
-        bool enabled,
-        float stationary_volume,
-        float city_volume,
-        float highway_volume,
-        float pan,
-        float media_gain)
-    {
-        const bool clientWasRunning = find_media_client() != nullptr;
-        if (!enabled && !clientWasRunning)
-            return true;
-        if (!clientWasRunning)
-        {
-            if (!launch_media_client(true))
-                return false;
-            // The newly launched helper has not received a wind source yet.
-            // Let the worker configure it before playback state is sent.
-            return false;
-        }
-
-        stationary_volume = (std::clamp)(stationary_volume, 0.0f, 1.0f);
-        city_volume = (std::clamp)(city_volume, 0.0f, 1.0f);
-        highway_volume = (std::clamp)(highway_volume, 0.0f, 1.0f);
-        pan = (std::clamp)(pan, -1.0f, 1.0f);
-        media_gain = (std::clamp)(media_gain, 0.0f, 1.0f);
-        char payload[160]{};
-        std::snprintf(
-            payload, sizeof(payload),
-            "wind|%d|%.4f|%.4f|%.4f|%.4f|%.4f",
-            enabled ? 1 : 0, stationary_volume, city_volume,
-            highway_volume, pan, media_gain);
-        return send_payload(payload, 30);
+        gain = (std::clamp)(gain, 0.0f, 1.0f);
+        const WPARAM scaledGain = static_cast<WPARAM>(
+            std::lround(gain * 10000.0f));
+        return PostMessageA(
+            window, kPrismEnvironmentMessage, scaledGain, 0) != FALSE;
     }
 
     std::unique_ptr<IContentSource> CreateMediaClientSource(

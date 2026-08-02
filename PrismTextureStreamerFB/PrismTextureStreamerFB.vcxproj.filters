@@ -74,7 +74,7 @@
     <ClCompile Include="sources\reverse_camera.cpp">
       <Filter>Source Files\sources</Filter>
     </ClCompile>
-    <ClCompile Include="wind_audio.cpp">
+    <ClCompile Include="environment_audio.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="hotkeys.cpp">
@@ -160,7 +160,7 @@
     <ClInclude Include="sources\reverse_camera.h">
       <Filter>Source Files\sources</Filter>
     </ClInclude>
-    <ClInclude Include="wind_audio.h">
+    <ClInclude Include="environment_audio.h">
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="hotkeys.h">

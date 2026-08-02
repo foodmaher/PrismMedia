@@ -21,6 +21,8 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Fade and muffle outside-camera media by true camera-to-driver distance with
   the optional SPF companion
 - Apply separate media volume in menus and detect external cameras reliably
+- Add realistic open-window wind that scales with speed, opening amount, and
+  left/right window position, with generated or custom sound
 - Adjust and save brightness independently for every streamed screen
 - Pause and resume media automatically with the truck engine
 - Prevent full-screen video colours from bleeding into the GPS bezel
@@ -96,11 +98,25 @@ performance statistics.
 
 ## Usage
 
-1. Copy **all files in the release package** into the ETS2/ATS
-   `bin\win_x64\plugins` folder. Keep `PrismMediaClient.exe` and its supporting
-   files beside `PrismTextureStreamerFB.dll`.
+1. Copy `PrismTextureStreamerFB.dll` and the `PrismTextureStreamerFB` folder
+   from the release package into the ETS2/ATS `bin\win_x64\plugins` folder.
+   The main DLL stays directly in `plugins`; helper files remain organized in
+   the subfolder.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
+
+## Version 3.4 open-window wind
+
+Version `3.4.0-window-wind` adds a low-overhead cabin airflow effect. Bind its
+four window controls to the same left/right open/close keys used by ETS2/ATS.
+It estimates the live animation amount, combines it with official truck-speed
+telemetry, pans toward the open side, and plays only in an interior driving
+camera. The UI includes manual synchronization and live speed/opening/output
+diagnostics.
+
+The recommended source is generated locally once, keeping the release small.
+Custom seamless WAV/MP3/WMA/M4A/AAC loops are also supported. See
+`PrismTextureStreamerFB\docs\V3.4-WINDOW-WIND.md` in the release package.
 
 ## Version 2.0 performance and media changes
 

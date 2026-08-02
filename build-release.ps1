@@ -36,25 +36,36 @@ if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-2.8.0-internal-camera-test'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.4.0-window-wind'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }
 New-Item -ItemType Directory -Path $Package | Out-Null
+$Runtime = Join-Path $Package 'PrismTextureStreamerFB'
+$Docs = Join-Path $Runtime 'docs'
+New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
+New-Item -ItemType Directory -Path $Docs -Force | Out-Null
 Copy-Item $Dll $Package
-Copy-Item (Join-Path $ClientDirectory '*') $Package -Recurse
-Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Package
-Copy-Item (Join-Path $ProjectRoot 'V2.3-ADAPTIVE-TESTING.md') $Package
-Copy-Item (Join-Path $ProjectRoot 'V2.4-DISTANCE-AUDIO-TESTING.md') $Package
-Copy-Item (Join-Path $ProjectRoot 'V2.5-REVERSE-PROFILES-TESTING.md') $Package
-Copy-Item (Join-Path $ProjectRoot 'V2.6-INTERNAL-RTT-PROBE.md') $Package
-Copy-Item (Join-Path $ProjectRoot 'V2.7-PARK-ACTIVATION-TEST.md') $Package
-Copy-Item (Join-Path $ProjectRoot 'V2.8-INTERNAL-CAMERA-TEST.md') $Package
-$SpfBridge = Join-Path $Package 'SPF-OPTIONAL\PrismCameraBridge'
+Copy-Item (Join-Path $ClientDirectory '*') $Runtime -Recurse
+Get-ChildItem $Runtime -Recurse -File |
+    Where-Object { $_.Extension -in '.pdb', '.xml' } |
+    Remove-Item -Force
+Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Docs
+Copy-Item (Join-Path $ProjectRoot 'V3.3-DYNAMIC-OUTSIDE-AUDIO.md') $Docs
+Copy-Item (Join-Path $ProjectRoot 'V3.4-WINDOW-WIND.md') $Docs
+$SpfBridge = Join-Path $Runtime 'SPF-OPTIONAL\PrismCameraBridge'
 New-Item -ItemType Directory -Path $SpfBridge -Force | Out-Null
 Copy-Item $BridgeDll $SpfBridge
 Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (
-    Join-Path $Package 'SPF-OPTIONAL')
+    Join-Path $Runtime 'SPF-OPTIONAL')
+
+@"
+PrismTextureStreamerFB 3.4 Window Wind
+
+Copy PrismTextureStreamerFB.dll and the PrismTextureStreamerFB folder into
+<ETS2 or ATS>\bin\win_x64\plugins. The DLL must stay directly in plugins.
+Open the menu with Ctrl+F8.
+"@ | Set-Content (Join-Path $Package 'INSTALL.txt')
 
 Write-Host ''
 Write-Host "Build succeeded: $Dll" -ForegroundColor Green

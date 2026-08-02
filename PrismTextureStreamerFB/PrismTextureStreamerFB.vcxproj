@@ -157,6 +157,7 @@
     <ClCompile Include="sources\reverse_camera.cpp" />
     <ClCompile Include="sources\wgc_window.cpp" />
     <ClCompile Include="sources\window.cpp" />
+    <ClCompile Include="wind_audio.cpp" />
     <ClCompile Include="win32\win32.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -185,6 +186,7 @@
     <ClInclude Include="sources\wgc_window.h" />
     <ClInclude Include="sources\window.h" />
     <ClInclude Include="version.h" />
+    <ClInclude Include="wind_audio.h" />
     <ClInclude Include="win32\win32.h" />
     <ClInclude Include="..\Shared\PrismCameraBridgeShared.h" />
   </ItemGroup>

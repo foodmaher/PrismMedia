@@ -30,19 +30,25 @@ namespace PrismMediaClient
             new Queue<string>();
         private readonly AdaptiveAudioController adaptiveAudio =
             new AdaptiveAudioController();
+        private readonly WindAudioController windAudio =
+            new WindAudioController();
         private MediaLowPassController lowPass;
         private readonly Timer parentMonitor = new Timer();
         private int parentProcessId;
         private readonly bool silentStart;
         private bool ready;
+        private bool initializing;
+        private readonly bool audioOnlyStart;
 
         internal MainForm(
             string initialUrl,
             int parentProcessId,
-            bool silentStart)
+            bool silentStart,
+            bool audioOnlyStart)
         {
             this.parentProcessId = parentProcessId;
             this.silentStart = silentStart;
+            this.audioOnlyStart = audioOnlyStart;
             Text = "Prism Media Client";
             StartPosition = FormStartPosition.CenterScreen;
             Width = 1280;
@@ -62,7 +68,11 @@ namespace PrismMediaClient
             Controls.Add(webView);
             if (!string.IsNullOrWhiteSpace(initialUrl))
                 pendingCommands.Enqueue("load|" + initialUrl);
-            Shown += async (_, __) => await InitializePlayerAsync();
+            Shown += async (_, __) =>
+            {
+                if (!this.audioOnlyStart)
+                    await InitializePlayerAsync();
+            };
             parentMonitor.Interval = 1000;
             parentMonitor.Tick += (_, __) =>
             {
@@ -101,6 +111,9 @@ namespace PrismMediaClient
 
         private async Task InitializePlayerAsync()
         {
+            if (ready || initializing)
+                return;
+            initializing = true;
             try
             {
                 await webView.EnsureCoreWebView2Async();
@@ -140,6 +153,10 @@ namespace PrismMediaClient
                     "Prism Media Client", MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
+            finally
+            {
+                initializing = false;
+            }
         }
 
         protected override void WndProc(ref Message message)
@@ -155,10 +172,24 @@ namespace PrismMediaClient
                     string command = Encoding.UTF8.GetString(bytes).TrimEnd('\0');
                     BeginInvoke(new Action(async () =>
                     {
-                        if (ready)
+                        bool immediate =
+                            command.StartsWith(
+                                "parent|", StringComparison.Ordinal) ||
+                            command.StartsWith(
+                                "windsource|", StringComparison.Ordinal) ||
+                            command.StartsWith(
+                                "wind|", StringComparison.Ordinal);
+                        if (immediate || ready)
                             await ApplyCommandAsync(command);
+                        else if (string.Equals(
+                            command, "initialize",
+                            StringComparison.Ordinal))
+                            await InitializePlayerAsync();
                         else
+                        {
                             pendingCommands.Enqueue(command);
+                            await InitializePlayerAsync();
+                        }
                     }));
                     message.Result = new IntPtr(1);
                     return;
@@ -188,6 +219,43 @@ namespace PrismMediaClient
                     out int newParentProcessId))
                 {
                     parentProcessId = newParentProcessId;
+                }
+                return;
+            }
+            if (command.StartsWith("windsource|", StringComparison.Ordinal))
+            {
+                string[] parts = command.Split(new[] { '|' }, 3);
+                bool procedural = parts.Length < 2 ||
+                    !string.Equals(
+                        parts[1], "custom", StringComparison.OrdinalIgnoreCase);
+                string customPath = parts.Length >= 3 ? parts[2] : "";
+                try
+                {
+                    windAudio.SetSource(procedural, customPath);
+                }
+                catch
+                {
+                    // A missing/unsupported optional file must not stop media.
+                }
+                return;
+            }
+            if (command.StartsWith("wind|", StringComparison.Ordinal))
+            {
+                string[] parts = command.Split('|');
+                if (parts.Length >= 5 &&
+                    int.TryParse(parts[1], out int windEnabled) &&
+                    float.TryParse(
+                        parts[2], NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out float volume) &&
+                    float.TryParse(
+                        parts[3], NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out float pan) &&
+                    float.TryParse(
+                        parts[4], NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out float speedBlend))
+                {
+                    windAudio.SetState(
+                        windEnabled != 0, volume, pan, speedBlend);
                 }
                 return;
             }
@@ -238,6 +306,7 @@ namespace PrismMediaClient
             parentMonitor.Stop();
             parentMonitor.Dispose();
             lowPass?.Dispose();
+            windAudio.Dispose();
             adaptiveAudio.Dispose();
             base.OnFormClosed(e);
         }

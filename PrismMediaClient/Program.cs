@@ -11,6 +11,7 @@ namespace PrismMediaClient
         {
             int parentProcessId = 0;
             bool silent = false;
+            bool audioOnly = false;
             string initialUrl = null;
             for (int index = 0; index < args.Length; ++index)
             {
@@ -19,6 +20,12 @@ namespace PrismMediaClient
                     StringComparison.OrdinalIgnoreCase))
                 {
                     silent = true;
+                }
+                else if (string.Equals(
+                    args[index], "--audio-only",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    audioOnly = true;
                 }
                 else if (string.Equals(
                     args[index], "--parent-pid",
@@ -37,7 +44,8 @@ namespace PrismMediaClient
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(
-                new MainForm(initialUrl, parentProcessId, silent));
+                new MainForm(
+                    initialUrl, parentProcessId, silent, audioOnly));
         }
     }
 }

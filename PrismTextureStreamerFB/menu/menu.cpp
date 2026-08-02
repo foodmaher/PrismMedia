@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <iterator>
 #include <map>
+#include <commdlg.h>
 
 #include "../version.h"
 
@@ -25,6 +27,7 @@ using namespace scs_logging;
 #include "../hotkeys.h"
 #include "../settings.h"
 #include "../telemetry_state.h"
+#include "../wind_audio.h"
 #include "../sources/media_client.h"
 #include "../sources/native_media.h"
 #include "../sources/reverse_camera.h"
@@ -391,6 +394,191 @@ void on_frame()
 				}
 				ImGui::PopID();
 			}
+		}
+
+		if (ImGui::CollapsingHeader("Open-Window Wind Audio"))
+		{
+			ImGui::TextWrapped(
+				"Adds airflow only in an interior driving camera. Volume rises "
+				"smoothly with truck speed and how far each window is open; "
+				"stereo balance follows the open side.");
+
+			if (ImGui::Checkbox(
+				"Enable realistic open-window wind",
+				&g_wind_audio_settings.enabled))
+				saveConfiguration = true;
+			if (g_wind_audio_settings.enabled &&
+				!sources::IsMediaClientInstalled())
+			{
+				ImGui::TextColored(
+					ImVec4(1.0f, 0.55f, 0.20f, 1.0f),
+					"Media helper not found. Copy the complete "
+					"PrismTextureStreamerFB folder from the release package.");
+			}
+
+			const char* soundModes[] = {
+				"Generated natural wind (recommended)",
+				"Custom looping audio file"
+			};
+			int soundMode = static_cast<int>(
+				g_wind_audio_settings.soundMode);
+			if (ImGui::Combo(
+				"Wind sound", &soundMode,
+				soundModes, IM_ARRAYSIZE(soundModes)))
+			{
+				g_wind_audio_settings.soundMode =
+					static_cast<wind_sound_mode_t>(soundMode);
+				saveConfiguration = true;
+			}
+
+			if (g_wind_audio_settings.soundMode ==
+				wind_sound_mode_t::CUSTOM_FILE)
+			{
+				ImGui::SetNextItemWidth(500.0f);
+				if (ImGui::InputText(
+					"Custom sound file",
+					&g_wind_audio_settings.customSoundPath))
+					saveConfiguration = true;
+				ImGui::SameLine();
+				if (ImGui::Button("Browse...##wind"))
+				{
+					char selectedPath[MAX_PATH]{};
+					strncpy_s(
+						selectedPath, sizeof(selectedPath),
+						g_wind_audio_settings.customSoundPath.c_str(),
+						_TRUNCATE);
+					OPENFILENAMEA dialog{};
+					dialog.lStructSize = sizeof(dialog);
+					dialog.hwndOwner = GetActiveWindow();
+					dialog.lpstrFile = selectedPath;
+					dialog.nMaxFile = MAX_PATH;
+					dialog.lpstrFilter =
+						"Audio files (*.wav;*.mp3;*.wma;*.m4a;*.aac)\0"
+						"*.wav;*.mp3;*.wma;*.m4a;*.aac\0"
+						"All files (*.*)\0*.*\0\0";
+					dialog.Flags = OFN_FILEMUSTEXIST |
+						OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+					if (GetOpenFileNameA(&dialog))
+					{
+						g_wind_audio_settings.customSoundPath =
+							selectedPath;
+						saveConfiguration = true;
+					}
+				}
+				ImGui::TextDisabled(
+					"Use a seamless, stereo or mono local loop. Generated wind "
+					"is used automatically if the file cannot be opened.");
+				if (!g_wind_audio_settings.customSoundPath.empty() &&
+					GetFileAttributesA(
+						g_wind_audio_settings.customSoundPath.c_str()) ==
+						INVALID_FILE_ATTRIBUTES)
+				{
+					ImGui::TextColored(
+						ImVec4(1.0f, 0.55f, 0.20f, 1.0f),
+						"Custom file is not available; generated wind will be used.");
+				}
+			}
+
+			float maximumVolumePercent =
+				g_wind_audio_settings.masterVolume * 100.0f;
+			if (ImGui::SliderFloat(
+				"Maximum wind volume",
+				&maximumVolumePercent,
+				0.0f, 100.0f, "%.0f%%"))
+			{
+				g_wind_audio_settings.masterVolume =
+					maximumVolumePercent / 100.0f;
+				saveConfiguration = true;
+			}
+			if (ImGui::SliderFloat(
+				"Wind starts at",
+				&g_wind_audio_settings.startSpeedKmh,
+				0.0f, 50.0f, "%.0f km/h"))
+				saveConfiguration = true;
+			if (ImGui::SliderFloat(
+				"Full wind by",
+				&g_wind_audio_settings.fullSpeedKmh,
+				30.0f, 160.0f, "%.0f km/h"))
+				saveConfiguration = true;
+			if (g_wind_audio_settings.fullSpeedKmh <=
+				g_wind_audio_settings.startSpeedKmh)
+			{
+				g_wind_audio_settings.fullSpeedKmh =
+					g_wind_audio_settings.startSpeedKmh + 1.0f;
+			}
+			if (ImGui::SliderFloat(
+				"Window full-travel time",
+				&g_wind_audio_settings.windowTravelSeconds,
+				0.5f, 10.0f, "%.1f s"))
+				saveConfiguration = true;
+
+			ImGui::Separator();
+			ImGui::TextWrapped(
+				"Bind these to exactly the same four keys configured in "
+				"ETS2/ATS. Hold a key while the game moves its window; the "
+				"plugin will track the same movement. Backspace/Delete clears "
+				"a binding and Escape cancels capture.");
+			for (int index = 0;
+				index < static_cast<int>(g_window_hotkeys.size()); ++index)
+			{
+				constexpr int kWindowBindingBase = 100;
+				const int bindingId = kWindowBindingBase + index;
+				ImGui::PushID(12000 + index);
+				ImGui::TextUnformatted(wind_audio::binding_name(
+					static_cast<window_binding_t>(index)));
+				ImGui::SameLine(180.0f);
+				const std::string label = hotkey_binding_index == bindingId
+					? "Press a key...##window-binding"
+					: hotkey_name(g_window_hotkeys[index]) +
+						"##window-binding";
+				if (ImGui::Button(label.c_str(), ImVec2(220.0f, 0.0f)))
+				{
+					hotkey_binding_index = bindingId;
+					g_is_binding_hotkey = true;
+				}
+				if (hotkey_binding_index == bindingId &&
+					capture_hotkey(g_window_hotkeys[index]))
+				{
+					hotkey_binding_index = -1;
+					g_is_binding_hotkey = false;
+					saveConfiguration = true;
+				}
+				ImGui::PopID();
+			}
+
+			ImGui::Separator();
+			ImGui::TextUnformatted(
+				"Manual synchronization (use if a key was missed):");
+			float leftOpening = g_wind_left_open.load() * 100.0f;
+			float rightOpening = g_wind_right_open.load() * 100.0f;
+			if (ImGui::SliderFloat(
+				"Left window opening", &leftOpening,
+				0.0f, 100.0f, "%.0f%%"))
+			{
+				wind_audio::set_left_open(leftOpening / 100.0f);
+				saveConfiguration = true;
+			}
+			if (ImGui::SliderFloat(
+				"Right window opening", &rightOpening,
+				0.0f, 100.0f, "%.0f%%"))
+			{
+				wind_audio::set_right_open(rightOpening / 100.0f);
+				saveConfiguration = true;
+			}
+
+			ImGui::Text(
+				"Live: %.1f km/h | windows L %.0f%% / R %.0f%% | "
+				"wind %.0f%% | pan %+.2f",
+				std::fabs(g_truck_speed_mps.load()) * 3.6f,
+				g_wind_left_open.load() * 100.0f,
+				g_wind_right_open.load() * 100.0f,
+				g_wind_output_volume.load() * 100.0f,
+				g_wind_output_pan.load());
+			ImGui::TextColored(
+				ImVec4(0.35f, 0.90f, 0.45f, 1.0f),
+				"Recommended: generated wind, 60-70%% maximum, 5-10 km/h "
+				"start, 90-110 km/h full, and the truck's real window "
+				"travel time (usually about 3 seconds).");
 		}
 
 

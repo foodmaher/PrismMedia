@@ -74,6 +74,21 @@
     <ClCompile Include="sources\reverse_camera.cpp">
       <Filter>Source Files\sources</Filter>
     </ClCompile>
+    <ClCompile Include="wind_audio.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="hotkeys.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="settings.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sources\media_client.cpp">
+      <Filter>Source Files\sources</Filter>
+    </ClCompile>
+    <ClCompile Include="sources\native_media.cpp">
+      <Filter>Source Files\sources</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="camera_bridge_client.h">
@@ -143,6 +158,21 @@
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="sources\reverse_camera.h">
+      <Filter>Source Files\sources</Filter>
+    </ClInclude>
+    <ClInclude Include="wind_audio.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="hotkeys.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="settings.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sources\media_client.h">
+      <Filter>Source Files\sources</Filter>
+    </ClInclude>
+    <ClInclude Include="sources\native_media.h">
       <Filter>Source Files\sources</Filter>
     </ClInclude>
   </ItemGroup>

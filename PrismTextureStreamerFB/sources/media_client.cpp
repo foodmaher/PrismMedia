@@ -45,6 +45,29 @@ namespace {
         return FindWindowA(nullptr, sources::kMediaClientWindowTitle);
     }
 
+    std::string media_client_executable()
+    {
+        const std::string root = module_directory();
+        const std::string organized =
+            root + sources::kMediaClientFolder +
+            sources::kMediaClientExecutable;
+        if (GetFileAttributesA(organized.c_str()) !=
+            INVALID_FILE_ATTRIBUTES)
+            return organized;
+
+        // Keep older flat installations working during the transition to the
+        // organized runtime folder.
+        return root + sources::kMediaClientExecutable;
+    }
+
+    std::string path_directory(const std::string& path)
+    {
+        const auto separator = path.find_last_of("\\/");
+        return separator == std::string::npos
+            ? module_directory()
+            : path.substr(0, separator + 1);
+    }
+
     bool send_payload(const std::string& payload, DWORD timeout_ms = 1000)
     {
         const HWND window = find_media_client();
@@ -61,14 +84,18 @@ namespace {
             SMTO_ABORTIFHUNG | SMTO_BLOCK, timeout_ms, &ignored) != 0;
     }
 
-    bool launch_media_client()
+    bool launch_media_client(bool audio_only = false)
     {
         if (find_media_client())
-            return send_payload(
+        {
+            const bool parentSent = send_payload(
                 "parent|" + std::to_string(GetCurrentProcessId()));
+            if (!audio_only)
+                send_payload("initialize", 100);
+            return parentSent;
+        }
 
-        const std::string executable =
-            module_directory() + sources::kMediaClientExecutable;
+        const std::string executable = media_client_executable();
         if (GetFileAttributesA(executable.c_str()) == INVALID_FILE_ATTRIBUTES)
         {
             scs_log(2, "[MediaClient] Missing helper: %s", executable.c_str());
@@ -78,6 +105,8 @@ namespace {
         std::string commandLine =
             "\"" + executable + "\" --silent --parent-pid " +
             std::to_string(GetCurrentProcessId());
+        if (audio_only)
+            commandLine += " --audio-only";
         STARTUPINFOA startup{};
         startup.cb = sizeof(startup);
         startup.dwFlags = STARTF_USESHOWWINDOW;
@@ -85,7 +114,7 @@ namespace {
         PROCESS_INFORMATION process{};
         if (!CreateProcessA(
             executable.c_str(), commandLine.data(), nullptr, nullptr, FALSE,
-            CREATE_NO_WINDOW, nullptr, module_directory().c_str(),
+            CREATE_NO_WINDOW, nullptr, path_directory(executable).c_str(),
             &startup, &process))
         {
             scs_log(2, "[MediaClient] Launch failed, err=%lu", GetLastError());
@@ -293,9 +322,47 @@ namespace {
 namespace sources {
     bool IsMediaClientInstalled()
     {
-        return GetFileAttributesA(
-            (module_directory() + kMediaClientExecutable).c_str()) !=
+        return GetFileAttributesA(media_client_executable().c_str()) !=
             INVALID_FILE_ATTRIBUTES;
+    }
+
+    bool SetMediaClientWindSource(
+        bool procedural,
+        const std::string& custom_path)
+    {
+        if (!launch_media_client(true))
+            return false;
+        if (procedural)
+            return send_payload("windsource|procedural", 100);
+        return send_payload("windsource|custom|" + custom_path, 100);
+    }
+
+    bool SetMediaClientWindState(
+        bool enabled,
+        float volume,
+        float pan,
+        float speed_blend)
+    {
+        const bool clientWasRunning = find_media_client() != nullptr;
+        if (!enabled && !clientWasRunning)
+            return true;
+        if (!clientWasRunning)
+        {
+            if (!launch_media_client(true))
+                return false;
+            // The newly launched helper has not received a wind source yet.
+            // Let the worker configure it before playback state is sent.
+            return false;
+        }
+
+        volume = (std::clamp)(volume, 0.0f, 1.0f);
+        pan = (std::clamp)(pan, -1.0f, 1.0f);
+        speed_blend = (std::clamp)(speed_blend, 0.0f, 1.0f);
+        char payload[96]{};
+        std::snprintf(
+            payload, sizeof(payload), "wind|%d|%.4f|%.4f|%.4f",
+            enabled ? 1 : 0, volume, pan, speed_blend);
+        return send_payload(payload, 30);
     }
 
     std::unique_ptr<IContentSource> CreateMediaClientSource(

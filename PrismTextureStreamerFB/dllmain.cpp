@@ -17,6 +17,7 @@
 #include "settings.h"
 #include "telemetry_state.h"
 #include "camera_bridge_client.h"
+#include "wind_audio.h"
 
 #include <algorithm>
 #include <cmath>
@@ -128,6 +129,18 @@ SCSAPI_VOID reverse_light_changed(
     const bool lightOn = value->value_bool.value != 0;
     g_reverse_light = lightOn;
     g_reverse_active = lightOn || g_selected_gear.load() < 0;
+}
+
+SCSAPI_VOID truck_speed_changed(
+    const scs_string_t,
+    const scs_u32_t,
+    const scs_value_t* const value,
+    const scs_context_t)
+{
+    if (!value || value->type != SCS_VALUE_TYPE_float)
+        return;
+
+    g_truck_speed_mps = value->value_float.value;
 }
 
 SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info, scs_context_t context)
@@ -305,6 +318,21 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                 g_camera_interior_hint = false;
         }
     }
+
+    // Wind audio needs only a tiny control update. The sound itself is
+    // generated in the helper process, away from the render thread.
+    const bool windDriving = g_telemetry_driving.load();
+    const uint64_t windNow = GetTickCount64();
+    const uint64_t windLastHead = g_last_head_update_tick.load();
+    const bool windHeadFresh = windDriving && windLastHead != 0 &&
+        windNow >= windLastHead && windNow - windLastHead <= 500;
+    const bool windExternalCamera = windDriving &&
+        (g_camera_bridge_connected.load()
+            ? g_camera_type.load() != kSpfInteriorCamera
+            : (!g_camera_interior_hint.load() || !windHeadFresh));
+    wind_audio::update(
+        windDriving,
+        windDriving && !windExternalCamera);
 
     {
         std::lock_guard<std::mutex> lock(g_screens_mutex);
@@ -646,6 +674,13 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
         SCS_TELEMETRY_CHANNEL_FLAG_each_frame,
         reverse_light_changed,
         nullptr);
+    version_params->register_for_channel(
+        SCS_TELEMETRY_TRUCK_CHANNEL_speed,
+        SCS_U32_NIL,
+        SCS_VALUE_TYPE_float,
+        SCS_TELEMETRY_CHANNEL_FLAG_each_frame,
+        truck_speed_changed,
+        nullptr);
 
     if (MH_Initialize() != MH_OK) {
         scs_log(0, "Failed to initialize MinHook!");
@@ -683,6 +718,10 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 #pragma comment( linker, "/export:scs_telemetry_shutdown=scs_telemetry_shutdown" )
 SCSAPI_VOID scs_telemetry_shutdown()
 {
+    // Persist the last estimated window positions as ETS2/ATS also keeps the
+    // physical window animation between sessions.
+    settings::save();
+    wind_audio::shutdown();
     {
         std::lock_guard<std::mutex> lock(g_screens_mutex);
         for (auto& screen : g_screens)

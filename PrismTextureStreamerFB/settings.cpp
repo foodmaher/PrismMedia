@@ -17,6 +17,7 @@
 #include "sources/window.h"
 #include "sources/wgc_window.h"
 #include "telemetry_state.h"
+#include "wind_audio.h"
 
 using namespace scs_logging;
 
@@ -154,6 +155,57 @@ namespace settings {
             binding.shift = GetPrivateProfileIntA(
                 section.c_str(), "Shift", binding.shift ? 1 : 0, path.c_str()) != 0;
         }
+
+        g_wind_audio_settings.enabled = GetPrivateProfileIntA(
+            "WindAudio", "Enabled",
+            g_wind_audio_settings.enabled ? 1 : 0,
+            path.c_str()) != 0;
+        g_wind_audio_settings.soundMode =
+            static_cast<wind_sound_mode_t>((std::clamp)(
+                GetPrivateProfileIntA(
+                    "WindAudio", "SoundMode",
+                    static_cast<UINT>(
+                        g_wind_audio_settings.soundMode),
+                    path.c_str()),
+                0U, 1U));
+        g_wind_audio_settings.customSoundPath = read_string(
+            path, "WindAudio", "CustomSoundPath");
+        g_wind_audio_settings.masterVolume = (std::clamp)(
+            read_float(path, "WindAudio", "MasterVolume", 0.65f),
+            0.0f, 1.0f);
+        g_wind_audio_settings.startSpeedKmh = (std::clamp)(
+            read_float(path, "WindAudio", "StartSpeedKmh", 5.0f),
+            0.0f, 100.0f);
+        g_wind_audio_settings.fullSpeedKmh = (std::clamp)(
+            read_float(path, "WindAudio", "FullSpeedKmh", 100.0f),
+            1.0f, 250.0f);
+        g_wind_audio_settings.windowTravelSeconds = (std::clamp)(
+            read_float(path, "WindAudio", "WindowTravelSeconds", 2.8f),
+            0.5f, 10.0f);
+        g_wind_audio_settings.leftWindowOpen = (std::clamp)(
+            read_float(path, "WindAudio", "LeftWindowOpen", 0.0f),
+            0.0f, 1.0f);
+        g_wind_audio_settings.rightWindowOpen = (std::clamp)(
+            read_float(path, "WindAudio", "RightWindowOpen", 0.0f),
+            0.0f, 1.0f);
+        for (size_t index = 0; index < g_window_hotkeys.size(); ++index)
+        {
+            const std::string section =
+                "WindowHotkey" + std::to_string(index);
+            auto& binding = g_window_hotkeys[index];
+            binding.virtualKey = GetPrivateProfileIntA(
+                section.c_str(), "Key", binding.virtualKey, path.c_str());
+            binding.control = GetPrivateProfileIntA(
+                section.c_str(), "Control",
+                binding.control ? 1 : 0, path.c_str()) != 0;
+            binding.alt = GetPrivateProfileIntA(
+                section.c_str(), "Alt",
+                binding.alt ? 1 : 0, path.c_str()) != 0;
+            binding.shift = GetPrivateProfileIntA(
+                section.c_str(), "Shift",
+                binding.shift ? 1 : 0, path.c_str()) != 0;
+        }
+        wind_audio::sync_from_settings();
 
         const int count = (std::min)(GetPrivateProfileIntA("General", "ScreenCount", 0, path.c_str()), 16U);
         if (count <= 0)
@@ -506,7 +558,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 11);
+        write_number(temporaryPath, "General", "Version", 12);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
@@ -517,6 +569,53 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "Control", binding.control ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "Alt", binding.alt ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "Shift", binding.shift ? 1 : 0);
+        }
+
+        write_number(
+            temporaryPath, "WindAudio", "Enabled",
+            g_wind_audio_settings.enabled ? 1 : 0);
+        write_number(
+            temporaryPath, "WindAudio", "SoundMode",
+            static_cast<uint32_t>(g_wind_audio_settings.soundMode));
+        WritePrivateProfileStringA(
+            "WindAudio", "CustomSoundPath",
+            g_wind_audio_settings.customSoundPath.c_str(),
+            temporaryPath.c_str());
+        write_float(
+            temporaryPath, "WindAudio", "MasterVolume",
+            g_wind_audio_settings.masterVolume);
+        write_float(
+            temporaryPath, "WindAudio", "StartSpeedKmh",
+            g_wind_audio_settings.startSpeedKmh);
+        write_float(
+            temporaryPath, "WindAudio", "FullSpeedKmh",
+            g_wind_audio_settings.fullSpeedKmh);
+        write_float(
+            temporaryPath, "WindAudio", "WindowTravelSeconds",
+            g_wind_audio_settings.windowTravelSeconds);
+        write_float(
+            temporaryPath, "WindAudio", "LeftWindowOpen",
+            g_wind_left_open.load());
+        write_float(
+            temporaryPath, "WindAudio", "RightWindowOpen",
+            g_wind_right_open.load());
+        for (size_t index = 0; index < g_window_hotkeys.size(); ++index)
+        {
+            const std::string section =
+                "WindowHotkey" + std::to_string(index);
+            const auto& binding = g_window_hotkeys[index];
+            write_number(
+                temporaryPath, section.c_str(), "Key",
+                binding.virtualKey);
+            write_number(
+                temporaryPath, section.c_str(), "Control",
+                binding.control ? 1 : 0);
+            write_number(
+                temporaryPath, section.c_str(), "Alt",
+                binding.alt ? 1 : 0);
+            write_number(
+                temporaryPath, section.c_str(), "Shift",
+                binding.shift ? 1 : 0);
         }
 
         for (size_t i = 0; i < g_screens.size(); ++i)

@@ -30,6 +30,7 @@ namespace
         g_camera_bridge_activated = false;
         g_camera_bridge_telemetry_registered = false;
         g_camera_bridge_trailer_valid = false;
+        g_camera_bridge_truck_valid = false;
         g_camera_bridge_trailer_count = 0;
     }
 
@@ -106,6 +107,7 @@ namespace camera_bridge
             g_camera_bridge_activated = false;
             g_camera_bridge_telemetry_registered = false;
             g_camera_bridge_trailer_valid = false;
+            g_camera_bridge_truck_valid = false;
             g_camera_bridge_trailer_count = 0;
             return;
         }
@@ -124,6 +126,10 @@ namespace camera_bridge
             (snapshot.flags &
                 prism_camera_bridge::kTrailerValid) != 0;
         g_camera_bridge_trailer_valid = trailerValid;
+        const bool truckValid =
+            (snapshot.flags &
+                prism_camera_bridge::kTruckValid) != 0;
+        g_camera_bridge_truck_valid = truckValid;
         g_camera_bridge_trailer_count = snapshot.trailerCount;
 
         if (cameraValid)
@@ -141,6 +147,15 @@ namespace camera_bridge
             g_last_trailer_heading = snapshot.trailerHeading;
             g_last_trailer_pitch = snapshot.trailerPitch;
             g_last_trailer_roll = snapshot.trailerRoll;
+        }
+        if (truckValid)
+        {
+            g_bridge_truck_world_x = snapshot.truckX;
+            g_bridge_truck_world_y = snapshot.truckY;
+            g_bridge_truck_world_z = snapshot.truckZ;
+            g_bridge_truck_heading = snapshot.truckHeading;
+            g_bridge_truck_pitch = snapshot.truckPitch;
+            g_bridge_truck_roll = snapshot.truckRoll;
         }
         g_last_camera_bridge_tick = snapshot.updatedTick;
     }

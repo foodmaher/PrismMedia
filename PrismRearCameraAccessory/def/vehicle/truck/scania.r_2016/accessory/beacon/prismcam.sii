@@ -1,0 +1,9 @@
+SiiNunit
+{
+accessory_addon_data : prismcam.scan.r16 {
+    name: "Prism Rear Camera Kit"
+    price: 850
+    unlock: 0
+    exterior_model: "/vehicle/truck/upgrade/prism_camera/prism_camera.pmd"
+}
+}

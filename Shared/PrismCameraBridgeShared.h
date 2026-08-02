@@ -6,9 +6,9 @@
 namespace prism_camera_bridge
 {
     inline constexpr wchar_t kMappingName[] =
-        L"Local\\PrismTextureStreamerCameraBridgeV2";
-    inline constexpr uint32_t kMagic = 0x50434232; // "PCB2"
-    inline constexpr uint32_t kVersion = 2;
+        L"Local\\PrismTextureStreamerCameraBridgeV3";
+    inline constexpr uint32_t kMagic = 0x50434233; // "PCB3"
+    inline constexpr uint32_t kVersion = 3;
 
     enum SharedFlags : uint32_t
     {
@@ -16,7 +16,8 @@ namespace prism_camera_bridge
         kActivated = 1U << 1,
         kCameraValid = 1U << 2,
         kTelemetryRegistered = 1U << 3,
-        kTrailerValid = 1U << 4
+        kTrailerValid = 1U << 4,
+        kTruckValid = 1U << 5
     };
 
 #pragma pack(push, 8)
@@ -39,6 +40,12 @@ namespace prism_camera_bridge
         double trailerHeading;
         double trailerPitch;
         double trailerRoll;
+        double truckX;
+        double truckY;
+        double truckZ;
+        double truckHeading;
+        double truckPitch;
+        double truckRoll;
     };
 #pragma pack(pop)
 }

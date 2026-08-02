@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../scs_logging.h"
+#include "../telemetry_state.h"
 
 using namespace scs_logging;
 
@@ -124,6 +125,13 @@ namespace
 	std::atomic<uint64_t> g_lastParkForcedFrame{UINT64_MAX};
 	std::atomic<uint32_t> g_parkTargetFramerate{15};
 	std::atomic<uint32_t> g_parkTargetVariant{1};
+	std::atomic<bool> g_parkCameraKitInstalled{};
+	std::atomic<bool> g_parkTrailerAwareMount{true};
+	std::atomic<float> g_parkMountLateral{};
+	std::atomic<float> g_parkMountHeight{2.6f};
+	std::atomic<float> g_parkMountLongitudinal{-0.35f};
+	std::atomic<float> g_parkMountYaw{180.0f};
+	std::atomic<float> g_parkMountPitch{-8.0f};
 	std::atomic<bool> g_parkColorTargetReady{};
 	std::atomic<bool> g_parkCompositorReady{};
 	std::atomic<uint32_t> g_parkTargetWidth{};
@@ -152,6 +160,8 @@ namespace
 	om_set_render_targets_t g_originalOmSetRenderTargets{};
 	std::atomic<void*> g_parkVisualInterior{};
 	std::atomic<void*> g_parkCamera{};
+	std::array<float, 4> g_parkSourcePosition{};
+	bool g_parkSourcePositionValid{};
 
 	std::mutex g_candidateMutex;
 	std::unordered_map<uintptr_t, candidate_record_t> g_candidates;
@@ -1159,6 +1169,12 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				g_parkCamera.store(
 					cameraSlots[kParkSlot],
 					std::memory_order_relaxed);
+				std::memcpy(
+					g_parkSourcePosition.data(),
+					static_cast<uint8_t*>(
+						cameraSlots[kParkSlot]) + 0x4A0,
+					sizeof(g_parkSourcePosition));
+				g_parkSourcePositionValid = true;
 				installed = true;
 			}
 			else
@@ -1207,6 +1223,12 @@ float4 ps_main(PixelInput input) : SV_TARGET
 							g_parkCamera.store(
 								parkCamera,
 								std::memory_order_relaxed);
+							std::memcpy(
+								g_parkSourcePosition.data(),
+								static_cast<uint8_t*>(
+									parkCamera) + 0x4A0,
+								sizeof(g_parkSourcePosition));
+							g_parkSourcePositionValid = true;
 							installed = true;
 						}
 						else
@@ -1250,6 +1272,116 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		return installed;
 	}
 
+	void apply_park_camera_mount()
+	{
+		if (!g_parkCameraKitInstalled.load(
+				std::memory_order_relaxed))
+			return;
+
+		auto* camera = static_cast<uint8_t*>(
+			g_parkCamera.load(std::memory_order_relaxed));
+		if (!camera)
+			return;
+
+		const float lateral = g_parkMountLateral.load();
+		const float height = g_parkMountHeight.load();
+		const float longitudinal =
+			g_parkMountLongitudinal.load();
+		const float yawOffset =
+			g_parkMountYaw.load() * 0.01745329251994329577f;
+		const float pitch =
+			g_parkMountPitch.load() * 0.01745329251994329577f;
+		float position[4]{
+			lateral, height, longitudinal, 1.0f
+		};
+		float relativeHeading{};
+		bool trailerPose{};
+
+		if (g_parkTrailerAwareMount.load() &&
+			g_camera_bridge_trailer_valid.load() &&
+			g_camera_bridge_truck_valid.load())
+		{
+			const double dx =
+				g_last_trailer_world_x.load() -
+				g_bridge_truck_world_x.load();
+			const double dy =
+				g_last_trailer_world_y.load() -
+				g_bridge_truck_world_y.load();
+			const double dz =
+				g_last_trailer_world_z.load() -
+				g_bridge_truck_world_z.load();
+			const double truckHeading =
+				g_bridge_truck_heading.load() *
+				6.28318530717958647692;
+			const double cosine = std::cos(truckHeading);
+			const double sine = std::sin(truckHeading);
+			const double localX = cosine * dx + sine * dz;
+			const double localZ = -sine * dx + cosine * dz;
+			const double distanceSquared =
+				dx * dx + dy * dy + dz * dz;
+			if (std::isfinite(localX) &&
+				std::isfinite(localZ) &&
+				distanceSquared < 40000.0)
+			{
+				position[0] =
+					static_cast<float>(localX) + lateral;
+				position[1] =
+					static_cast<float>(dy) + height;
+				position[2] =
+					static_cast<float>(localZ) +
+					longitudinal;
+				relativeHeading = static_cast<float>(
+					(g_last_trailer_heading.load() -
+						g_bridge_truck_heading.load()) *
+					6.28318530717958647692);
+				trailerPose = true;
+			}
+		}
+		if (!trailerPose && g_parkSourcePositionValid)
+		{
+			position[0] =
+				g_parkSourcePosition[0] + lateral;
+			position[1] =
+				g_parkSourcePosition[1] + height;
+			position[2] =
+				g_parkSourcePosition[2] + longitudinal;
+			position[3] = g_parkSourcePosition[3];
+		}
+
+		const float halfYaw =
+			(relativeHeading + yawOffset) * 0.5f;
+		const float halfPitch = pitch * 0.5f;
+		const float sy = std::sin(halfYaw);
+		const float cy = std::cos(halfYaw);
+		const float sp = std::sin(halfPitch);
+		const float cp = std::cos(halfPitch);
+		const float orientation[4]{
+			cy * sp,
+			sy * cp,
+			-sy * sp,
+			cy * cp
+		};
+
+		for (float value : position)
+			if (!std::isfinite(value))
+				return;
+		for (float value : orientation)
+			if (!std::isfinite(value))
+				return;
+
+		__try
+		{
+			std::memcpy(camera + 0x4A0,
+				position, sizeof(position));
+			std::memcpy(camera + 0x4B0,
+				orientation, sizeof(orientation));
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			// A transient engine object must never take down the game.
+		}
+	}
+
 	void __fastcall hooked_resource_init(void* visualInterior)
 	{
 		if (visualInterior !=
@@ -1270,6 +1402,7 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				false, std::memory_order_relaxed);
 			g_parkCamera.store(
 				nullptr, std::memory_order_relaxed);
+			g_parkSourcePositionValid = false;
 		}
 
 		const bool parkInstalled =
@@ -1400,6 +1533,9 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				std::memory_order_relaxed);
 			capture_camera_slot_descriptors();
 		}
+
+		if (observingPark)
+			apply_park_camera_mount();
 
 		if (!tracing && !observingPark)
 		{
@@ -2163,6 +2299,29 @@ namespace dx11::internal_render_probe
 				"candidate %c.",
 				static_cast<char>('A' + variant - 1));
 		}
+	}
+
+	void set_park_camera_mount(
+		bool kitInstalled,
+		bool trailerAware,
+		float lateral,
+		float height,
+		float longitudinal,
+		float yawDegrees,
+		float pitchDegrees)
+	{
+		g_parkCameraKitInstalled.store(kitInstalled);
+		g_parkTrailerAwareMount.store(trailerAware);
+		g_parkMountLateral.store(
+			(std::clamp)(lateral, -5.0f, 5.0f));
+		g_parkMountHeight.store(
+			(std::clamp)(height, -2.0f, 8.0f));
+		g_parkMountLongitudinal.store(
+			(std::clamp)(longitudinal, -8.0f, 8.0f));
+		g_parkMountYaw.store(
+			(std::clamp)(yawDegrees, -360.0f, 360.0f));
+		g_parkMountPitch.store(
+			(std::clamp)(pitchDegrees, -89.0f, 89.0f));
 	}
 
 	void on_texture_created(ID3D11Texture2D* texture)

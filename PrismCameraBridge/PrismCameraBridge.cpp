@@ -15,6 +15,7 @@ namespace
     const SPF_Core_API* g_core{};
     SPF_Telemetry_Handle* g_telemetryHandle{};
     SPF_Telemetry_Callback_Handle* g_trailerCallback{};
+    SPF_Telemetry_Callback_Handle* g_truckCallback{};
     HANDLE g_mapping{};
     prism_camera_bridge::SharedState* g_shared{};
     std::mutex g_trailerMutex;
@@ -27,6 +28,7 @@ namespace
     };
 
     TrailerSnapshot g_trailer{};
+    TrailerSnapshot g_truck{};
 
     void BuildManifest(
         SPF_Manifest_Builder_Handle* handle,
@@ -36,7 +38,7 @@ namespace
             return;
 
         api->Info_SetName(handle, "PrismCameraBridge");
-        api->Info_SetVersion(handle, "1.1.0");
+        api->Info_SetVersion(handle, "1.2.0");
         api->Info_SetMinFrameworkVersion(handle, "1.2.0");
         api->Info_SetAuthor(handle, "PrismTextureStreamerFB");
         api->Info_SetDescriptionKey(handle, "");
@@ -116,6 +118,19 @@ namespace
         g_trailer = next;
     }
 
+    void OnTruck(const SPF_TruckData* data, void*)
+    {
+        TrailerSnapshot next{};
+        if (data)
+        {
+            next.valid = true;
+            next.count = 1;
+            next.placement = data->world_placement;
+        }
+        std::lock_guard<std::mutex> lock(g_trailerMutex);
+        g_truck = next;
+    }
+
     void OnLoad(const SPF_Load_API*)
     {
         CreateSharedState();
@@ -132,7 +147,8 @@ namespace
 
         if (core && core->telemetry &&
             core->telemetry->Tel_GetContext &&
-            core->telemetry->Tel_RegisterForTrailers)
+            core->telemetry->Tel_RegisterForTrailers &&
+            core->telemetry->Tel_RegisterForTruckData)
         {
             g_telemetryHandle =
                 core->telemetry->Tel_GetContext(
@@ -142,6 +158,9 @@ namespace
                 g_trailerCallback =
                     core->telemetry->Tel_RegisterForTrailers(
                         g_telemetryHandle, OnTrailers, nullptr);
+                g_truckCallback =
+                    core->telemetry->Tel_RegisterForTruckData(
+                        g_telemetryHandle, OnTruck, nullptr);
             }
         }
     }
@@ -163,9 +182,11 @@ namespace
             g_core->camera->Cam_GetCurrentCamera(&cameraType);
 
         TrailerSnapshot trailer{};
+        TrailerSnapshot truck{};
         {
             std::lock_guard<std::mutex> lock(g_trailerMutex);
             trailer = g_trailer;
+            truck = g_truck;
         }
 
         uint32_t flags = prism_camera_bridge::kLoaded;
@@ -177,6 +198,8 @@ namespace
             flags |= prism_camera_bridge::kTelemetryRegistered;
         if (trailer.valid)
             flags |= prism_camera_bridge::kTrailerValid;
+        if (truck.valid)
+            flags |= prism_camera_bridge::kTruckValid;
 
         InterlockedIncrement(&g_shared->sequence);
         MemoryBarrier();
@@ -204,6 +227,18 @@ namespace
             g_shared->trailerRoll =
                 trailer.placement.orientation.roll;
         }
+        if (truck.valid)
+        {
+            g_shared->truckX = truck.placement.position.x;
+            g_shared->truckY = truck.placement.position.y;
+            g_shared->truckZ = truck.placement.position.z;
+            g_shared->truckHeading =
+                truck.placement.orientation.heading;
+            g_shared->truckPitch =
+                truck.placement.orientation.pitch;
+            g_shared->truckRoll =
+                truck.placement.orientation.roll;
+        }
         MemoryBarrier();
         InterlockedIncrement(&g_shared->sequence);
     }
@@ -224,9 +259,11 @@ namespace
         g_core = nullptr;
         g_telemetryHandle = nullptr;
         g_trailerCallback = nullptr;
+        g_truckCallback = nullptr;
         {
             std::lock_guard<std::mutex> lock(g_trailerMutex);
             g_trailer = {};
+            g_truck = {};
         }
     }
 }

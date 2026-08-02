@@ -160,25 +160,50 @@ namespace settings {
             "WindAudio", "Enabled",
             g_wind_audio_settings.enabled ? 1 : 0,
             path.c_str()) != 0;
-        g_wind_audio_settings.soundMode =
-            static_cast<wind_sound_mode_t>((std::clamp)(
-                GetPrivateProfileIntA(
-                    "WindAudio", "SoundMode",
-                    static_cast<UINT>(
-                        g_wind_audio_settings.soundMode),
-                    path.c_str()),
-                0U, 1U));
-        g_wind_audio_settings.customSoundPath = read_string(
-            path, "WindAudio", "CustomSoundPath");
+        g_wind_audio_settings.stationaryFiles = read_url_list(
+            path, "WindAudio", "StationaryFile");
+        g_wind_audio_settings.cityFiles = read_url_list(
+            path, "WindAudio", "CityFile");
+        g_wind_audio_settings.highwayFiles = read_url_list(
+            path, "WindAudio", "HighwayFile");
+        if (g_wind_audio_settings.stationaryFiles.empty() &&
+            g_wind_audio_settings.cityFiles.empty() &&
+            g_wind_audio_settings.highwayFiles.empty())
+        {
+            // Import the v3.4 custom loop once. Procedural noise is no longer
+            // generated or used as a fallback.
+            const std::string legacyCustom = read_string(
+                path, "WindAudio", "CustomSoundPath");
+            if (!legacyCustom.empty())
+                g_wind_audio_settings.cityFiles.push_back(legacyCustom);
+        }
         g_wind_audio_settings.masterVolume = (std::clamp)(
             read_float(path, "WindAudio", "MasterVolume", 0.65f),
             0.0f, 1.0f);
-        g_wind_audio_settings.startSpeedKmh = (std::clamp)(
-            read_float(path, "WindAudio", "StartSpeedKmh", 5.0f),
-            0.0f, 100.0f);
-        g_wind_audio_settings.fullSpeedKmh = (std::clamp)(
-            read_float(path, "WindAudio", "FullSpeedKmh", 100.0f),
-            1.0f, 250.0f);
+        g_wind_audio_settings.stationaryVolume = (std::clamp)(
+            read_float(path, "WindAudio", "StationaryVolume", 0.45f),
+            0.0f, 1.0f);
+        g_wind_audio_settings.cityVolume = (std::clamp)(
+            read_float(path, "WindAudio", "CityVolume", 0.75f),
+            0.0f, 1.0f);
+        g_wind_audio_settings.highwayVolume = (std::clamp)(
+            read_float(path, "WindAudio", "HighwayVolume", 1.0f),
+            0.0f, 1.0f);
+        g_wind_audio_settings.stationaryFadeKmh = (std::clamp)(
+            read_float(path, "WindAudio", "StationaryFadeKmh", 8.0f),
+            1.0f, 30.0f);
+        g_wind_audio_settings.highwayStartKmh = (std::clamp)(
+            read_float(path, "WindAudio", "HighwayStartKmh", 55.0f),
+            10.0f, 150.0f);
+        g_wind_audio_settings.highwayFullKmh = (std::clamp)(
+            read_float(path, "WindAudio", "HighwayFullKmh", 90.0f),
+            20.0f, 200.0f);
+        g_wind_audio_settings.stereoSeparation = (std::clamp)(
+            read_float(path, "WindAudio", "StereoSeparation", 0.85f),
+            0.0f, 1.0f);
+        g_wind_audio_settings.mediaDucking = (std::clamp)(
+            read_float(path, "WindAudio", "MediaDucking", 1.0f),
+            0.0f, 1.0f);
         g_wind_audio_settings.windowTravelSeconds = (std::clamp)(
             read_float(path, "WindAudio", "WindowTravelSeconds", 2.8f),
             0.5f, 10.0f);
@@ -558,7 +583,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 12);
+        write_number(temporaryPath, "General", "Version", 13);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
@@ -571,28 +596,54 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "Shift", binding.shift ? 1 : 0);
         }
 
+		wind_audio_settings_t windSettings;
+		{
+			std::lock_guard<std::recursive_mutex> windLock(
+				g_wind_audio_settings_mutex);
+			windSettings = g_wind_audio_settings;
+		}
         write_number(
             temporaryPath, "WindAudio", "Enabled",
-            g_wind_audio_settings.enabled ? 1 : 0);
-        write_number(
-            temporaryPath, "WindAudio", "SoundMode",
-            static_cast<uint32_t>(g_wind_audio_settings.soundMode));
-        WritePrivateProfileStringA(
-            "WindAudio", "CustomSoundPath",
-            g_wind_audio_settings.customSoundPath.c_str(),
-            temporaryPath.c_str());
+            windSettings.enabled ? 1 : 0);
+        write_url_list(
+            temporaryPath, "WindAudio", "StationaryFile",
+            windSettings.stationaryFiles);
+        write_url_list(
+            temporaryPath, "WindAudio", "CityFile",
+            windSettings.cityFiles);
+        write_url_list(
+            temporaryPath, "WindAudio", "HighwayFile",
+            windSettings.highwayFiles);
         write_float(
             temporaryPath, "WindAudio", "MasterVolume",
-            g_wind_audio_settings.masterVolume);
+            windSettings.masterVolume);
         write_float(
-            temporaryPath, "WindAudio", "StartSpeedKmh",
-            g_wind_audio_settings.startSpeedKmh);
+            temporaryPath, "WindAudio", "StationaryVolume",
+            windSettings.stationaryVolume);
         write_float(
-            temporaryPath, "WindAudio", "FullSpeedKmh",
-            g_wind_audio_settings.fullSpeedKmh);
+            temporaryPath, "WindAudio", "CityVolume",
+            windSettings.cityVolume);
+        write_float(
+            temporaryPath, "WindAudio", "HighwayVolume",
+            windSettings.highwayVolume);
+        write_float(
+            temporaryPath, "WindAudio", "StationaryFadeKmh",
+            windSettings.stationaryFadeKmh);
+        write_float(
+            temporaryPath, "WindAudio", "HighwayStartKmh",
+            windSettings.highwayStartKmh);
+        write_float(
+            temporaryPath, "WindAudio", "HighwayFullKmh",
+            windSettings.highwayFullKmh);
+        write_float(
+            temporaryPath, "WindAudio", "StereoSeparation",
+            windSettings.stereoSeparation);
+        write_float(
+            temporaryPath, "WindAudio", "MediaDucking",
+            windSettings.mediaDucking);
         write_float(
             temporaryPath, "WindAudio", "WindowTravelSeconds",
-            g_wind_audio_settings.windowTravelSeconds);
+            windSettings.windowTravelSeconds);
         write_float(
             temporaryPath, "WindAudio", "LeftWindowOpen",
             g_wind_left_open.load());

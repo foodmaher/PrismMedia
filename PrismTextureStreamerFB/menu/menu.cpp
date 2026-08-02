@@ -6,6 +6,7 @@
 #include <cstring>
 #include <iterator>
 #include <map>
+#include <vector>
 #include <commdlg.h>
 
 #include "../version.h"
@@ -39,6 +40,105 @@ static std::atomic<bool> menu_visible{};
 static int hotkey_binding_index = -1;
 static bool configuration_save_pending = false;
 static uint64_t configuration_last_change_tick = 0;
+
+static bool append_audio_files(
+	std::vector<std::string>& files,
+	std::unique_lock<std::recursive_mutex>& settingsLock)
+{
+	std::vector<char> selectedPaths(32768, '\0');
+	OPENFILENAMEA dialog{};
+	dialog.lStructSize = sizeof(dialog);
+	dialog.hwndOwner = GetActiveWindow();
+	dialog.lpstrFile = selectedPaths.data();
+	dialog.nMaxFile = static_cast<DWORD>(selectedPaths.size());
+	dialog.lpstrFilter =
+		"Audio files (*.wav;*.mp3;*.wma;*.m4a;*.aac)\0"
+		"*.wav;*.mp3;*.wma;*.m4a;*.aac\0"
+		"All files (*.*)\0*.*\0\0";
+	dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
+		OFN_NOCHANGEDIR | OFN_EXPLORER | OFN_ALLOWMULTISELECT;
+	settingsLock.unlock();
+	const BOOL selected = GetOpenFileNameA(&dialog);
+	settingsLock.lock();
+	if (!selected)
+		return false;
+
+	const std::string first(selectedPaths.data());
+	const char* next = selectedPaths.data() + first.size() + 1;
+	std::vector<std::string> additions;
+	if (*next == '\0')
+	{
+		additions.push_back(first);
+	}
+	else
+	{
+		while (*next != '\0')
+		{
+			additions.push_back(first + "\\" + next);
+			next += std::strlen(next) + 1;
+		}
+	}
+
+	bool changed{};
+	for (const auto& path : additions)
+	{
+		if (std::find(files.begin(), files.end(), path) == files.end())
+		{
+			files.push_back(path);
+			changed = true;
+		}
+	}
+	return changed;
+}
+
+static bool draw_audio_file_list(
+	const char* id,
+	const char* heading,
+	const char* description,
+	std::vector<std::string>& files,
+	std::unique_lock<std::recursive_mutex>& settingsLock)
+{
+	bool changed{};
+	ImGui::PushID(id);
+	ImGui::TextUnformatted(heading);
+	ImGui::TextDisabled("%s", description);
+	for (size_t index = 0; index < files.size(); ++index)
+	{
+		ImGui::PushID(static_cast<int>(index));
+		ImGui::SetNextItemWidth(500.0f);
+		if (ImGui::InputText("##audio-file", &files[index]))
+			changed = true;
+		ImGui::SameLine();
+		if (ImGui::Button("Remove"))
+		{
+			files.erase(files.begin() + index);
+			changed = true;
+			ImGui::PopID();
+			break;
+		}
+		if (!files[index].empty() &&
+			GetFileAttributesA(files[index].c_str()) ==
+				INVALID_FILE_ATTRIBUTES)
+		{
+			ImGui::TextColored(
+				ImVec4(1.0f, 0.55f, 0.20f, 1.0f),
+				"File not found; this entry will be ignored.");
+		}
+		ImGui::PopID();
+	}
+	if (files.empty())
+		ImGui::TextDisabled("No files: this layer stays silent.");
+	if (ImGui::Button("Add field"))
+	{
+		files.emplace_back();
+		changed = true;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Browse files..."))
+		changed = append_audio_files(files, settingsLock) || changed;
+	ImGui::PopID();
+	return changed;
+}
 
 static bool rebuild_source(screen_t& screen)
 {
@@ -398,6 +498,8 @@ void on_frame()
 
 		if (ImGui::CollapsingHeader("Open-Window Wind Audio"))
 		{
+			std::unique_lock<std::recursive_mutex> windSettingsLock(
+				g_wind_audio_settings_mutex);
 			ImGui::TextWrapped(
 				"Adds airflow only in an interior driving camera. Volume rises "
 				"smoothly with truck speed and how far each window is open; "
@@ -416,68 +518,31 @@ void on_frame()
 					"PrismTextureStreamerFB folder from the release package.");
 			}
 
-			const char* soundModes[] = {
-				"Generated natural wind (recommended)",
-				"Custom looping audio file"
-			};
-			int soundMode = static_cast<int>(
-				g_wind_audio_settings.soundMode);
-			if (ImGui::Combo(
-				"Wind sound", &soundMode,
-				soundModes, IM_ARRAYSIZE(soundModes)))
-			{
-				g_wind_audio_settings.soundMode =
-					static_cast<wind_sound_mode_t>(soundMode);
+			ImGui::TextWrapped(
+				"Every valid file loops continuously. Multiple files rotate "
+				"when a track ends, while speed crossfades between these layers. "
+				"Missing or empty layers are ignored; no generated noise is used.");
+			if (draw_audio_file_list(
+				"stationary", "Stationary sounds",
+				"For stopped and very-low-speed ambience, such as birds.",
+				g_wind_audio_settings.stationaryFiles,
+				windSettingsLock))
 				saveConfiguration = true;
-			}
-
-			if (g_wind_audio_settings.soundMode ==
-				wind_sound_mode_t::CUSTOM_FILE)
-			{
-				ImGui::SetNextItemWidth(500.0f);
-				if (ImGui::InputText(
-					"Custom sound file",
-					&g_wind_audio_settings.customSoundPath))
-					saveConfiguration = true;
-				ImGui::SameLine();
-				if (ImGui::Button("Browse...##wind"))
-				{
-					char selectedPath[MAX_PATH]{};
-					strncpy_s(
-						selectedPath, sizeof(selectedPath),
-						g_wind_audio_settings.customSoundPath.c_str(),
-						_TRUNCATE);
-					OPENFILENAMEA dialog{};
-					dialog.lStructSize = sizeof(dialog);
-					dialog.hwndOwner = GetActiveWindow();
-					dialog.lpstrFile = selectedPath;
-					dialog.nMaxFile = MAX_PATH;
-					dialog.lpstrFilter =
-						"Audio files (*.wav;*.mp3;*.wma;*.m4a;*.aac)\0"
-						"*.wav;*.mp3;*.wma;*.m4a;*.aac\0"
-						"All files (*.*)\0*.*\0\0";
-					dialog.Flags = OFN_FILEMUSTEXIST |
-						OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-					if (GetOpenFileNameA(&dialog))
-					{
-						g_wind_audio_settings.customSoundPath =
-							selectedPath;
-						saveConfiguration = true;
-					}
-				}
-				ImGui::TextDisabled(
-					"Use a seamless, stereo or mono local loop. Generated wind "
-					"is used automatically if the file cannot be opened.");
-				if (!g_wind_audio_settings.customSoundPath.empty() &&
-					GetFileAttributesA(
-						g_wind_audio_settings.customSoundPath.c_str()) ==
-						INVALID_FILE_ATTRIBUTES)
-				{
-					ImGui::TextColored(
-						ImVec4(1.0f, 0.55f, 0.20f, 1.0f),
-						"Custom file is not available; generated wind will be used.");
-				}
-			}
+			ImGui::Separator();
+			if (draw_audio_file_list(
+				"city", "City sounds",
+				"For normal low and medium road speeds.",
+				g_wind_audio_settings.cityFiles,
+				windSettingsLock))
+				saveConfiguration = true;
+			ImGui::Separator();
+			if (draw_audio_file_list(
+				"highway", "Highway sounds",
+				"For sustained high-speed airflow.",
+				g_wind_audio_settings.highwayFiles,
+				windSettingsLock))
+				saveConfiguration = true;
+			ImGui::Separator();
 
 			float maximumVolumePercent =
 				g_wind_audio_settings.masterVolume * 100.0f;
@@ -490,22 +555,79 @@ void on_frame()
 					maximumVolumePercent / 100.0f;
 				saveConfiguration = true;
 			}
+			float stationaryVolumePercent =
+				g_wind_audio_settings.stationaryVolume * 100.0f;
 			if (ImGui::SliderFloat(
-				"Wind starts at",
-				&g_wind_audio_settings.startSpeedKmh,
-				0.0f, 50.0f, "%.0f km/h"))
-				saveConfiguration = true;
-			if (ImGui::SliderFloat(
-				"Full wind by",
-				&g_wind_audio_settings.fullSpeedKmh,
-				30.0f, 160.0f, "%.0f km/h"))
-				saveConfiguration = true;
-			if (g_wind_audio_settings.fullSpeedKmh <=
-				g_wind_audio_settings.startSpeedKmh)
+				"Stationary layer volume", &stationaryVolumePercent,
+				0.0f, 100.0f, "%.0f%%"))
 			{
-				g_wind_audio_settings.fullSpeedKmh =
-					g_wind_audio_settings.startSpeedKmh + 1.0f;
+				g_wind_audio_settings.stationaryVolume =
+					stationaryVolumePercent / 100.0f;
+				saveConfiguration = true;
 			}
+			float cityVolumePercent =
+				g_wind_audio_settings.cityVolume * 100.0f;
+			if (ImGui::SliderFloat(
+				"City layer volume", &cityVolumePercent,
+				0.0f, 100.0f, "%.0f%%"))
+			{
+				g_wind_audio_settings.cityVolume =
+					cityVolumePercent / 100.0f;
+				saveConfiguration = true;
+			}
+			float highwayVolumePercent =
+				g_wind_audio_settings.highwayVolume * 100.0f;
+			if (ImGui::SliderFloat(
+				"Highway layer volume", &highwayVolumePercent,
+				0.0f, 100.0f, "%.0f%%"))
+			{
+				g_wind_audio_settings.highwayVolume =
+					highwayVolumePercent / 100.0f;
+				saveConfiguration = true;
+			}
+			if (ImGui::SliderFloat(
+				"Stationary fades by",
+				&g_wind_audio_settings.stationaryFadeKmh,
+				1.0f, 30.0f, "%.0f km/h"))
+				saveConfiguration = true;
+			if (ImGui::SliderFloat(
+				"Highway transition starts",
+				&g_wind_audio_settings.highwayStartKmh,
+				20.0f, 120.0f, "%.0f km/h"))
+				saveConfiguration = true;
+			if (ImGui::SliderFloat(
+				"Highway fully active by",
+				&g_wind_audio_settings.highwayFullKmh,
+				40.0f, 160.0f, "%.0f km/h"))
+				saveConfiguration = true;
+			if (g_wind_audio_settings.highwayFullKmh <=
+				g_wind_audio_settings.highwayStartKmh)
+			{
+				g_wind_audio_settings.highwayFullKmh =
+					g_wind_audio_settings.highwayStartKmh + 1.0f;
+			}
+			float stereoPercent =
+				g_wind_audio_settings.stereoSeparation * 100.0f;
+			if (ImGui::SliderFloat(
+				"Open-side stereo separation", &stereoPercent,
+				0.0f, 100.0f, "%.0f%%"))
+			{
+				g_wind_audio_settings.stereoSeparation =
+					stereoPercent / 100.0f;
+				saveConfiguration = true;
+			}
+			float duckingPercent =
+				g_wind_audio_settings.mediaDucking * 100.0f;
+			if (ImGui::SliderFloat(
+				"Media reduction at full wind", &duckingPercent,
+				0.0f, 100.0f, "%.0f%%"))
+			{
+				g_wind_audio_settings.mediaDucking =
+					duckingPercent / 100.0f;
+				saveConfiguration = true;
+			}
+			ImGui::TextDisabled(
+				"100%% makes integrated YouTube/Spotify audio silent at full wind.");
 			if (ImGui::SliderFloat(
 				"Window full-travel time",
 				&g_wind_audio_settings.windowTravelSeconds,
@@ -568,16 +690,17 @@ void on_frame()
 
 			ImGui::Text(
 				"Live: %.1f km/h | windows L %.0f%% / R %.0f%% | "
-				"wind %.0f%% | pan %+.2f",
+				"environment %.0f%% | pan %+.2f | media %.0f%%",
 				std::fabs(g_truck_speed_mps.load()) * 3.6f,
 				g_wind_left_open.load() * 100.0f,
 				g_wind_right_open.load() * 100.0f,
 				g_wind_output_volume.load() * 100.0f,
-				g_wind_output_pan.load());
+				g_wind_output_pan.load(),
+				g_wind_media_gain.load() * 100.0f);
 			ImGui::TextColored(
 				ImVec4(0.35f, 0.90f, 0.45f, 1.0f),
-				"Recommended: generated wind, 60-70%% maximum, 5-10 km/h "
-				"start, 90-110 km/h full, and the truck's real window "
+				"Recommended: seamless local loops, 60-70%% maximum, "
+				"80-90%% stereo separation, and the truck's real window "
 				"travel time (usually about 3 seconds).");
 		}
 

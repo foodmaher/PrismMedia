@@ -31,12 +31,13 @@ namespace
 	{
 	public:
 		void submit(
-			wind_sound_mode_t mode,
-			const std::string& path,
+			const wind_audio_settings_t& settings,
 			bool enabled,
-			float volume,
+			float stationaryVolume,
+			float cityVolume,
+			float highwayVolume,
 			float pan,
-			float speedBlend)
+			float mediaGain)
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
 			if (!m_thread.joinable())
@@ -44,12 +45,15 @@ namespace
 				m_started = true;
 				m_thread = std::thread([this] { run(); });
 			}
-			m_mode = mode;
-			m_path = path;
+			m_stationaryFiles = settings.stationaryFiles;
+			m_cityFiles = settings.cityFiles;
+			m_highwayFiles = settings.highwayFiles;
 			m_enabled = enabled;
-			m_volume = volume;
+			m_stationaryVolume = stationaryVolume;
+			m_cityVolume = cityVolume;
+			m_highwayVolume = highwayVolume;
 			m_pan = pan;
-			m_speedBlend = speedBlend;
+			m_mediaGain = mediaGain;
 			++m_generation;
 			m_wake.notify_one();
 		}
@@ -74,21 +78,24 @@ namespace
 	private:
 		void run()
 		{
-			wind_sound_mode_t configuredMode =
-				wind_sound_mode_t::PROCEDURAL;
-			std::string configuredPath;
+			std::vector<std::string> configuredStationaryFiles;
+			std::vector<std::string> configuredCityFiles;
+			std::vector<std::string> configuredHighwayFiles;
 			bool sourceConfigured{};
 			uint64_t consumedGeneration{};
 			uint64_t lastSourceAttempt{};
 
 			for (;;)
 			{
-				wind_sound_mode_t mode{};
-				std::string path;
+				std::vector<std::string> stationaryFiles;
+				std::vector<std::string> cityFiles;
+				std::vector<std::string> highwayFiles;
 				bool enabled{};
-				float volume{};
+				float stationaryVolume{};
+				float cityVolume{};
+				float highwayVolume{};
 				float pan{};
-				float speedBlend{};
+				float mediaGain{ 1.0f };
 				{
 					std::unique_lock<std::mutex> lock(m_mutex);
 					m_wake.wait(lock, [this, &consumedGeneration]
@@ -99,16 +106,21 @@ namespace
 					if (m_stop)
 						break;
 					consumedGeneration = m_generation;
-					mode = m_mode;
-					path = m_path;
+					stationaryFiles = m_stationaryFiles;
+					cityFiles = m_cityFiles;
+					highwayFiles = m_highwayFiles;
 					enabled = m_enabled;
-					volume = m_volume;
+					stationaryVolume = m_stationaryVolume;
+					cityVolume = m_cityVolume;
+					highwayVolume = m_highwayVolume;
 					pan = m_pan;
-					speedBlend = m_speedBlend;
+					mediaGain = m_mediaGain;
 				}
 
 				const bool sourceChanged = !sourceConfigured ||
-					configuredMode != mode || configuredPath != path;
+					configuredStationaryFiles != stationaryFiles ||
+					configuredCityFiles != cityFiles ||
+					configuredHighwayFiles != highwayFiles;
 				const uint64_t now = GetTickCount64();
 				if (sourceChanged &&
 					(lastSourceAttempt == 0 || now < lastSourceAttempt ||
@@ -116,27 +128,28 @@ namespace
 				{
 					lastSourceAttempt = now;
 					sourceConfigured =
-						sources::SetMediaClientWindSource(
-							mode == wind_sound_mode_t::PROCEDURAL,
-							path);
+						sources::SetMediaClientWindLibrary(
+							stationaryFiles, cityFiles, highwayFiles);
 					if (sourceConfigured)
 					{
-						configuredMode = mode;
-						configuredPath = path;
+						configuredStationaryFiles = stationaryFiles;
+						configuredCityFiles = cityFiles;
+						configuredHighwayFiles = highwayFiles;
 						lastSourceAttempt = 0;
 					}
 				}
 				if (sourceConfigured)
 				{
 					if (!sources::SetMediaClientWindState(
-						enabled, volume, pan, speedBlend))
+						enabled, stationaryVolume, cityVolume,
+						highwayVolume, pan, mediaGain))
 						sourceConfigured = false;
 				}
 			}
 
 			if (sourceConfigured)
 				sources::SetMediaClientWindState(
-					false, 0.0f, 0.0f, 0.0f);
+					false, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
 		}
 
 		std::mutex m_mutex;
@@ -145,15 +158,37 @@ namespace
 		bool m_stop{};
 		std::atomic<bool> m_started{};
 		uint64_t m_generation{};
-		wind_sound_mode_t m_mode{ wind_sound_mode_t::PROCEDURAL };
-		std::string m_path;
+		std::vector<std::string> m_stationaryFiles;
+		std::vector<std::string> m_cityFiles;
+		std::vector<std::string> m_highwayFiles;
 		bool m_enabled{};
-		float m_volume{};
+		float m_stationaryVolume{};
+		float m_cityVolume{};
+		float m_highwayVolume{};
 		float m_pan{};
-		float m_speedBlend{};
+		float m_mediaGain{ 1.0f };
 	};
 
 	wind_audio_worker_t g_wind_worker;
+	std::atomic<bool> g_reset_mix_on_next_update{};
+
+	bool has_existing_file(const std::vector<std::string>& files)
+	{
+		for (const auto& file : files)
+		{
+			const DWORD attributes = GetFileAttributesA(file.c_str());
+			if (attributes != INVALID_FILE_ATTRIBUTES &&
+				(attributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+				return true;
+		}
+		return false;
+	}
+
+	float smoothstep(float value)
+	{
+		value = (std::clamp)(value, 0.0f, 1.0f);
+		return value * value * (3.0f - 2.0f * value);
+	}
 }
 
 namespace wind_audio
@@ -172,6 +207,8 @@ namespace wind_audio
 
 	void sync_from_settings()
 	{
+		std::lock_guard<std::recursive_mutex> lock(
+			g_wind_audio_settings_mutex);
 		g_wind_left_open = (std::clamp)(
 			g_wind_audio_settings.leftWindowOpen, 0.0f, 1.0f);
 		g_wind_right_open = (std::clamp)(
@@ -180,6 +217,8 @@ namespace wind_audio
 
 	void set_left_open(float amount)
 	{
+		std::lock_guard<std::recursive_mutex> lock(
+			g_wind_audio_settings_mutex);
 		amount = (std::clamp)(amount, 0.0f, 1.0f);
 		g_wind_left_open = amount;
 		g_wind_audio_settings.leftWindowOpen = amount;
@@ -187,6 +226,8 @@ namespace wind_audio
 
 	void set_right_open(float amount)
 	{
+		std::lock_guard<std::recursive_mutex> lock(
+			g_wind_audio_settings_mutex);
 		amount = (std::clamp)(amount, 0.0f, 1.0f);
 		g_wind_right_open = amount;
 		g_wind_audio_settings.rightWindowOpen = amount;
@@ -196,8 +237,32 @@ namespace wind_audio
 	{
 		static uint64_t previousTick{};
 		static uint64_t lastSendTick{};
-		static float smoothedVolume{};
+		static float smoothedStationaryVolume{};
+		static float smoothedCityVolume{};
+		static float smoothedHighwayVolume{};
 		static float smoothedPan{};
+		static float smoothedMediaGain{ 1.0f };
+		static std::vector<std::string> checkedStationaryFiles;
+		static std::vector<std::string> checkedCityFiles;
+		static std::vector<std::string> checkedHighwayFiles;
+		static bool stationaryAvailable{};
+		static bool cityAvailable{};
+		static bool highwayAvailable{};
+		static uint64_t lastAvailabilityCheck{};
+		if (g_reset_mix_on_next_update.exchange(false))
+		{
+			smoothedStationaryVolume = 0.0f;
+			smoothedCityVolume = 0.0f;
+			smoothedHighwayVolume = 0.0f;
+			smoothedPan = 0.0f;
+			smoothedMediaGain = 1.0f;
+		}
+		wind_audio_settings_t settings;
+		{
+			std::lock_guard<std::recursive_mutex> lock(
+				g_wind_audio_settings_mutex);
+			settings = g_wind_audio_settings;
+		}
 
 		const uint64_t now = GetTickCount64();
 		const float deltaSeconds = previousTick == 0 || now < previousTick
@@ -206,7 +271,7 @@ namespace wind_audio
 		previousTick = now;
 
 		const float travelSeconds = (std::clamp)(
-			g_wind_audio_settings.windowTravelSeconds, 0.5f, 10.0f);
+			settings.windowTravelSeconds, 0.5f, 10.0f);
 		const float travel = deltaSeconds / travelSeconds;
 		float left = g_wind_left_open.load();
 		float right = g_wind_right_open.load();
@@ -234,55 +299,128 @@ namespace wind_audio
 		set_right_open(right);
 
 		const float speedKmh = std::fabs(g_truck_speed_mps.load()) * 3.6f;
-		const float startSpeed = (std::clamp)(
-			g_wind_audio_settings.startSpeedKmh, 0.0f, 100.0f);
-		const float fullSpeed = (std::max)(
-			startSpeed + 1.0f,
-			g_wind_audio_settings.fullSpeedKmh);
-		float speedBlend = (std::clamp)(
-			(speedKmh - startSpeed) / (fullSpeed - startSpeed),
-			0.0f, 1.0f);
-		// Smoothstep approximates the gentle onset and stronger high-speed
-		// pressure of real airflow without sudden volume steps.
-		speedBlend = speedBlend * speedBlend * (3.0f - 2.0f * speedBlend);
-
 		const float largerOpening = (std::max)(left, right);
 		const float smallerOpening = (std::min)(left, right);
 		const float opening = (std::clamp)(
 			largerOpening + smallerOpening * 0.35f, 0.0f, 1.0f);
 		const float openingResponse = std::pow(opening, 0.70f);
 		const float masterVolume = (std::clamp)(
-			g_wind_audio_settings.masterVolume, 0.0f, 1.0f);
-		const bool shouldPlay = g_wind_audio_settings.enabled &&
-			driving && interiorCamera && opening > 0.001f &&
-			speedBlend > 0.001f;
-		const float targetVolume = shouldPlay
-			? masterVolume * openingResponse * speedBlend
+			settings.masterVolume, 0.0f, 1.0f);
+		const bool libraryChanged =
+			checkedStationaryFiles != settings.stationaryFiles ||
+			checkedCityFiles != settings.cityFiles ||
+			checkedHighwayFiles != settings.highwayFiles;
+		if (libraryChanged || lastAvailabilityCheck == 0 ||
+			now < lastAvailabilityCheck || now - lastAvailabilityCheck >= 2000)
+		{
+			checkedStationaryFiles = settings.stationaryFiles;
+			checkedCityFiles = settings.cityFiles;
+			checkedHighwayFiles = settings.highwayFiles;
+			stationaryAvailable = has_existing_file(checkedStationaryFiles);
+			cityAvailable = has_existing_file(checkedCityFiles);
+			highwayAvailable = has_existing_file(checkedHighwayFiles);
+			lastAvailabilityCheck = now;
+		}
+		const bool anyAvailable = stationaryAvailable || cityAvailable ||
+			highwayAvailable;
+		const bool audibleContext = settings.enabled &&
+			driving && interiorCamera && opening > 0.001f;
+
+		const float stationaryFade = (std::max)(1.0f,
+			settings.stationaryFadeKmh);
+		const float stationaryWeight = 1.0f - smoothstep(
+			speedKmh / stationaryFade);
+		const float highwayStart = (std::max)(0.0f,
+			settings.highwayStartKmh);
+		const float highwayFull = (std::max)(highwayStart + 1.0f,
+			settings.highwayFullKmh);
+		const float highwayWeight = smoothstep(
+			(speedKmh - highwayStart) / (highwayFull - highwayStart));
+		const float cityWeight = (1.0f - stationaryWeight) *
+			(1.0f - highwayWeight);
+		const float baseVolume = audibleContext
+			? masterVolume * openingResponse
+			: 0.0f;
+		const float targetStationaryVolume = stationaryAvailable
+			? baseVolume * stationaryWeight * (std::clamp)(
+				settings.stationaryVolume, 0.0f, 1.0f)
+			: 0.0f;
+		const float targetCityVolume = cityAvailable
+			? baseVolume * cityWeight * (std::clamp)(
+				settings.cityVolume, 0.0f, 1.0f)
+			: 0.0f;
+		const float targetHighwayVolume = highwayAvailable
+			? baseVolume * highwayWeight * (std::clamp)(
+				settings.highwayVolume, 0.0f, 1.0f)
 			: 0.0f;
 		const float targetPan = opening > 0.001f
 			? (std::clamp)((right - left) / (left + right + 0.001f),
-				-1.0f, 1.0f) * 0.70f
+				-1.0f, 1.0f) * (std::clamp)(
+					settings.stereoSeparation, 0.0f, 1.0f)
 			: 0.0f;
+		const float windIntensity = (std::clamp)(
+			masterVolume > 0.001f
+				? (targetStationaryVolume + targetCityVolume +
+					targetHighwayVolume) / masterVolume
+				: 0.0f,
+			0.0f, 1.0f);
+		const float targetMediaGain = 1.0f - windIntensity *
+			(std::clamp)(settings.mediaDucking, 0.0f, 1.0f);
 
-		const float smoothing = 1.0f - std::exp(-deltaSeconds * 7.0f);
-		smoothedVolume += (targetVolume - smoothedVolume) * smoothing;
+		const float smoothing = 1.0f - std::exp(-deltaSeconds * 5.0f);
+		smoothedStationaryVolume += (targetStationaryVolume -
+			smoothedStationaryVolume) * smoothing;
+		smoothedCityVolume += (targetCityVolume - smoothedCityVolume) *
+			smoothing;
+		smoothedHighwayVolume += (targetHighwayVolume -
+			smoothedHighwayVolume) * smoothing;
 		smoothedPan += (targetPan - smoothedPan) * smoothing;
-		g_wind_output_volume = smoothedVolume;
+		smoothedMediaGain += (targetMediaGain - smoothedMediaGain) *
+			smoothing;
+		g_wind_output_volume = (std::clamp)(
+			smoothedStationaryVolume + smoothedCityVolume +
+			smoothedHighwayVolume, 0.0f, 1.0f);
 		g_wind_output_pan = smoothedPan;
+		g_wind_media_gain = smoothedMediaGain;
 
-		if ((g_wind_audio_settings.enabled ||
+		if (((settings.enabled && anyAvailable) ||
 			g_wind_worker.started()) &&
 			now - lastSendTick >= 50)
 		{
 			g_wind_worker.submit(
-				g_wind_audio_settings.soundMode,
-				g_wind_audio_settings.customSoundPath,
-				shouldPlay || smoothedVolume > 0.001f,
-				smoothedVolume,
+				settings,
+				settings.enabled && anyAvailable,
+				smoothedStationaryVolume,
+				smoothedCityVolume,
+				smoothedHighwayVolume,
 				smoothedPan,
-				speedBlend);
+				smoothedMediaGain);
 			lastSendTick = now;
 		}
+	}
+
+	void silence()
+	{
+		if (!g_wind_worker.started())
+			return;
+
+		wind_audio_settings_t settings;
+		{
+			std::lock_guard<std::recursive_mutex> lock(
+				g_wind_audio_settings_mutex);
+			settings = g_wind_audio_settings;
+		}
+		const bool hasConfiguredFiles =
+			!settings.stationaryFiles.empty() ||
+			!settings.cityFiles.empty() ||
+			!settings.highwayFiles.empty();
+		g_wind_output_volume = 0.0f;
+		g_wind_output_pan = 0.0f;
+		g_wind_media_gain = 1.0f;
+		g_reset_mix_on_next_update = true;
+		g_wind_worker.submit(
+			settings, settings.enabled && hasConfiguredFiles,
+			0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
 	}
 
 	void shutdown()

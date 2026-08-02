@@ -1,191 +1,76 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Windows.Media;
 
 namespace PrismMediaClient
 {
     /// <summary>
-    /// Plays window wind outside WebView2, so it is not affected by media
-    /// spatial-audio filtering and never touches the game's render thread.
+    /// Keeps three environment loops running continuously and changes only
+    /// their volume and balance as the truck state changes.
     /// </summary>
     internal sealed class WindAudioController : IDisposable
     {
-        private readonly MediaPlayer player = new MediaPlayer();
-        private bool desiredPlaying;
-        private double desiredVolume;
-        private double desiredBalance;
-        private double desiredSpeedRatio = 1.0;
-        private double appliedVolume = double.NaN;
-        private double appliedBalance = double.NaN;
-        private double appliedSpeedRatio = double.NaN;
-        private bool appliedPlaying;
-        private bool customSource;
-        private bool fallbackAttempted;
+        private readonly LoopLayer stationary = new LoopLayer();
+        private readonly LoopLayer city = new LoopLayer();
+        private readonly LoopLayer highway = new LoopLayer();
         private bool disposed;
 
         internal WindAudioController()
         {
-            player.MediaOpened += (_, __) =>
+            try
             {
-                ResetAppliedState();
-                ApplyState();
-            };
-            player.MediaEnded += (_, __) =>
+                string legacyNoise = Path.Combine(
+                    Environment.GetFolderPath(
+                        Environment.SpecialFolder.LocalApplicationData),
+                    "PrismTextureStreamerFB",
+                    "procedural-window-wind-v1.wav");
+                if (File.Exists(legacyNoise))
+                    File.Delete(legacyNoise);
+            }
+            catch
             {
-                if (!desiredPlaying)
-                    return;
-                player.Position = TimeSpan.Zero;
-                player.Play();
-                appliedPlaying = true;
-            };
-            player.MediaFailed += (_, __) =>
-            {
-                if (customSource && !fallbackAttempted)
-                {
-                    fallbackAttempted = true;
-                    customSource = false;
-                    player.Close();
-                    ResetAppliedState();
-                    player.Open(new Uri(
-                        EnsureProceduralWindFile(), UriKind.Absolute));
-                    ApplyState();
-                    return;
-                }
-                desiredPlaying = false;
-                player.Stop();
-                appliedPlaying = false;
-            };
+                // A locked legacy file is harmless; it is never played again.
+            }
         }
 
-        internal void SetSource(bool procedural, string customPath)
+        internal void SetLibrary(string category, IEnumerable<string> files)
         {
             if (disposed)
                 return;
 
-            string path = procedural
-                ? EnsureProceduralWindFile()
-                : customPath?.Trim().Trim('"');
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-            {
-                path = EnsureProceduralWindFile();
-                procedural = true;
-            }
-
-            customSource = !procedural;
-            fallbackAttempted = false;
-            player.Close();
-            ResetAppliedState();
-            player.Open(new Uri(Path.GetFullPath(path), UriKind.Absolute));
-            ApplyState();
+            LoopLayer layer = LayerFor(category);
+            if (layer != null)
+                layer.SetFiles(files);
         }
 
         internal void SetState(
             bool enabled,
-            float volume,
-            float pan,
-            float speedBlend)
+            float stationaryVolume,
+            float cityVolume,
+            float highwayVolume,
+            float pan)
         {
             if (disposed)
                 return;
 
-            desiredPlaying = enabled && volume > 0.0005f;
-            desiredVolume = Math.Max(0.0, Math.Min(1.0, volume));
-            desiredBalance = Math.Max(-1.0, Math.Min(1.0, pan));
-            desiredSpeedRatio = 0.82 +
-                Math.Max(0.0, Math.Min(1.0, speedBlend)) * 0.36;
-            ApplyState();
+            stationary.SetState(enabled, stationaryVolume, pan);
+            city.SetState(enabled, cityVolume, pan);
+            highway.SetState(enabled, highwayVolume, pan);
         }
 
-        private void ApplyState()
+        private LoopLayer LayerFor(string category)
         {
-            if (double.IsNaN(appliedVolume) ||
-                Math.Abs(appliedVolume - desiredVolume) >= 0.003)
-            {
-                player.Volume = desiredVolume;
-                appliedVolume = desiredVolume;
-            }
-            if (double.IsNaN(appliedBalance) ||
-                Math.Abs(appliedBalance - desiredBalance) >= 0.01)
-            {
-                player.Balance = desiredBalance;
-                appliedBalance = desiredBalance;
-            }
-            if (double.IsNaN(appliedSpeedRatio) ||
-                Math.Abs(appliedSpeedRatio - desiredSpeedRatio) >= 0.01)
-            {
-                player.SpeedRatio = desiredSpeedRatio;
-                appliedSpeedRatio = desiredSpeedRatio;
-            }
-            if (desiredPlaying == appliedPlaying)
-                return;
-            if (desiredPlaying)
-                player.Play();
-            else
-                player.Pause();
-            appliedPlaying = desiredPlaying;
-        }
-
-        private void ResetAppliedState()
-        {
-            appliedVolume = double.NaN;
-            appliedBalance = double.NaN;
-            appliedSpeedRatio = double.NaN;
-            appliedPlaying = false;
-        }
-
-        private static string EnsureProceduralWindFile()
-        {
-            string directory = Path.Combine(
-                Environment.GetFolderPath(
-                    Environment.SpecialFolder.LocalApplicationData),
-                "PrismTextureStreamerFB");
-            Directory.CreateDirectory(directory);
-            string path = Path.Combine(directory, "procedural-window-wind-v1.wav");
-            if (File.Exists(path) && new FileInfo(path).Length > 100000)
-                return path;
-
-            const int sampleRate = 22050;
-            const int seconds = 8;
-            const short channels = 1;
-            const short bitsPerSample = 16;
-            int sampleCount = sampleRate * seconds;
-            int dataLength = sampleCount * channels * (bitsPerSample / 8);
-            var random = new Random(0x50524953);
-            double low = 0.0;
-            double mid = 0.0;
-
-            using (var stream = File.Create(path))
-            using (var writer = new BinaryWriter(stream))
-            {
-                writer.Write(new[] { 'R', 'I', 'F', 'F' });
-                writer.Write(36 + dataLength);
-                writer.Write(new[] { 'W', 'A', 'V', 'E' });
-                writer.Write(new[] { 'f', 'm', 't', ' ' });
-                writer.Write(16);
-                writer.Write((short)1);
-                writer.Write(channels);
-                writer.Write(sampleRate);
-                writer.Write(sampleRate * channels * (bitsPerSample / 8));
-                writer.Write((short)(channels * (bitsPerSample / 8)));
-                writer.Write(bitsPerSample);
-                writer.Write(new[] { 'd', 'a', 't', 'a' });
-                writer.Write(dataLength);
-
-                for (int index = 0; index < sampleCount; ++index)
-                {
-                    double white = random.NextDouble() * 2.0 - 1.0;
-                    low = low * 0.995 + white * 0.005;
-                    mid = mid * 0.93 + white * 0.07;
-                    double time = index / (double)sampleRate;
-                    double gust = 0.72 + 0.18 * Math.Sin(time * 1.7) +
-                        0.10 * Math.Sin(time * 0.37 + 1.3);
-                    double sample = (low * 2.7 + mid * 0.75 +
-                        white * 0.07) * gust;
-                    sample = Math.Max(-1.0, Math.Min(1.0, sample));
-                    writer.Write((short)(sample * 24500.0));
-                }
-            }
-            return path;
+            if (string.Equals(category, "stationary",
+                StringComparison.OrdinalIgnoreCase))
+                return stationary;
+            if (string.Equals(category, "city",
+                StringComparison.OrdinalIgnoreCase))
+                return city;
+            if (string.Equals(category, "highway",
+                StringComparison.OrdinalIgnoreCase))
+                return highway;
+            return null;
         }
 
         public void Dispose()
@@ -193,8 +78,187 @@ namespace PrismMediaClient
             if (disposed)
                 return;
             disposed = true;
-            player.Stop();
-            player.Close();
+            stationary.Dispose();
+            city.Dispose();
+            highway.Dispose();
+        }
+
+        private sealed class LoopLayer : IDisposable
+        {
+            private readonly MediaPlayer player = new MediaPlayer();
+            private List<string> files = new List<string>();
+            private int currentIndex = -1;
+            private int consecutiveFailures;
+            private bool desiredRunning;
+            private double desiredVolume;
+            private double desiredBalance;
+            private double appliedVolume = double.NaN;
+            private double appliedBalance = double.NaN;
+            private bool mediaOpen;
+            private bool appliedPlaying;
+            private bool disposed;
+
+            internal LoopLayer()
+            {
+                player.MediaOpened += (_, __) =>
+                {
+                    mediaOpen = true;
+                    consecutiveFailures = 0;
+                    ResetAppliedState();
+                    ApplyState();
+                };
+                player.MediaEnded += (_, __) => AdvanceAfterEnd();
+                player.MediaFailed += (_, __) => AdvanceAfterFailure();
+            }
+
+            internal void SetFiles(IEnumerable<string> values)
+            {
+                if (disposed)
+                    return;
+
+                var normalized = new List<string>();
+                if (values != null)
+                {
+                    foreach (string value in values)
+                    {
+                        try
+                        {
+                            string path = (value ?? "").Trim().Trim('"');
+                            if (string.IsNullOrWhiteSpace(path))
+                                continue;
+                            path = Path.GetFullPath(path);
+                            if (File.Exists(path) && !normalized.Exists(
+                                item => string.Equals(item, path,
+                                    StringComparison.OrdinalIgnoreCase)))
+                                normalized.Add(path);
+                        }
+                        catch
+                        {
+                            // Invalid optional entries are ignored.
+                        }
+                    }
+                }
+                if (SameFiles(files, normalized))
+                    return;
+
+                files = normalized;
+                currentIndex = -1;
+                consecutiveFailures = 0;
+                player.Close();
+                mediaOpen = false;
+                ResetAppliedState();
+                OpenNext();
+            }
+
+            private static bool SameFiles(
+                IList<string> first, IList<string> second)
+            {
+                if (first.Count != second.Count)
+                    return false;
+                for (int index = 0; index < first.Count; ++index)
+                {
+                    if (!string.Equals(first[index], second[index],
+                        StringComparison.OrdinalIgnoreCase))
+                        return false;
+                }
+                return true;
+            }
+
+            internal void SetState(bool running, float volume, float balance)
+            {
+                if (disposed)
+                    return;
+
+                // Once a valid layer is configured it remains in playback,
+                // including at zero volume. Window and speed changes therefore
+                // never restart the decoder or jump the loop position.
+                desiredRunning = running;
+                desiredVolume = Math.Max(0.0, Math.Min(1.0, volume));
+                desiredBalance = Math.Max(-1.0, Math.Min(1.0, balance));
+                ApplyState();
+            }
+
+            private void ApplyState()
+            {
+                if (double.IsNaN(appliedVolume) ||
+                    Math.Abs(appliedVolume - desiredVolume) >= 0.002)
+                {
+                    player.Volume = desiredVolume;
+                    appliedVolume = desiredVolume;
+                }
+                if (double.IsNaN(appliedBalance) ||
+                    Math.Abs(appliedBalance - desiredBalance) >= 0.005)
+                {
+                    player.Balance = desiredBalance;
+                    appliedBalance = desiredBalance;
+                }
+                if (!mediaOpen || desiredRunning == appliedPlaying)
+                    return;
+
+                if (desiredRunning)
+                    player.Play();
+                else
+                    player.Pause();
+                appliedPlaying = desiredRunning;
+            }
+
+            private void AdvanceAfterEnd()
+            {
+                if (files.Count == 0)
+                    return;
+
+                if (files.Count == 1)
+                {
+                    player.Position = TimeSpan.Zero;
+                    if (desiredRunning)
+                    {
+                        player.Play();
+                        appliedPlaying = true;
+                    }
+                    return;
+                }
+                OpenNext();
+            }
+
+            private void AdvanceAfterFailure()
+            {
+                mediaOpen = false;
+                appliedPlaying = false;
+                ++consecutiveFailures;
+                if (consecutiveFailures >= files.Count)
+                {
+                    player.Close();
+                    return;
+                }
+                OpenNext();
+            }
+
+            private void OpenNext()
+            {
+                if (files.Count == 0 || disposed)
+                    return;
+
+                currentIndex = (currentIndex + 1) % files.Count;
+                mediaOpen = false;
+                appliedPlaying = false;
+                player.Open(new Uri(files[currentIndex], UriKind.Absolute));
+            }
+
+            private void ResetAppliedState()
+            {
+                appliedVolume = double.NaN;
+                appliedBalance = double.NaN;
+                appliedPlaying = false;
+            }
+
+            public void Dispose()
+            {
+                if (disposed)
+                    return;
+                disposed = true;
+                player.Stop();
+                player.Close();
+            }
         }
     }
 }

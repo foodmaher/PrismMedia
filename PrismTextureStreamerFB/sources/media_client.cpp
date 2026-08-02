@@ -326,22 +326,41 @@ namespace sources {
             INVALID_FILE_ATTRIBUTES;
     }
 
-    bool SetMediaClientWindSource(
-        bool procedural,
-        const std::string& custom_path)
+    bool SetMediaClientWindLibrary(
+        const std::vector<std::string>& stationary_files,
+        const std::vector<std::string>& city_files,
+        const std::vector<std::string>& highway_files)
     {
         if (!launch_media_client(true))
             return false;
-        if (procedural)
-            return send_payload("windsource|procedural", 100);
-        return send_payload("windsource|custom|" + custom_path, 100);
+
+        const auto sendList = [](const char* name,
+            const std::vector<std::string>& files)
+        {
+            std::string payload = "windlibrary|";
+            payload += name;
+            payload += '|';
+            for (size_t index = 0; index < files.size(); ++index)
+            {
+                if (index != 0)
+                    payload += '\n';
+                payload += files[index];
+            }
+            return send_payload(payload, 100);
+        };
+
+        return sendList("stationary", stationary_files) &&
+            sendList("city", city_files) &&
+            sendList("highway", highway_files);
     }
 
     bool SetMediaClientWindState(
         bool enabled,
-        float volume,
+        float stationary_volume,
+        float city_volume,
+        float highway_volume,
         float pan,
-        float speed_blend)
+        float media_gain)
     {
         const bool clientWasRunning = find_media_client() != nullptr;
         if (!enabled && !clientWasRunning)
@@ -355,13 +374,17 @@ namespace sources {
             return false;
         }
 
-        volume = (std::clamp)(volume, 0.0f, 1.0f);
+        stationary_volume = (std::clamp)(stationary_volume, 0.0f, 1.0f);
+        city_volume = (std::clamp)(city_volume, 0.0f, 1.0f);
+        highway_volume = (std::clamp)(highway_volume, 0.0f, 1.0f);
         pan = (std::clamp)(pan, -1.0f, 1.0f);
-        speed_blend = (std::clamp)(speed_blend, 0.0f, 1.0f);
-        char payload[96]{};
+        media_gain = (std::clamp)(media_gain, 0.0f, 1.0f);
+        char payload[160]{};
         std::snprintf(
-            payload, sizeof(payload), "wind|%d|%.4f|%.4f|%.4f",
-            enabled ? 1 : 0, volume, pan, speed_blend);
+            payload, sizeof(payload),
+            "wind|%d|%.4f|%.4f|%.4f|%.4f|%.4f",
+            enabled ? 1 : 0, stationary_volume, city_volume,
+            highway_volume, pan, media_gain);
         return send_payload(payload, 30);
     }
 

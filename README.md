@@ -21,8 +21,8 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Fade and muffle outside-camera media by true camera-to-driver distance with
   the optional SPF companion
 - Apply separate media volume in menus and detect external cameras reliably
-- Add realistic open-window wind that scales with speed, opening amount, and
-  left/right window position, with generated or custom sound
+- Add user-supplied stationary, city and highway environment loops that scale
+  with speed, opening amount and left/right window position
 - Adjust and save brightness independently for every streamed screen
 - Pause and resume media automatically with the truck engine
 - Prevent full-screen video colours from bleeding into the GPS bezel
@@ -105,18 +105,16 @@ performance statistics.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
 
-## Version 3.4 open-window wind
+## Version 3.5 environment audio mixer
 
-Version `3.4.0-window-wind` adds a low-overhead cabin airflow effect. Bind its
-four window controls to the same left/right open/close keys used by ETS2/ATS.
-It estimates the live animation amount, combines it with official truck-speed
-telemetry, pans toward the open side, and plays only in an interior driving
-camera. The UI includes manual synchronization and live speed/opening/output
-diagnostics.
-
-The recommended source is generated locally once, keeping the release small.
-Custom seamless WAV/MP3/WMA/M4A/AAC loops are also supported. See
-`PrismTextureStreamerFB\docs\V3.4-WINDOW-WIND.md` in the release package.
+Version `3.5.0-environment-audio` replaces generated wind noise with user
+sound libraries for stationary, city and highway driving. Each section accepts
+multiple WAV/MP3/WMA/M4A/AAC files. The helper keeps valid loops running and
+crossfades their volumes by speed and window opening instead of restarting
+playback. Stereo separation follows the open side, and configurable media
+ducking can reduce integrated YouTube/Spotify audio all the way to silence at
+full wind. Missing files and empty sections are ignored. See
+`PrismTextureStreamerFB\docs\V3.5-ENVIRONMENT-AUDIO.md` in the release package.
 
 ## Version 2.0 performance and media changes
 

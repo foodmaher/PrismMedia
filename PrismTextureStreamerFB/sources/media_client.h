@@ -3,6 +3,7 @@
 #include "content_source.h"
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace sources {
     constexpr const char* kMediaClientExecutable = "PrismMediaClient.exe";
@@ -15,12 +16,15 @@ namespace sources {
         uint8_t framerate = 30,
         uint32_t output_width = 1280,
         uint32_t output_height = 720);
-    bool SetMediaClientWindSource(
-        bool procedural,
-        const std::string& custom_path);
+    bool SetMediaClientWindLibrary(
+        const std::vector<std::string>& stationary_files,
+        const std::vector<std::string>& city_files,
+        const std::vector<std::string>& highway_files);
     bool SetMediaClientWindState(
         bool enabled,
-        float volume,
+        float stationary_volume,
+        float city_volume,
+        float highway_volume,
         float pan,
-        float speed_blend);
+        float media_gain);
 }

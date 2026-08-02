@@ -17,6 +17,7 @@ namespace PrismMediaClient
         private bool enabled;
         private float gain = 1.0f;
         private float pan;
+        private float duckingGain = 1.0f;
         private DateTime nextDiscoveryUtc = DateTime.MinValue;
 
         internal AdaptiveAudioController()
@@ -39,6 +40,11 @@ namespace PrismMediaClient
             pan = Math.Max(-1.0f, Math.Min(1.0f, desiredPan));
         }
 
+        internal void SetDucking(float desiredGain)
+        {
+            duckingGain = Math.Max(0.0f, Math.Min(1.0f, desiredGain));
+        }
+
         private void Tick()
         {
             try
@@ -49,8 +55,27 @@ namespace PrismMediaClient
                     nextDiscoveryUtc = DateTime.UtcNow.AddSeconds(1);
                 }
 
-                foreach (AudioSession session in sessions.Values)
-                    session.Apply(enabled, gain, pan);
+                float combinedGain = gain * duckingGain;
+                bool processing = enabled || duckingGain < 0.999f;
+                float combinedPan = enabled ? pan : 0.0f;
+                var expired = new List<string>();
+                foreach (KeyValuePair<string, AudioSession> item in sessions)
+                {
+                    try
+                    {
+                        item.Value.Apply(
+                            processing, combinedGain, combinedPan);
+                    }
+                    catch
+                    {
+                        item.Value.Dispose();
+                        expired.Add(item.Key);
+                    }
+                }
+                foreach (string key in expired)
+                    sessions.Remove(key);
+                if (expired.Count != 0)
+                    nextDiscoveryUtc = DateTime.MinValue;
             }
             catch
             {

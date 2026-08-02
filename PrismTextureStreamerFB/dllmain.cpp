@@ -89,6 +89,12 @@ SCSAPI_VOID driving_state_changed(
         g_camera_interior_hint = true;
         g_last_head_update_tick = 0;
     }
+	else
+	{
+		// Frame telemetry can stop immediately after the paused event. Send a
+		// final silent mix now while leaving configured loops running.
+		wind_audio::silence();
+	}
 }
 
 SCSAPI_VOID selected_gear_changed(

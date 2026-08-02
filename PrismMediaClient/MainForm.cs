@@ -176,7 +176,7 @@ namespace PrismMediaClient
                             command.StartsWith(
                                 "parent|", StringComparison.Ordinal) ||
                             command.StartsWith(
-                                "windsource|", StringComparison.Ordinal) ||
+                                "windlibrary|", StringComparison.Ordinal) ||
                             command.StartsWith(
                                 "wind|", StringComparison.Ordinal);
                         if (immediate || ready)
@@ -222,16 +222,17 @@ namespace PrismMediaClient
                 }
                 return;
             }
-            if (command.StartsWith("windsource|", StringComparison.Ordinal))
+            if (command.StartsWith("windlibrary|", StringComparison.Ordinal))
             {
                 string[] parts = command.Split(new[] { '|' }, 3);
-                bool procedural = parts.Length < 2 ||
-                    !string.Equals(
-                        parts[1], "custom", StringComparison.OrdinalIgnoreCase);
-                string customPath = parts.Length >= 3 ? parts[2] : "";
                 try
                 {
-                    windAudio.SetSource(procedural, customPath);
+                    string[] files = parts.Length >= 3
+                        ? parts[2].Split(new[] { '\n' },
+                            StringSplitOptions.RemoveEmptyEntries)
+                        : new string[0];
+                    windAudio.SetLibrary(
+                        parts.Length >= 2 ? parts[1] : "", files);
                 }
                 catch
                 {
@@ -242,20 +243,31 @@ namespace PrismMediaClient
             if (command.StartsWith("wind|", StringComparison.Ordinal))
             {
                 string[] parts = command.Split('|');
-                if (parts.Length >= 5 &&
+                if (parts.Length >= 7 &&
                     int.TryParse(parts[1], out int windEnabled) &&
                     float.TryParse(
                         parts[2], NumberStyles.Float,
-                        CultureInfo.InvariantCulture, out float volume) &&
+                        CultureInfo.InvariantCulture,
+                        out float stationaryVolume) &&
                     float.TryParse(
                         parts[3], NumberStyles.Float,
-                        CultureInfo.InvariantCulture, out float pan) &&
+                        CultureInfo.InvariantCulture,
+                        out float cityVolume) &&
                     float.TryParse(
                         parts[4], NumberStyles.Float,
-                        CultureInfo.InvariantCulture, out float speedBlend))
+                        CultureInfo.InvariantCulture,
+                        out float highwayVolume) &&
+                    float.TryParse(
+                        parts[5], NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out float pan) &&
+                    float.TryParse(
+                        parts[6], NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out float mediaGain))
                 {
                     windAudio.SetState(
-                        windEnabled != 0, volume, pan, speedBlend);
+                        windEnabled != 0, stationaryVolume, cityVolume,
+                        highwayVolume, pan);
+                    adaptiveAudio.SetDucking(mediaGain);
                 }
                 return;
             }

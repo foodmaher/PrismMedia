@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.4.0-window-wind";
+inline const char* g_version = "3.5.0-environment-audio";

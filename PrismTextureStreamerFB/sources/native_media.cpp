@@ -2,6 +2,7 @@
 #include "native_media.h"
 
 #include "../scs_logging.h"
+#include "../thread_scheduling.h"
 
 #include <Windows.h>
 #include <audioclient.h>
@@ -341,6 +342,7 @@ namespace sources {
 
         void worker()
         {
+            thread_scheduling::refresh_current_thread_preference();
             const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
             const bool uninitializeCom = SUCCEEDED(comResult);
             if (FAILED(comResult) && comResult != RPC_E_CHANGED_MODE)
@@ -447,6 +449,7 @@ namespace sources {
 
             while (!m_stopRequested.load())
             {
+                thread_scheduling::refresh_current_thread_preference();
                 const auto workStarted = std::chrono::steady_clock::now();
                 process_commands(engine.Get());
 

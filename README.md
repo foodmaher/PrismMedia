@@ -117,6 +117,22 @@ not capture game audio, decode extra files, or add work to the screen upload.
 See `PrismTextureStreamerFB\docs\V3.6-TELEMETRY-ENVIRONMENT.md` in the release
 package.
 
+## Version 3.7 event playlist refresh and core balance
+
+Version `3.7.0-event-playlist-core-balance` refreshes a YouTube playlist only
+when its current video ends or the user presses Next/Previous. This allows
+videos added from a phone to appear without restarting the game and adds no
+playlist polling while a video is playing.
+
+The environment-volume estimator now performs its complete calculation at a
+maximum of 20 Hz and never waits for its settings mutex. Plugin-owned capture
+and decoder threads receive soft ideal-processor hints based on recent render
+thread placement, while the separate media helper runs Below Normal. The game
+process affinity is never restricted. Unchanged helper audio values are now
+true no-ops, and asynchronous native/media diagnostic logs are stored beside
+the game executable for issue reports. See
+`PrismTextureStreamerFB\docs\V3.7-PLAYLIST-CORE-BALANCE.md` for details.
+
 ## Version 2.0 performance and media changes
 
 Version `2.0.0-performance` includes:

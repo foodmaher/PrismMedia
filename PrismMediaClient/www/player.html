@@ -41,12 +41,23 @@
     let spotifyReady = false;
     let pendingUrl = "";
     let activeSource = "youtube";
+    let activeYouTubePlaylist = "";
+    let playlistRefreshSerial = 0;
+    let playlistRefreshInProgress = false;
     let userWantsPlayback = true;
     let vehiclePowered = true;
     let currentBrightness = 1;
     const direct = document.getElementById("direct");
     const status = document.getElementById("status");
     const brightnessOverlay = document.getElementById("brightness-overlay");
+
+    function backgroundLog(category, message) {
+      try {
+        if (window.chrome && window.chrome.webview)
+          window.chrome.webview.postMessage(
+            "log|" + category + "|" + message);
+      } catch (_) {}
+    }
 
     function applyBrightness(value) {
       const brightness = Math.max(0.1, Math.min(2.0, Number(value) || 1));
@@ -207,10 +218,63 @@
       return null;
     }
 
+    function refreshYouTubePlaylist(step, reason) {
+      if (!youtubeReady || !youtubePlayer || !activeYouTubePlaylist) {
+        if (youtubeReady && youtubePlayer) {
+          if (step < 0) youtubePlayer.previousVideo();
+          else youtubePlayer.nextVideo();
+        }
+        return;
+      }
+      if (playlistRefreshInProgress)
+        return;
+
+      // Re-queueing the playlist ID asks YouTube for its latest contents.
+      // This runs only at a track boundary or an explicit Next/Previous
+      // command, so there is no timer, polling or idle CPU/network cost.
+      const currentIndex = Math.max(
+        0, Number(youtubePlayer.getPlaylistIndex()) || 0);
+      const targetIndex = Math.max(0, currentIndex + step);
+      const serial = ++playlistRefreshSerial;
+      playlistRefreshInProgress = true;
+      backgroundLog(
+        "playlist", "Refresh requested: " +
+        (reason || "track boundary") + ", target index " + targetIndex + ".");
+      showStatus(reason || "Refreshing YouTube playlist…");
+
+      const options = {
+        list: activeYouTubePlaylist,
+        listType: "playlist",
+        index: targetIndex,
+        startSeconds: 0
+      };
+      if (shouldPlay()) youtubePlayer.loadPlaylist(options);
+      else youtubePlayer.cuePlaylist(options);
+
+      // YouTube does not expose a playlist-refresh completion event. Its
+      // documented queue call is asynchronous, so clear only our small UI
+      // guard after the new queue has had time to become active.
+      window.setTimeout(function () {
+        if (serial !== playlistRefreshSerial)
+          return;
+        playlistRefreshInProgress = false;
+        backgroundLog(
+          "playlist", "Refresh queue became active at target index " +
+          targetIndex + ".");
+        showStatus("");
+        if (!shouldPlay())
+          youtubePlayer.pauseVideo();
+      }, 1200);
+    }
+
     function loadMedia(value) {
+      ++playlistRefreshSerial;
+      playlistRefreshInProgress = false;
       userWantsPlayback = true;
       const spotify = spotifyInfo(value);
       if (spotify) {
+        activeYouTubePlaylist = "";
+        backgroundLog("media", "Loading a Spotify embed.");
         loadSpotify(spotify, value);
         return;
       }
@@ -226,14 +290,19 @@
           return;
         }
         if (info.list) {
+          activeYouTubePlaylist = info.list;
+          backgroundLog("media", "Loading a YouTube playlist.");
           const options = { list: info.list, listType: "playlist" };
           if (shouldPlay()) youtubePlayer.loadPlaylist(options);
           else youtubePlayer.cuePlaylist(options);
         } else if (info.video) {
+          activeYouTubePlaylist = "";
+          backgroundLog("media", "Loading a single YouTube video.");
           if (shouldPlay()) youtubePlayer.loadVideoById(info.video);
           else youtubePlayer.cueVideoById(info.video);
         }
         else {
+          activeYouTubePlaylist = "";
           showStatus("This YouTube URL does not contain a video or playlist.");
           return;
         }
@@ -246,7 +315,9 @@
         youtubePlayer.pauseVideo();
       if (spotifyReady && spotifyController)
         spotifyController.pause();
+      activeYouTubePlaylist = "";
       showOnly("direct");
+      backgroundLog("media", "Loading direct/local media.");
       direct.src = value;
       showStatus("");
       applyPlaybackState();
@@ -275,8 +346,20 @@
                 (event.data === YT.PlayerState.PLAYING ||
                  event.data === YT.PlayerState.BUFFERING))
               youtubePlayer.pauseVideo();
+            else if (event.data === YT.PlayerState.ENDED &&
+                     activeSource === "youtube" &&
+                     activeYouTubePlaylist &&
+                     !playlistRefreshInProgress)
+            {
+              backgroundLog(
+                "playlist", "Current YouTube playlist video ended.");
+              refreshYouTubePlaylist(
+                1, "Checking for newly added playlist videos…");
+            }
           },
           onError: function (event) {
+            backgroundLog(
+              "error", "YouTube playback error " + event.data + ".");
             showStatus("YouTube playback error " + event.data);
           }
         }
@@ -318,7 +401,7 @@
         applyBrightness(argument);
       } else if (command === "next") {
         if (activeSource === "youtube" && youtubeReady)
-          youtubePlayer.nextVideo();
+          refreshYouTubePlaylist(1, "Refreshing playlist and moving next…");
         else if (activeSource === "spotify")
           showStatus(
             "Spotify Next is handled by the plugin saved-link list.");
@@ -326,7 +409,7 @@
           direct.currentTime = Math.min(direct.duration || Infinity, direct.currentTime + 30);
       } else if (command === "previous") {
         if (activeSource === "youtube" && youtubeReady)
-          youtubePlayer.previousVideo();
+          refreshYouTubePlaylist(-1, "Refreshing playlist and moving previous…");
         else if (activeSource === "spotify")
           showStatus(
             "Spotify Previous is handled by the plugin saved-link list.");

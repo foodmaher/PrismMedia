@@ -111,6 +111,8 @@ namespace PrismMediaClient
             initializing = true;
             try
             {
+                ClientDiagnosticLog.Write(
+                    "webview", "WebView2 initialization started.");
                 await webView.EnsureCoreWebView2Async();
                 webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
@@ -118,6 +120,24 @@ namespace PrismMediaClient
                 webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
                 adaptiveAudio.SetBrowserProcessId(
                     webView.CoreWebView2.BrowserProcessId);
+                webView.CoreWebView2.WebMessageReceived += (_, eventArgs) =>
+                {
+                    try
+                    {
+                        string value = eventArgs.TryGetWebMessageAsString();
+                        if (!value.StartsWith(
+                            "log|", StringComparison.Ordinal))
+                            return;
+                        string[] parts = value.Split(
+                            new[] { '|' }, 3);
+                        if (parts.Length == 3)
+                            ClientDiagnosticLog.Write(parts[1], parts[2]);
+                    }
+                    catch
+                    {
+                        // A malformed page message is ignored.
+                    }
+                };
 
                 string contentFolder = Path.Combine(
                     AppDomain.CurrentDomain.BaseDirectory, "www");
@@ -137,9 +157,14 @@ namespace PrismMediaClient
                     }
                 };
                 webView.CoreWebView2.Navigate("https://prism.local/player.html");
+                ClientDiagnosticLog.Write(
+                    "webview", "WebView2 initialization completed.");
             }
             catch (Exception error)
             {
+                ClientDiagnosticLog.Write(
+                    "error", "WebView2 initialization failed: " +
+                    error.Message);
                 Text = "Prism Media Client - WebView2 error";
                 MessageBox.Show(
                     "The Prism Media Client could not start WebView2.\n\n" +

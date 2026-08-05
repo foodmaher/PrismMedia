@@ -2,7 +2,9 @@
 #include "media_client.h"
 
 #include "wgc_window.h"
+#include "../diagnostic_log.h"
 #include "../scs_logging.h"
+#include "../thread_scheduling.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -89,6 +91,8 @@ namespace {
     {
         if (find_media_client())
         {
+            diagnostic_log::write(
+                "media", "Reusing the existing PrismMediaClient helper.");
             const bool parentSent = send_payload(
                 "parent|" + std::to_string(GetCurrentProcessId()));
             send_payload("initialize", 100);
@@ -98,6 +102,9 @@ namespace {
         const std::string executable = media_client_executable();
         if (GetFileAttributesA(executable.c_str()) == INVALID_FILE_ATTRIBUTES)
         {
+            diagnostic_log::writef(
+                "error", "PrismMediaClient is missing: %s",
+                executable.c_str());
             scs_log(2, "[MediaClient] Missing helper: %s", executable.c_str());
             return false;
         }
@@ -112,27 +119,53 @@ namespace {
         PROCESS_INFORMATION process{};
         if (!CreateProcessA(
             executable.c_str(), commandLine.data(), nullptr, nullptr, FALSE,
-            CREATE_NO_WINDOW, nullptr, path_directory(executable).c_str(),
+            CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
+            nullptr, path_directory(executable).c_str(),
             &startup, &process))
         {
-            scs_log(2, "[MediaClient] Launch failed, err=%lu", GetLastError());
+            const DWORD error = GetLastError();
+            diagnostic_log::writef(
+                "error", "PrismMediaClient launch failed (Win32 error %lu).",
+                error);
+            scs_log(2, "[MediaClient] Launch failed, err=%lu", error);
             return false;
         }
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
+		// PrismMediaClient and the WebView2 processes it creates are separate
+		// from ETS2/ATS. A below-normal class lets the game win CPU contention;
+		// the ideal-processor hint is soft and never restricts game affinity.
+		SetPriorityClass(process.hProcess, BELOW_NORMAL_PRIORITY_CLASS);
+		thread_scheduling::apply_thread_preference(process.hThread, 2);
+        diagnostic_log::writef(
+            "media",
+            "PrismMediaClient launched (pid=%lu, priority=BelowNormal).",
+            process.dwProcessId);
 
         for (int attempt = 0; attempt < 160; ++attempt)
         {
+            // Keep the primary-thread handle only during startup so a CPU
+            // preference learned after the first Presents can still be
+            // applied without retaining a process handle for the session.
+            if ((attempt % 40) == 0)
+                thread_scheduling::apply_thread_preference(
+                    process.hThread, 2);
             if (find_media_client())
             {
                 send_payload(
                     "parent|" +
                     std::to_string(GetCurrentProcessId()));
+                diagnostic_log::write(
+                    "media", "PrismMediaClient window is ready.");
+                CloseHandle(process.hThread);
+                CloseHandle(process.hProcess);
                 return true;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         scs_log(2, "[MediaClient] Timed out waiting for helper window");
+        diagnostic_log::write(
+            "error", "Timed out waiting for PrismMediaClient window.");
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
         return false;
     }
 
@@ -218,7 +251,11 @@ namespace {
         bool SupportsSpatialAudio() const override { return true; }
         bool LoadMedia(const std::string& url) override
         {
-            return send_payload("load|" + url);
+            const bool sent = send_payload("load|" + url);
+            diagnostic_log::writef(
+                "media", "Media load request: %s",
+                sent ? "delivered" : "failed");
+            return sent;
         }
         bool SendMediaCommand(media_command_t command) override
         {
@@ -232,7 +269,14 @@ namespace {
             case media_command_t::VOLUME_UP: name = "volumeup"; break;
             case media_command_t::VOLUME_DOWN: name = "volumedown"; break;
             }
-            return name && send_payload(name);
+            const bool sent = name && send_payload(name);
+            if (name)
+            {
+                diagnostic_log::writef(
+                    "media", "Command %s: %s", name,
+                    sent ? "delivered" : "failed");
+            }
+            return sent;
         }
         void SetSpatialAudio(
             float gain,

@@ -7,6 +7,8 @@
 #include <functional>
 #include <future>
 
+#include "../thread_scheduling.h"
+
 namespace sources {
 
     // This allows us to keep all our wgc source logic to 1 thread designed for this
@@ -29,10 +31,12 @@ namespace sources {
 
         void Run()
         {
+			thread_scheduling::refresh_current_thread_preference();
             winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
             while (true)
             {
+				thread_scheduling::refresh_current_thread_preference();
                 MSG msg;
                 while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
                     TranslateMessage(&msg);

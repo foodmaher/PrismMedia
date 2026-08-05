@@ -13,6 +13,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="AdaptiveAudioController.cs" />
+    <Compile Include="ClientDiagnosticLog.cs" />
     <Compile Include="MainForm.cs" />
     <Compile Include="MediaLowPassController.cs" />
     <Compile Include="Program.cs" />

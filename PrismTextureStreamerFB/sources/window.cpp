@@ -3,6 +3,7 @@
 #include "window.h"
 
 #include "../scs_logging.h"
+#include "../thread_scheduling.h"
 using namespace scs_logging;
 
 #include <vector>
@@ -114,6 +115,7 @@ namespace sources {
 
         void CaptureLoop()
         {
+            thread_scheduling::refresh_current_thread_preference();
             RECT initialRect{};
             GetClientRect(m_hwnd, &initialRect);
             const uint32_t initialWidth = (std::max)(
@@ -141,6 +143,7 @@ namespace sources {
 
             while (!m_stopRequested.load())
             {
+                thread_scheduling::refresh_current_thread_preference();
                 const auto fps = (std::max)(static_cast<uint8_t>(1), m_framerate.load());
                 const auto frameInterval = std::chrono::milliseconds(1000 / fps);
                 auto frameStart = std::chrono::steady_clock::now();

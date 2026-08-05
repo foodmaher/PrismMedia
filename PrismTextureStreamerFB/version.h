@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.6.0-telemetry-environment";
+inline const char* g_version = "3.7.0-event-playlist-core-balance";

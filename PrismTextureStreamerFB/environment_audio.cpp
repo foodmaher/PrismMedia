@@ -5,6 +5,7 @@
 
 #include <Windows.h>
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cmath>
 
@@ -45,14 +46,26 @@ namespace environment_audio
 {
 	void update(bool driving, bool interiorCamera)
 	{
-		environment_audio_settings_t settings;
+		const uint64_t now = GetTickCount64();
+		const bool resetPending = g_reset_requested.load();
+		if (!resetPending && g_previous_tick != 0 &&
+			now >= g_previous_tick && now - g_previous_tick < 50)
 		{
-			std::lock_guard<std::mutex> lock(
-				g_environment_audio_settings_mutex);
-			settings = g_environment_audio_settings;
+			return;
 		}
 
-		const uint64_t now = GetTickCount64();
+		// Configuration changes are rare and originate from the render-thread
+		// UI. Never let a background save/load operation stall the game thread.
+		std::unique_lock<std::mutex> settingsLock(
+			g_environment_audio_settings_mutex, std::try_to_lock);
+		if (!settingsLock.owns_lock())
+			return;
+
+		const auto updateStarted = std::chrono::steady_clock::now();
+		environment_audio_settings_t settings;
+		settings = g_environment_audio_settings;
+		settingsLock.unlock();
+
 		const bool resetRequested = g_reset_requested.exchange(false);
 		const bool firstUpdate = g_previous_tick == 0 ||
 			now < g_previous_tick || resetRequested;
@@ -105,12 +118,20 @@ namespace environment_audio
 			if (sources::SetMediaClientDucking(mediaGain))
 				g_last_sent_media_gain = mediaGain;
 		}
+
+		const double updateUs = std::chrono::duration<double, std::micro>(
+			std::chrono::steady_clock::now() - updateStarted).count();
+		const double previousUs = g_environment_update_cpu_us.load();
+		g_environment_update_cpu_us = previousUs <= 0.0
+			? updateUs
+			: previousUs * 0.90 + updateUs * 0.10;
 	}
 
 	void reset()
 	{
 		g_environment_intensity = 0.0f;
 		g_environment_media_gain = 1.0f;
+		g_environment_update_cpu_us = 0.0;
 		if (sources::SetMediaClientDucking(1.0f))
 			g_last_sent_media_gain = 1.0f;
 		g_reset_requested = true;

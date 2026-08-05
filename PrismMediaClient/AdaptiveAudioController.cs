@@ -19,6 +19,8 @@ namespace PrismMediaClient
         private float pan;
         private float duckingGain = 1.0f;
         private DateTime nextDiscoveryUtc = DateTime.MinValue;
+        private DateTime nextHealthCheckUtc = DateTime.MinValue;
+        private bool applyPending = true;
 
         internal AdaptiveAudioController()
         {
@@ -31,34 +33,54 @@ namespace PrismMediaClient
         {
             browserProcessId = processId;
             nextDiscoveryUtc = DateTime.MinValue;
+            applyPending = true;
         }
 
         internal void SetDesired(bool spatialEnabled, float desiredGain, float desiredPan)
         {
+            float nextGain = Math.Max(0.0f, Math.Min(1.0f, desiredGain));
+            float nextPan = Math.Max(-1.0f, Math.Min(1.0f, desiredPan));
+            if (enabled == spatialEnabled &&
+                Math.Abs(gain - nextGain) < 0.0005f &&
+                Math.Abs(pan - nextPan) < 0.0005f)
+                return;
+
             enabled = spatialEnabled;
-            gain = Math.Max(0.0f, Math.Min(1.0f, desiredGain));
-            pan = Math.Max(-1.0f, Math.Min(1.0f, desiredPan));
+            gain = nextGain;
+            pan = nextPan;
+            applyPending = true;
         }
 
         internal void SetDucking(float desiredGain)
         {
-            duckingGain = Math.Max(0.0f, Math.Min(1.0f, desiredGain));
+            float nextGain = Math.Max(0.0f, Math.Min(1.0f, desiredGain));
+            if (Math.Abs(duckingGain - nextGain) < 0.0005f)
+                return;
+
+            duckingGain = nextGain;
+            applyPending = true;
         }
 
         private void Tick()
         {
             try
             {
-                if (browserProcessId != 0 && DateTime.UtcNow >= nextDiscoveryUtc)
+                DateTime now = DateTime.UtcNow;
+                bool sessionAdded = false;
+                if (browserProcessId != 0 && now >= nextDiscoveryUtc)
                 {
-                    DiscoverSessions();
-                    nextDiscoveryUtc = DateTime.UtcNow.AddSeconds(1);
+                    sessionAdded = DiscoverSessions();
+                    nextDiscoveryUtc = now.AddSeconds(1);
                 }
+
+                bool healthCheck = now >= nextHealthCheckUtc;
+                if (!applyPending && !sessionAdded && !healthCheck)
+                    return;
 
                 float combinedGain = gain * duckingGain;
                 bool processing = enabled || duckingGain < 0.999f;
                 float combinedPan = enabled ? pan : 0.0f;
-                var expired = new List<string>();
+                List<string> expired = null;
                 foreach (KeyValuePair<string, AudioSession> item in sessions)
                 {
                     try
@@ -69,13 +91,19 @@ namespace PrismMediaClient
                     catch
                     {
                         item.Value.Dispose();
+                        if (expired == null)
+                            expired = new List<string>();
                         expired.Add(item.Key);
                     }
                 }
-                foreach (string key in expired)
-                    sessions.Remove(key);
-                if (expired.Count != 0)
+                if (expired != null)
+                {
+                    foreach (string key in expired)
+                        sessions.Remove(key);
                     nextDiscoveryUtc = DateTime.MinValue;
+                }
+                applyPending = false;
+                nextHealthCheckUtc = now.AddSeconds(5);
             }
             catch
             {
@@ -86,11 +114,13 @@ namespace PrismMediaClient
             }
         }
 
-        private void DiscoverSessions()
+        private bool DiscoverSessions()
         {
             HashSet<uint> targetProcesses = BuildProcessTree(browserProcessId);
             if (targetProcesses.Count == 0)
-                return;
+                return false;
+
+            bool sessionAdded = false;
 
             IMMDeviceEnumerator enumerator = null;
             IMMDevice device = null;
@@ -138,6 +168,7 @@ namespace PrismMediaClient
                             continue;
 
                         sessions.Add(instanceId, new AudioSession(control));
+                        sessionAdded = true;
                         control = null; // AudioSession now owns the RCW.
                     }
                     catch
@@ -157,6 +188,7 @@ namespace PrismMediaClient
                 ReleaseCom(device);
                 ReleaseCom(enumerator);
             }
+            return sessionAdded;
         }
 
         private static HashSet<uint> BuildProcessTree(uint rootProcessId)

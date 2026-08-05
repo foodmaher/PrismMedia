@@ -25,6 +25,7 @@ inline std::atomic<float> g_environment_grounded_ratio{ 1.0f };
 inline std::atomic<float> g_environment_intensity{};
 inline std::atomic<float> g_environment_media_gain{ 1.0f };
 inline std::atomic<bool> g_environment_interior{ true };
+inline std::atomic<double> g_environment_update_cpu_us{};
 
 namespace environment_audio
 {

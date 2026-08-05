@@ -36,7 +36,7 @@ if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.6.0-telemetry-environment'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.7.0-event-playlist-core-balance'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }
@@ -53,6 +53,7 @@ Get-ChildItem $Runtime -Recurse -File |
 Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'V3.3-DYNAMIC-OUTSIDE-AUDIO.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'V3.6-TELEMETRY-ENVIRONMENT.md') $Docs
+Copy-Item (Join-Path $ProjectRoot 'V3.7-PLAYLIST-CORE-BALANCE.md') $Docs
 $SpfBridge = Join-Path $Runtime 'SPF-OPTIONAL\PrismCameraBridge'
 New-Item -ItemType Directory -Path $SpfBridge -Force | Out-Null
 Copy-Item $BridgeDll $SpfBridge
@@ -60,7 +61,7 @@ Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (
     Join-Path $Runtime 'SPF-OPTIONAL')
 
 @"
-PrismTextureStreamerFB 3.6 Telemetry Environment
+PrismTextureStreamerFB 3.7 Playlist + Core Balance
 
 Copy PrismTextureStreamerFB.dll and the PrismTextureStreamerFB folder into
 <ETS2 or ATS>\bin\win_x64\plugins. The DLL must stay directly in plugins.

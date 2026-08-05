@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Globalization;
 using System.Windows.Forms;
 
@@ -9,6 +10,17 @@ namespace PrismMediaClient
         [STAThread]
         private static void Main(string[] args)
         {
+            try
+            {
+                Process.GetCurrentProcess().PriorityClass =
+                    ProcessPriorityClass.BelowNormal;
+            }
+            catch
+            {
+                // The plugin launcher already requests this priority. Continue
+                // normally if a restricted Windows policy rejects the hint.
+            }
+
             int parentProcessId = 0;
             bool silent = false;
             string initialUrl = null;
@@ -34,11 +46,19 @@ namespace PrismMediaClient
                     initialUrl = args[index];
                 }
             }
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(
-                new MainForm(
-                    initialUrl, parentProcessId, silent));
+            ClientDiagnosticLog.Start(parentProcessId);
+            try
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(
+                    new MainForm(
+                        initialUrl, parentProcessId, silent));
+            }
+            finally
+            {
+                ClientDiagnosticLog.Stop();
+            }
         }
     }
 }

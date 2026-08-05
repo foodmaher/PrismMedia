@@ -17,12 +17,27 @@
 #include "settings.h"
 #include "telemetry_state.h"
 #include "camera_bridge_client.h"
+#include "diagnostic_log.h"
 #include "environment_audio.h"
+#include "thread_scheduling.h"
 
 #include <algorithm>
 #include <cmath>
 using namespace scs_logging;
 #pragma comment(lib, "minhook.x64.lib")
+
+namespace
+{
+    void update_reverse_state(bool active)
+    {
+        if (g_reverse_active.load(std::memory_order_relaxed) == active)
+            return;
+        g_reverse_active.store(active, std::memory_order_relaxed);
+        diagnostic_log::writef(
+            "telemetry", "Reverse state changed: %s",
+            active ? "active" : "inactive");
+    }
+}
 
 #ifdef _DEBUG
 #pragma comment(lib, "ImGuiD.lib")
@@ -81,7 +96,13 @@ SCSAPI_VOID driving_state_changed(
     scs_context_t)
 {
     const bool driving = event == SCS_TELEMETRY_EVENT_started;
-    g_telemetry_driving = driving;
+    const bool previous = g_telemetry_driving.exchange(driving);
+    if (previous != driving)
+    {
+        diagnostic_log::writef(
+            "telemetry", "Driving state changed: %s",
+            driving ? "started" : "paused/menu");
+    }
     if (driving)
     {
         // The normal camera after loading a truck is the interior camera.
@@ -105,9 +126,11 @@ SCSAPI_VOID selected_gear_changed(
     if (!value || value->type != SCS_VALUE_TYPE_s32)
         return;
 
-    g_selected_gear = value->value_s32.value;
-    g_reverse_active =
-        value->value_s32.value < 0 || g_reverse_light.load();
+    const int gear = value->value_s32.value;
+    if (g_selected_gear.load(std::memory_order_relaxed) != gear)
+        g_selected_gear.store(gear, std::memory_order_relaxed);
+    update_reverse_state(
+        gear < 0 || g_reverse_light.load(std::memory_order_relaxed));
 }
 
 SCSAPI_VOID engine_enabled_changed(
@@ -119,7 +142,13 @@ SCSAPI_VOID engine_enabled_changed(
     if (!value || value->type != SCS_VALUE_TYPE_bool)
         return;
 
-    g_engine_enabled = value->value_bool.value != 0;
+    const bool enabled = value->value_bool.value != 0;
+    if (g_engine_enabled.load(std::memory_order_relaxed) == enabled)
+        return;
+    g_engine_enabled.store(enabled, std::memory_order_relaxed);
+    diagnostic_log::writef(
+        "telemetry", "Truck engine changed: %s",
+        enabled ? "running" : "stopped");
 }
 
 SCSAPI_VOID reverse_light_changed(
@@ -132,8 +161,10 @@ SCSAPI_VOID reverse_light_changed(
         return;
 
     const bool lightOn = value->value_bool.value != 0;
-    g_reverse_light = lightOn;
-    g_reverse_active = lightOn || g_selected_gear.load() < 0;
+    if (g_reverse_light.load(std::memory_order_relaxed) != lightOn)
+        g_reverse_light.store(lightOn, std::memory_order_relaxed);
+    update_reverse_state(
+        lightOn || g_selected_gear.load(std::memory_order_relaxed) < 0);
 }
 
 SCSAPI_VOID truck_speed_changed(
@@ -340,20 +371,63 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
     }
 
     // Estimate the game's environment level from official live telemetry.
-    // This performs no audio capture or decoding; it only adjusts media gain.
-    const bool environmentDriving = g_telemetry_driving.load();
+    // The caller-side camera preparation is gated too, so the whole feature
+    // performs meaningful work at no more than 20 Hz.
     const uint64_t environmentNow = GetTickCount64();
-    const uint64_t environmentLastHead = g_last_head_update_tick.load();
-    const bool environmentHeadFresh = environmentDriving &&
-        environmentLastHead != 0 && environmentNow >= environmentLastHead &&
-        environmentNow - environmentLastHead <= 500;
-    const bool environmentExternalCamera = environmentDriving &&
-        (g_camera_bridge_connected.load()
-            ? g_camera_type.load() != kSpfInteriorCamera
-            : (!g_camera_interior_hint.load() || !environmentHeadFresh));
-    environment_audio::update(
-        environmentDriving,
-        environmentDriving && !environmentExternalCamera);
+    static uint64_t lastEnvironmentEvaluation{};
+    static bool environmentExternalCamera{};
+    if (lastEnvironmentEvaluation == 0 ||
+        environmentNow < lastEnvironmentEvaluation ||
+        environmentNow - lastEnvironmentEvaluation >= 50)
+    {
+        lastEnvironmentEvaluation = environmentNow;
+        const bool environmentDriving = g_telemetry_driving.load();
+        const uint64_t environmentLastHead =
+            g_last_head_update_tick.load();
+        const bool environmentHeadFresh = environmentDriving &&
+            environmentLastHead != 0 &&
+            environmentNow >= environmentLastHead &&
+            environmentNow - environmentLastHead <= 500;
+        environmentExternalCamera = environmentDriving &&
+            (g_camera_bridge_connected.load()
+                ? g_camera_type.load() != kSpfInteriorCamera
+                : (!g_camera_interior_hint.load() ||
+                    !environmentHeadFresh));
+        environment_audio::update(
+            environmentDriving,
+            environmentDriving && !environmentExternalCamera);
+    }
+
+    // A compact, rate-limited status line captures enough context for issue
+    // reports without doing file I/O or verbose logging on the game thread.
+    static uint64_t lastDiagnosticTick{};
+    if (lastDiagnosticTick == 0 || environmentNow < lastDiagnosticTick ||
+        environmentNow - lastDiagnosticTick >= 10000)
+    {
+        lastDiagnosticTick = environmentNow;
+        const DWORD processor0 = thread_scheduling::preferred_processor(0);
+        const DWORD processor1 = thread_scheduling::preferred_processor(1);
+        const DWORD processor2 = thread_scheduling::preferred_processor(2);
+        diagnostic_log::writef(
+            "runtime",
+            "driving=%d engine=%d reverse=%d camera=%s speed=%.1fkm/h "
+            "environment=%.3f media_gain=%.3f estimator=%.1fus "
+            "background_lp=%ld,%ld,%ld",
+            g_telemetry_driving.load() ? 1 : 0,
+            g_engine_enabled.load() ? 1 : 0,
+            reverseActive ? 1 : 0,
+            environmentExternalCamera ? "exterior" : "interior",
+            std::fabs(g_truck_speed_mps.load()) * 3.6f,
+            g_environment_intensity.load(),
+            g_environment_media_gain.load(),
+            g_environment_update_cpu_us.load(),
+            processor0 == thread_scheduling::kUnassignedProcessor
+                ? -1L : static_cast<long>(processor0),
+            processor1 == thread_scheduling::kUnassignedProcessor
+                ? -1L : static_cast<long>(processor1),
+            processor2 == thread_scheduling::kUnassignedProcessor
+                ? -1L : static_cast<long>(processor2));
+    }
 
     {
         std::lock_guard<std::mutex> lock(g_screens_mutex);
@@ -650,6 +724,10 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
 SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_init_params_t* const params)
 {
     scs_logging::init(params, "PrismTextureStreamer v" + std::string(g_version));
+    diagnostic_log::start();
+    diagnostic_log::writef(
+        "session", "PrismTextureStreamerFB %s initializing (pid=%lu)",
+        g_version, GetCurrentProcessId());
     scs_log(0, "Starting PrismTextureStreamer | By: Baldy09");
 
     const scs_telemetry_init_params_v101_t* version_params = reinterpret_cast<const scs_telemetry_init_params_v101_t*>(params);
@@ -717,6 +795,8 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
     }
 
     if (MH_Initialize() != MH_OK) {
+        diagnostic_log::write("error", "MinHook initialization failed.");
+        diagnostic_log::stop();
         scs_log(0, "Failed to initialize MinHook!");
         return SCS_RESULT_generic_error;
     }
@@ -726,6 +806,8 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 
     scs_log(0, "Starting DX11 hooks...");
     if (!dx11::init()) {
+        diagnostic_log::write(
+            "error", "DX11 hook initialization failed; refusing unsafe screen override.");
         scs_log(
             2,
             "DX11 hook initialization failed. The plugin will "
@@ -734,6 +816,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
         MH_DisableHook(MH_ALL_HOOKS);
         MH_RemoveHook(MH_ALL_HOOKS);
         MH_Uninitialize();
+        diagnostic_log::stop();
         return SCS_RESULT_generic_error;
     }
 
@@ -745,6 +828,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 
     settings::load();
 
+    diagnostic_log::write("session", "Plugin initialization completed.");
     scs_log(0, "Plugin Started");
     return SCS_RESULT_ok;
 }
@@ -752,6 +836,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 #pragma comment( linker, "/export:scs_telemetry_shutdown=scs_telemetry_shutdown" )
 SCSAPI_VOID scs_telemetry_shutdown()
 {
+    diagnostic_log::write("session", "Plugin shutdown started.");
     settings::save();
     environment_audio::reset();
     {
@@ -784,4 +869,6 @@ SCSAPI_VOID scs_telemetry_shutdown()
     MH_Uninitialize();
 
     scs_log(0, "Plugin Shutdown");
+    diagnostic_log::write("session", "Plugin shutdown completed.");
+    diagnostic_log::stop();
 }

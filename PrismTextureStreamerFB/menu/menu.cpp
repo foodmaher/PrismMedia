@@ -25,6 +25,7 @@ using namespace scs_logging;
 #include "../hotkeys.h"
 #include "../settings.h"
 #include "../telemetry_state.h"
+#include "../thread_scheduling.h"
 #include "../environment_audio.h"
 #include "../sources/media_client.h"
 #include "../sources/native_media.h"
@@ -439,14 +440,17 @@ void on_frame()
 					std::fabs(g_truck_speed_mps.load()) * 3.6f,
 					g_environment_grounded_ratio.load() * 100.0f,
 					g_environment_intensity.load() * 100.0f);
-				ImGui::Text(
-					"Mode: %s | resulting media volume %.0f%%",
+					ImGui::Text(
+						"Mode: %s | resulting media volume %.0f%%",
 					!g_telemetry_driving.load()
 						? "menus / before driving"
 						: (g_environment_interior.load()
 							? "interior" : "exterior"),
-					g_environment_media_gain.load() * 100.0f);
-				ImGui::TextDisabled(
+						g_environment_media_gain.load() * 100.0f);
+					ImGui::TextDisabled(
+						"Estimator cost: %.1f us/update | capped at 20 Hz",
+						g_environment_update_cpu_us.load());
+					ImGui::TextDisabled(
 					"This is a live telemetry estimate, not access to the game's "
 					"private audio mixer.");
 			}
@@ -2145,6 +2149,38 @@ void on_frame()
 						ImGui::Text(
 							"Window capture bypassed: %s",
 							sourceStats.directMedia ? "Yes" : "No");
+						const DWORD backgroundCpu0 =
+							thread_scheduling::preferred_processor(0);
+						DWORD backgroundCpu1 =
+							thread_scheduling::preferred_processor(1);
+						DWORD backgroundCpu2 =
+							thread_scheduling::preferred_processor(2);
+						if (backgroundCpu0 !=
+							thread_scheduling::kUnassignedProcessor)
+						{
+							if (backgroundCpu1 ==
+								thread_scheduling::kUnassignedProcessor)
+								backgroundCpu1 = backgroundCpu0;
+							if (backgroundCpu2 ==
+								thread_scheduling::kUnassignedProcessor)
+								backgroundCpu2 = backgroundCpu1;
+							ImGui::Text(
+								"Background CPU hints: LP %lu, %lu, %lu",
+								static_cast<unsigned long>(backgroundCpu0),
+								static_cast<unsigned long>(backgroundCpu1),
+								static_cast<unsigned long>(backgroundCpu2));
+						}
+						else
+						{
+							ImGui::TextDisabled(
+								"Background CPU hints: learning render-thread use...");
+						}
+						ImGui::TextDisabled(
+							"Soft scheduler hints only; game affinity is unchanged. "
+							"Media helper priority: Below Normal.");
+						ImGui::TextWrapped(
+							"Diagnostics: PrismTextureStreamerFB.log and "
+							"PrismMediaClient.log beside the game executable.");
 						ImGui::Separator();
 						ImGui::TextWrapped(
 							"The FPS-loss value measures render-thread time removed "

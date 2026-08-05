@@ -6,12 +6,18 @@
     const audioNodePrototype = window.AudioNode && window.AudioNode.prototype;
     const nativeConnect = audioNodePrototype && audioNodePrototype.connect;
     const nativeDisconnect = audioNodePrototype && audioNodePrototype.disconnect;
+    const mediaPrototype = window.HTMLMediaElement &&
+        window.HTMLMediaElement.prototype;
+    const nativeMediaPlay = mediaPrototype && mediaPrototype.play;
+    const nativeMediaLoad = mediaPrototype && mediaPrototype.load;
     const state = {
         enabled: false,
         cutoff: 20000,
         directContext: null,
         nodes: [],
         attached: new WeakSet(),
+        observedMedia: new Set(),
+        observedReported: new WeakSet(),
         unsafeReported: new WeakSet(),
         failedReported: new WeakSet(),
         destinationGraphs: new WeakMap(),
@@ -29,6 +35,36 @@
         } catch (_) {
             // Diagnostics must never affect playback.
         }
+    }
+
+    function rememberMedia(media, reason) {
+        if (!media)
+            return;
+        state.observedMedia.add(media);
+        if (!state.observedReported.has(media)) {
+            state.observedReported.add(media);
+            report("Observed a media element through " + reason +
+                "; detached Spotify audio is now trackable.");
+        }
+        if (state.enabled)
+            void attachMedia();
+    }
+
+    // Spotify commonly plays through an Audio element kept outside the DOM.
+    // A document.querySelectorAll scan can never see it, so remember elements
+    // at the browser playback boundary. The native method and its Promise are
+    // returned unchanged to avoid altering Spotify's autoplay behavior.
+    if (nativeMediaPlay) {
+        mediaPrototype.play = function() {
+            rememberMedia(this, "HTMLMediaElement.play()");
+            return nativeMediaPlay.apply(this, arguments);
+        };
+    }
+    if (nativeMediaLoad) {
+        mediaPrototype.load = function() {
+            rememberMedia(this, "HTMLMediaElement.load()");
+            return nativeMediaLoad.apply(this, arguments);
+        };
     }
 
     function configureFilter(filter, context) {
@@ -153,7 +189,11 @@
             if (state.directContext.state !== "running")
                 return;
 
-            for (const media of document.querySelectorAll("video,audio")) {
+            const candidates = new Set(state.observedMedia);
+            for (const media of document.querySelectorAll("video,audio"))
+                candidates.add(media);
+
+            for (const media of candidates) {
                 if (state.attached.has(media))
                     continue;
                 if (!isSafeToRoute(media)) {
@@ -174,7 +214,8 @@
                     nativeConnect.call(filter, state.directContext.destination);
                     registerFilter(filter, state.directContext, "media-element");
                     state.attached.add(media);
-                    report("Attached low-pass directly to a media element.");
+                    report("Attached low-pass directly to a media element; " +
+                        "attached routes=" + state.nodes.length + ".");
                 } catch (error) {
                     // The page can already own this MediaElementSource. Its
                     // output is handled by the destination hook above.

@@ -110,13 +110,15 @@ performance statistics.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
 
-## Version 3.9.2 Spotify low-pass hook, session and backups
+## Version 3.9.3 Spotify detached-audio filter, session and backups
 
-Version `3.9.2-spotify-lowpass-hook` makes Spotify Full Web receive the same
-dynamic outside low-pass processing as YouTube. It installs the filter at the
-page-owned Web Audio output when Spotify already owns the media source, while
-retaining direct media-element filtering as a fallback. The helper and plugin
-logs now report the selected cutoff and how many filter routes are attached.
+Version `3.9.3-spotify-detached-audio` makes Spotify Full Web receive the same
+dynamic outside low-pass processing as YouTube. It remembers audio elements at
+their `play()` and `load()` boundary even when Spotify keeps them detached from
+the visible DOM, then routes those remembered elements through the adaptive
+filter. The page-owned Web Audio output hook and normal DOM media scan remain
+as fallbacks. The helper and plugin logs report the selected cutoff, observed
+media elements and how many filter routes are attached.
 
 Version 3.9 also fixes the supplied Full Spotify Web Player
 logs: WebView2 is initialized only once, Spotify authentication cookies receive

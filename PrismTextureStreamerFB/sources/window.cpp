@@ -2,6 +2,7 @@
 
 #include "window.h"
 
+#include "../diagnostic_log.h"
 #include "../scs_logging.h"
 #include "../thread_scheduling.h"
 using namespace scs_logging;
@@ -109,6 +110,10 @@ namespace sources {
         std::atomic<double> m_workerCpuMs{};
         std::atomic<double> m_deliveredFps{};
         std::atomic<uint64_t> m_droppedFrames{};
+        uint64_t m_lastErrorLogTick{};
+        uint32_t m_lastLoggedWidth{};
+        uint32_t m_lastLoggedHeight{};
+        bool m_wasMinimized{};
 
         std::thread m_thread;
         std::atomic<bool> m_stopRequested{};
@@ -148,14 +153,46 @@ namespace sources {
                 const auto frameInterval = std::chrono::milliseconds(1000 / fps);
                 auto frameStart = std::chrono::steady_clock::now();
 
-                if (!IsWindow(m_hwnd)) { scs_log(0, "[WindowSource] Target window %s (%s) no longer exists, stopping capture for this window", m_appname, m_apptitle ? m_apptitle : "NO_TITLE"); break; }
+                if (!IsWindow(m_hwnd)) {
+                    scs_log(0, "[WindowSource] Target window %s (%s) no longer exists, stopping capture for this window", m_appname, m_apptitle ? m_apptitle : "NO_TITLE");
+                    diagnostic_log::writef(
+                        "error", "Legacy capture target disappeared: %s (%s).",
+                        m_appname, m_apptitle ? m_apptitle : "no title");
+                    break;
+                }
                 if (m_paused.load() && m_haveFrame.load()) { std::this_thread::sleep_for(frameInterval); continue; }
-                if (IsIconic(m_hwnd)) { std::this_thread::sleep_for(frameInterval); continue; } // minimized
+                if (IsIconic(m_hwnd)) {
+                    if (!m_wasMinimized)
+                    {
+                        diagnostic_log::writef(
+                            "capture", "Legacy capture target %s was minimized; "
+                            "keeping the last frame.", m_appname);
+                        m_wasMinimized = true;
+                    }
+                    std::this_thread::sleep_for(frameInterval);
+                    continue;
+                }
+                if (m_wasMinimized)
+                {
+                    diagnostic_log::writef(
+                        "capture", "Legacy capture target %s was restored.",
+                        m_appname);
+                    m_wasMinimized = false;
+                }
 
                 RECT rect;
                 GetClientRect(m_hwnd, &rect);
                 const uint32_t width = rect.right - rect.left;
                 const uint32_t height = rect.bottom - rect.top;
+
+                if (width != m_lastLoggedWidth || height != m_lastLoggedHeight)
+                {
+                    diagnostic_log::writef(
+                        "capture", "Legacy capture %s size is now %ux%u.",
+                        m_appname, width, height);
+                    m_lastLoggedWidth = width;
+                    m_lastLoggedHeight = height;
+                }
 
                 bmi.bmiHeader.biWidth = static_cast<LONG>(width);
                 bmi.bmiHeader.biHeight = -static_cast<LONG>(height);
@@ -174,6 +211,15 @@ namespace sources {
                 if (!pwOk)
                 {
                     scs_log(0, "[WindowSource] PrintWindow failed for %s (%s), err=%lu", m_appname, m_apptitle ? m_apptitle : "NO_TITLE", GetLastError());
+                    const uint64_t tick = GetTickCount64();
+                    if (m_lastErrorLogTick == 0 ||
+                        tick - m_lastErrorLogTick >= 5000)
+                    {
+                        diagnostic_log::writef(
+                            "error", "PrintWindow failed for %s (Win32 %lu).",
+                            m_appname, GetLastError());
+                        m_lastErrorLogTick = tick;
+                    }
                     std::this_thread::sleep_for(frameInterval);
                     continue;
                 }
@@ -269,6 +315,9 @@ namespace sources {
             ReleaseDC(m_hwnd, windowDC);
 
             scs_log(0, "[WindowSource] Source for %s (%s) has stopped", m_appname, m_apptitle ? m_apptitle : "NO_TITLE");
+            diagnostic_log::writef(
+                "capture", "Legacy capture stopped: %s (%s).",
+                m_appname, m_apptitle ? m_apptitle : "no title");
         }
 
     public:
@@ -302,11 +351,23 @@ namespace sources {
         {
             m_framerate = framerate;
             m_hwnd = FindWindowByNameAndTitle(m_appname, m_apptitle);
-            if (!m_hwnd) { scs_log(2, "[WindowSource] Application %s (%s) not found at source startup", m_appname, m_apptitle ? m_apptitle : "NO_TITLE"); return false; }
+            if (!m_hwnd) {
+                scs_log(2, "[WindowSource] Application %s (%s) not found at source startup", m_appname, m_apptitle ? m_apptitle : "NO_TITLE");
+                diagnostic_log::writef(
+                    "error", "Legacy capture target not found: %s (%s).",
+                    m_appname, m_apptitle ? m_apptitle : "no title");
+                return false;
+            }
 
             m_thread = std::thread(&WindowSource::CaptureLoop, this);
 
             scs_log(0, "[WindowSource] Source for %s (%s) has started", m_appname, m_apptitle ? m_apptitle : "NO_TITLE");
+            diagnostic_log::writef(
+                "capture", "Legacy capture started: %s (%s), target %ux%u "
+                "at %u FPS.",
+                m_appname, m_apptitle ? m_apptitle : "no title",
+                m_outputWidth.load(), m_outputHeight.load(),
+                static_cast<unsigned>(m_framerate.load()));
             return true;
         }
 

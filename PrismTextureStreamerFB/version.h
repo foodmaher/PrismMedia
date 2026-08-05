@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.7.0-event-playlist-core-balance";
+inline const char* g_version = "3.8.0-spotify-gamepad-diagnostics";

@@ -172,8 +172,11 @@ namespace {
     class MediaClientSource final : public IContentSource
     {
     public:
-        explicit MediaClientSource(std::unique_ptr<IContentSource> capture)
-            : m_capture(std::move(capture))
+        explicit MediaClientSource(
+            std::unique_ptr<IContentSource> capture,
+            bool fullSpotifyWeb)
+            : m_capture(std::move(capture)),
+              m_fullSpotifyWeb(fullSpotifyWeb)
         {
         }
         ~MediaClientSource() override
@@ -210,6 +213,7 @@ namespace {
             uint32_t& width,
             uint32_t& height) override
         {
+            refresh_helper_cpu_hints();
             const bool copied =
                 m_capture->CopyLatestFrame(destination, width, height);
             if (!m_brightnessRefreshPending.load())
@@ -251,11 +255,31 @@ namespace {
         bool SupportsSpatialAudio() const override { return true; }
         bool LoadMedia(const std::string& url) override
         {
-            const bool sent = send_payload("load|" + url);
+            const bool sent = send_payload(
+                (m_fullSpotifyWeb ? "loadspotifyweb|" : "load|") + url);
             diagnostic_log::writef(
-                "media", "Media load request: %s",
+                "media", "%s media load request: %s",
+                m_fullSpotifyWeb ? "Full Spotify Web" : "Embedded/local",
                 sent ? "delivered" : "failed");
             return sent;
+        }
+        bool SetFullSpotifyWeb(bool enabled) override
+        {
+            if (m_fullSpotifyWeb == enabled)
+                return true;
+            m_fullSpotifyWeb = enabled;
+            diagnostic_log::writef(
+                "media", "Spotify playback experience changed to %s.",
+                enabled ? "Full Web Player" : "Embed");
+            return true;
+        }
+        bool ShowInteractivePlayer(bool show) override
+        {
+            return send_payload(show ? "spotifylogin" : "spotifyhide");
+        }
+        bool ClearBrowserSession() override
+        {
+            return send_payload("clearspotify");
         }
         bool SendMediaCommand(media_command_t command) override
         {
@@ -343,10 +367,54 @@ namespace {
         }
         std::string GetStatusText() const override
         {
-            return "Integrated Media Client running";
+            return m_fullSpotifyWeb
+                ? "Integrated Media Client: Full Spotify Web Player"
+                : "Integrated Media Client running";
         }
 
     private:
+        void refresh_helper_cpu_hints()
+        {
+            const uint64_t now = GetTickCount64();
+            if (m_lastCpuHintCheckTick != 0 &&
+                now - m_lastCpuHintCheckTick < 2000)
+                return;
+            m_lastCpuHintCheckTick = now;
+
+            const DWORD cpu0 = thread_scheduling::preferred_processor(0);
+            const DWORD cpu1 = thread_scheduling::preferred_processor(1);
+            const DWORD cpu2 = thread_scheduling::preferred_processor(2);
+            if (cpu0 == thread_scheduling::kUnassignedProcessor)
+                return;
+            if (cpu0 == m_lastCpuHint0 && cpu1 == m_lastCpuHint1 &&
+                cpu2 == m_lastCpuHint2)
+                return;
+
+            const std::string payload =
+                "cpuhints|" + std::to_string(cpu0) + "," +
+                std::to_string(
+                    cpu1 == thread_scheduling::kUnassignedProcessor
+                        ? cpu0 : cpu1) + "," +
+                std::to_string(
+                    cpu2 == thread_scheduling::kUnassignedProcessor
+                        ? cpu0 : cpu2);
+            if (send_payload(payload, 30))
+            {
+                m_lastCpuHint0 = cpu0;
+                m_lastCpuHint1 = cpu1;
+                m_lastCpuHint2 = cpu2;
+                diagnostic_log::writef(
+                    "scheduler", "Sent helper soft CPU hints: LP %lu, %lu, %lu.",
+                    static_cast<unsigned long>(cpu0),
+                    static_cast<unsigned long>(
+                        cpu1 == thread_scheduling::kUnassignedProcessor
+                            ? cpu0 : cpu1),
+                    static_cast<unsigned long>(
+                        cpu2 == thread_scheduling::kUnassignedProcessor
+                            ? cpu0 : cpu2));
+            }
+        }
+
         std::unique_ptr<IContentSource> m_capture;
         std::atomic<bool> m_userCapturePaused{};
         std::atomic<bool> m_vehiclePowered{ true };
@@ -358,6 +426,11 @@ namespace {
         float m_lastBrightness{ -1.0f };
         std::atomic<bool> m_brightnessRefreshPending{};
         std::atomic<uint64_t> m_brightnessRefreshRequestedTick{};
+        bool m_fullSpotifyWeb{};
+        uint64_t m_lastCpuHintCheckTick{};
+        DWORD m_lastCpuHint0{ thread_scheduling::kUnassignedProcessor };
+        DWORD m_lastCpuHint1{ thread_scheduling::kUnassignedProcessor };
+        DWORD m_lastCpuHint2{ thread_scheduling::kUnassignedProcessor };
     };
 }
 
@@ -385,7 +458,8 @@ namespace sources {
         const std::string& media_url,
         uint8_t framerate,
         uint32_t output_width,
-        uint32_t output_height)
+        uint32_t output_height,
+        bool full_spotify_web)
     {
         if (!launch_media_client())
             return nullptr;
@@ -394,7 +468,9 @@ namespace sources {
         {
             // The helper can receive commands as soon as its Win32 window is
             // visible; it queues the URL until WebView2 has initialized.
-            send_payload("load|" + media_url);
+            send_payload(
+                (full_spotify_web ? "loadspotifyweb|" : "load|") +
+                media_url);
         }
         send_payload(
             "resize|" + std::to_string(output_width) + "x" +
@@ -405,6 +481,7 @@ namespace sources {
             framerate, output_width, output_height);
         if (!capture)
             return nullptr;
-        return std::make_unique<MediaClientSource>(std::move(capture));
+        return std::make_unique<MediaClientSource>(
+            std::move(capture), full_spotify_web);
     }
 }

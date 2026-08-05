@@ -14,9 +14,11 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Add a **GPS** screen, **Dashboard** screen, or a **Custom** screen (The target `.tobj` MUST be a functional screen from a UI Script, such as `/ui/gps.sii`)
 - Pick a running application window as the source for that screen
 - Play YouTube videos/playlists without running a full browser
-- Play Spotify tracks, albums, podcasts and playlists through Spotify Embed
+- Play Spotify through either the low-impact Embed player or an experimental
+  persistent-login Full Web Player
 - Play local files or direct stream URLs through Windows Media Foundation
-- Control media and assign keys for Play/Pause, Next, Previous, Mute and Volume
+- Control media with assignable keyboard keys or configurable XInput gamepad
+  chords for Play/Pause, Next, Previous, Mute and Volume
 - Spatialize Integrated Media Client sound from the driver's live head pose
 - Fade and muffle outside-camera media by true camera-to-driver distance with
   the optional SPF companion
@@ -29,9 +31,10 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Automatically replace media with a calibrated reverse-mirror view in reverse
 - Diagnose ETS2's internal `park`/`park_360` render-to-texture path without
   changing the driver's camera
-- See live measured plugin CPU/readback cost and estimated FPS loss
+- See live measured plugin CPU/readback cost, smoothed estimated FPS loss,
+  render health, and a collapsed sampled logical-processor activity map
 - Adjust target resolution and framerate
-- Apply changes 
+- Apply changes
 
 Whatever's rendering in the picked window gets captured and blitted onto the truck's screen every frame.
 
@@ -104,6 +107,33 @@ performance statistics.
    the subfolder.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
+
+## Version 3.8 Spotify, gamepad and render diagnostics
+
+Version `3.8.0-spotify-gamepad-diagnostics` adds two selectable Spotify
+experiences. **Embed** remains the recommended low-impact option. The
+experimental **Full Web Player** loads the normal Spotify website in the
+integrated helper, preserves its login in a dedicated WebView2 profile, and
+routes Play/Pause, Next, Previous, Mute and Volume through page controls with a
+Windows media-key fallback. Buttons in the in-game menu open the helper for
+login and return it to silent capture mode.
+
+Media commands can also use XInput chords. Every command has an independent
+modifier (None/LB/RB/LT/RT) and button, trigger, D-pad or left/right-stick
+direction. The defaults use RB+A for Play/Pause and RB+right-stick directions
+for track and volume controls. Input remains visible to ETS2/ATS.
+
+The render diagnostics now report texture redirects and matches, WGC startup,
+resize and staging events, stale sources, D3D11 mapping failures, periodic
+render summaries, WebView navigation/process failures, and sampled
+magenta/pink frames. The Live Performance Monitor uses a 2.5-second-smoothed
+FPS-loss model and contains a collapsed CPU logical-processor list: red is an
+observed game render-thread sample, green is an in-process plugin-worker
+sample, and yellow is both. These are low-overhead two-second samples rather
+than a full ETW profiler. Soft ideal-processor hints are also forwarded to the
+helper and WebView browser threads without changing game affinity.
+
+See `PrismTextureStreamerFB\docs\V3.8-SPOTIFY-GAMEPAD-DIAGNOSTICS.md`.
 
 ## Version 3.6 telemetry environment ducking
 

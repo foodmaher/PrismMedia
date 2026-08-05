@@ -53,6 +53,16 @@ static bool rebuild_source(screen_t& screen)
 	screen.deliveredFps = 0.0;
 	screen.uploadedFrames = 0;
 	screen.lastUploadTick = 0;
+	screen.sourceCreatedTick = 0;
+	screen.lastSourceFrameTick = 0;
+	screen.lastFrameInspectionTick = 0;
+	screen.lastRenderDiagnosticTick = 0;
+	screen.lastIssueDiagnosticTick = 0;
+	screen.suspiciousMagentaFrame = false;
+	screen.sourceFrameStale = false;
+	screen.magentaSampleCount = 0;
+	screen.diagnosticSampleCount = 0;
+	screen.consecutiveMapFailures = 0;
 
 	switch (screen.contentMode)
 	{
@@ -82,7 +92,10 @@ static bool rebuild_source(screen_t& screen)
 			screen.source = sources::CreateMediaClientSource(
 				screen.mediaUrl, screen.framerate,
 				screen.targetLiveTextureWidth,
-				screen.targetLiveTextureHeight);
+				screen.targetLiveTextureHeight,
+				screen.mediaService == media_service_t::SPOTIFY &&
+					screen.spotifyPlaybackMode ==
+						spotify_playback_mode_t::FULL_WEB_PLAYER);
 		break;
 	case content_mode_t::NATIVE_DIRECT_MEDIA:
 		if (!screen.mediaUrl.empty())
@@ -95,6 +108,7 @@ static bool rebuild_source(screen_t& screen)
 
 	if (screen.source)
 	{
+		screen.sourceCreatedTick = GetTickCount64();
 		screen.source->SetPaused(screen.paused);
 		screen.source->SetSourceBrightness(screen.brightness);
 	}
@@ -393,6 +407,94 @@ void on_frame()
 				}
 				ImGui::PopID();
 			}
+
+			ImGui::Separator();
+			ImGui::TextUnformatted("Gamepad media combinations");
+			if (ImGui::Checkbox(
+				"Enable XInput gamepad media controls",
+				&g_gamepad_hotkeys_enabled))
+				saveConfiguration = true;
+
+			const char* controllerChoices[] = {
+				"Automatic (first connected)",
+				"Controller 1", "Controller 2",
+				"Controller 3", "Controller 4"
+			};
+			int controllerChoice = g_gamepad_controller_index + 1;
+			if (ImGui::Combo(
+				"Controller", &controllerChoice,
+				controllerChoices, IM_ARRAYSIZE(controllerChoices)))
+			{
+				g_gamepad_controller_index = controllerChoice - 1;
+				saveConfiguration = true;
+			}
+			if (ImGui::SliderFloat(
+				"Stick / trigger threshold",
+				&g_gamepad_axis_threshold,
+				0.20f, 0.95f, "%.2f"))
+				saveConfiguration = true;
+
+			for (int commandIndex = 0;
+				commandIndex < static_cast<int>(
+					g_media_gamepad_hotkeys.size());
+				++commandIndex)
+			{
+				const auto command =
+					static_cast<media_command_t>(commandIndex);
+				auto& binding =
+					g_media_gamepad_hotkeys[commandIndex];
+				ImGui::PushID(11000 + commandIndex);
+				ImGui::TextUnformatted(media_command_name(command));
+				ImGui::SameLine(150.0f);
+				ImGui::SetNextItemWidth(90.0f);
+				if (ImGui::BeginCombo(
+					"##gamepad_modifier",
+					gamepad_modifier_name(binding.modifier)))
+				{
+					for (int value = 0;
+						value < static_cast<int>(
+							gamepad_modifier_t::COUNT); ++value)
+					{
+						const auto candidate =
+							static_cast<gamepad_modifier_t>(value);
+						if (ImGui::Selectable(
+							gamepad_modifier_name(candidate),
+							candidate == binding.modifier))
+						{
+							binding.modifier = candidate;
+							saveConfiguration = true;
+						}
+					}
+					ImGui::EndCombo();
+				}
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(190.0f);
+				if (ImGui::BeginCombo(
+					"##gamepad_input",
+					gamepad_input_name(binding.input)))
+				{
+					for (int value = 0;
+						value < static_cast<int>(
+							gamepad_input_t::COUNT); ++value)
+					{
+						const auto candidate =
+							static_cast<gamepad_input_t>(value);
+						if (ImGui::Selectable(
+							gamepad_input_name(candidate),
+							candidate == binding.input))
+						{
+							binding.input = candidate;
+							saveConfiguration = true;
+						}
+					}
+					ImGui::EndCombo();
+				}
+				ImGui::PopID();
+			}
+			ImGui::TextDisabled(
+				"Default: RB + A plays/pauses; RB + right-stick directions "
+				"control tracks and volume. ETS2/ATS still receives the same "
+				"gamepad input.");
 		}
 
 			if (ImGui::CollapsingHeader(
@@ -851,6 +953,13 @@ void on_frame()
 								{
 									screen.mediaUrl.clear();
 								}
+								if (screen.source)
+									screen.source->SetFullSpotifyWeb(
+										screen.mediaService ==
+											media_service_t::SPOTIFY &&
+										screen.spotifyPlaybackMode ==
+											spotify_playback_mode_t::
+												FULL_WEB_PLAYER);
 								if (screen.source &&
 									!screen.mediaUrl.empty())
 								{
@@ -858,6 +967,67 @@ void on_frame()
 										screen.mediaUrl);
 								}
 								saveConfiguration = true;
+							}
+
+							if (screen.mediaService ==
+								media_service_t::SPOTIFY)
+							{
+								const char* spotifyModes[] = {
+									"Embed (low impact)",
+									"Full Web Player (experimental)"
+								};
+								int spotifyMode = static_cast<int>(
+									screen.spotifyPlaybackMode);
+								if (ImGui::Combo(
+									"Spotify Experience", &spotifyMode,
+									spotifyModes,
+									IM_ARRAYSIZE(spotifyModes)))
+								{
+									screen.spotifyPlaybackMode =
+										static_cast<spotify_playback_mode_t>(
+											spotifyMode);
+									if (screen.source)
+									{
+										screen.source->SetFullSpotifyWeb(
+											screen.spotifyPlaybackMode ==
+												spotify_playback_mode_t::
+													FULL_WEB_PLAYER);
+										if (!screen.mediaUrl.empty())
+											screen.source->LoadMedia(
+												screen.mediaUrl);
+									}
+									saveConfiguration = true;
+								}
+
+								if (screen.spotifyPlaybackMode ==
+									spotify_playback_mode_t::EMBED)
+								{
+									ImGui::TextWrapped(
+										"Lowest overhead and no login. Spotify "
+										"limits Next/Previous inside embeds, so "
+										"those commands cycle your saved links.");
+								}
+								else
+								{
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+										"Expected impact: Medium / High");
+									ImGui::TextWrapped(
+										"Runs the normal Spotify website with a "
+										"persistent login. It supports native "
+										"track controls but uses more CPU/GPU and "
+										"may expose DRM/compositor capture limits.");
+									if (screen.source && ImGui::Button(
+										"Open Spotify login / controls"))
+										screen.source->ShowInteractivePlayer(true);
+									ImGui::SameLine();
+									if (screen.source && ImGui::Button(
+										"Return helper to silent mode"))
+										screen.source->ShowInteractivePlayer(false);
+									if (screen.source && ImGui::Button(
+										"Clear Spotify login/session"))
+										screen.source->ClearBrowserSession();
+								}
 							}
 
 							auto& mediaUrls =
@@ -1080,7 +1250,9 @@ void on_frame()
 							if (screen.contentMode ==
 								content_mode_t::INTEGRATED_MEDIA &&
 								screen.mediaService ==
-									media_service_t::SPOTIFY)
+									media_service_t::SPOTIFY &&
+								screen.spotifyPlaybackMode ==
+									spotify_playback_mode_t::EMBED)
 							{
 								ImGui::TextDisabled(
 									"Spotify Next/Previous cycles saved Spotify "
@@ -2104,9 +2276,16 @@ void on_frame()
 						{
 							const double estimatedWithoutPluginMs =
 								(std::max)(0.1, observedFrameMs - screen.uploadCpuMs);
-							screen.estimatedFpsLoss =
+							const double instantaneousLoss =
 								(std::max)(0.0,
 									1000.0 / estimatedWithoutPluginMs - gameFps);
+							const double smoothing =
+								1.0 - std::exp(-observedFrameMs / 2500.0);
+							screen.estimatedFpsLoss =
+								screen.estimatedFpsLoss == 0.0
+								? instantaneousLoss
+								: screen.estimatedFpsLoss * (1.0 - smoothing) +
+									instantaneousLoss * smoothing;
 						}
 
 						ImGui::Text("Current game FPS: %.1f", gameFps);
@@ -2117,7 +2296,7 @@ void on_frame()
 								? ImVec4(1.0f, 0.72f, 0.25f, 1.0f)
 								: ImVec4(1.0f, 0.30f, 0.30f, 1.0f));
 						ImGui::TextColored(
-							lossColor, "Estimated FPS loss: %.2f",
+							lossColor, "Smoothed estimated FPS loss: %.2f",
 							screen.estimatedFpsLoss);
 						ImGui::Text(
 							"Game-thread texture upload: %.3f ms",
@@ -2149,6 +2328,27 @@ void on_frame()
 						ImGui::Text(
 							"Window capture bypassed: %s",
 							sourceStats.directMedia ? "Yes" : "No");
+						if (screen.suspiciousMagentaFrame)
+						{
+							ImGui::TextColored(
+								ImVec4(1.0f, 0.30f, 0.65f, 1.0f),
+								"Render diagnostic: suspicious magenta/pink "
+								"source frame (%u/%u samples)",
+								screen.magentaSampleCount,
+								screen.diagnosticSampleCount);
+						}
+						else if (screen.sourceFrameStale)
+						{
+							ImGui::TextColored(
+								ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+								"Render diagnostic: source frames are stale");
+						}
+						else
+						{
+							ImGui::TextColored(
+								ImVec4(0.35f, 0.90f, 0.40f, 1.0f),
+								"Render diagnostic: healthy");
+						}
 						const DWORD backgroundCpu0 =
 							thread_scheduling::preferred_processor(0);
 						DWORD backgroundCpu1 =
@@ -2178,6 +2378,68 @@ void on_frame()
 						ImGui::TextDisabled(
 							"Soft scheduler hints only; game affinity is unchanged. "
 							"Media helper priority: Below Normal.");
+						if (ImGui::TreeNode(
+							"CPU logical-processor activity (sampled)"))
+						{
+							const ImVec4 gameColor(0.92f, 0.20f, 0.20f, 1.0f);
+							const ImVec4 pluginColor(0.20f, 0.85f, 0.30f, 1.0f);
+							const ImVec4 sharedColor(1.0f, 0.78f, 0.12f, 1.0f);
+							const ImVec4 idleColor(0.30f, 0.30f, 0.30f, 1.0f);
+							const ImGuiColorEditFlags legendFlags =
+								ImGuiColorEditFlags_NoTooltip |
+								ImGuiColorEditFlags_NoDragDrop;
+							ImGui::ColorButton(
+								"##game_cpu", gameColor, legendFlags,
+								ImVec2(12.0f, 12.0f));
+							ImGui::SameLine();
+							ImGui::TextUnformatted("Game render-thread observed");
+							ImGui::SameLine();
+							ImGui::ColorButton(
+								"##plugin_cpu", pluginColor, legendFlags,
+								ImVec2(12.0f, 12.0f));
+							ImGui::SameLine();
+							ImGui::TextUnformatted("Plugin worker observed");
+							ImGui::SameLine();
+							ImGui::ColorButton(
+								"##shared_cpu", sharedColor, legendFlags,
+								ImVec2(12.0f, 12.0f));
+							ImGui::SameLine();
+							ImGui::TextUnformatted("Both");
+
+							const DWORD processorCount =
+								thread_scheduling::tracked_processor_count();
+							for (DWORD processor = 0;
+								processor < processorCount; ++processor)
+							{
+								const uint32_t gameHits =
+									thread_scheduling::sampled_game_hits(
+										processor);
+								const uint32_t pluginHits =
+									thread_scheduling::sampled_plugin_hits(
+										processor);
+								const ImVec4 color = gameHits && pluginHits
+									? sharedColor
+									: (gameHits ? gameColor
+										: (pluginHits ? pluginColor : idleColor));
+								ImGui::PushID(
+									12000 + static_cast<int>(processor));
+								ImGui::ColorButton(
+									"##processor", color, legendFlags,
+									ImVec2(14.0f, 14.0f));
+								ImGui::SameLine();
+								ImGui::Text(
+									"LP %lu   game samples %u   plugin samples %u",
+									static_cast<unsigned long>(processor),
+									gameHits, pluginHits);
+								ImGui::PopID();
+							}
+							ImGui::TextWrapped(
+								"This low-overhead two-second sample observes the "
+								"game render thread and in-process plugin workers. "
+								"It is not a complete profiler of every ETS2/ATS "
+								"engine thread or the separate WebView2 processes.");
+							ImGui::TreePop();
+						}
 						ImGui::TextWrapped(
 							"Diagnostics: PrismTextureStreamerFB.log and "
 							"PrismMediaClient.log beside the game executable.");

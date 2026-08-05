@@ -9,6 +9,7 @@
 #include "../scs_logging.h"
 using namespace scs_logging;
 
+#include "../diagnostic_log.h"
 #include "../screens.h"
 #include "../telemetry_state.h"
 #include "../sources/reverse_camera.h"
@@ -17,6 +18,122 @@ using namespace scs_logging;
 
 typedef HRESULT(__stdcall* CreateTexture2D_t)(ID3D11Device*, const D3D11_TEXTURE2D_DESC*, const D3D11_SUBRESOURCE_DATA*, ID3D11Texture2D**);
 static CreateTexture2D_t CreateTexture2D_Original = nullptr;
+
+namespace
+{
+    const char* screen_type_name(screen_type_t type)
+    {
+        switch (type)
+        {
+        case screen_type_t::GPS: return "GPS";
+        case screen_type_t::DASHBOARD: return "dashboard";
+        case screen_type_t::CUSTOM: return "custom";
+        }
+        return "unknown";
+    }
+
+    bool inspect_magenta_frame(
+        const std::vector<uint8_t>& frame,
+        uint32_t width,
+        uint32_t height,
+        uint32_t& magentaSamples,
+        uint32_t& totalSamples)
+    {
+        magentaSamples = 0;
+        totalSamples = 0;
+        if (width == 0 || height == 0 ||
+            frame.size() < static_cast<size_t>(width) * height * 4)
+            return false;
+
+        constexpr uint32_t columns = 5;
+        constexpr uint32_t rows = 4;
+        for (uint32_t row = 0; row < rows; ++row)
+        {
+            const uint32_t y = (row * 2 + 1) * height / (rows * 2);
+            for (uint32_t column = 0; column < columns; ++column)
+            {
+                const uint32_t x =
+                    (column * 2 + 1) * width / (columns * 2);
+                const size_t offset =
+                    (static_cast<size_t>(y) * width + x) * 4;
+                const uint8_t blue = frame[offset + 0];
+                const uint8_t green = frame[offset + 1];
+                const uint8_t red = frame[offset + 2];
+                ++totalSamples;
+                if (red >= 175 && blue >= 150 && green <= 115 &&
+                    red >= green + 55 && blue >= green + 40)
+                    ++magentaSamples;
+            }
+        }
+        return totalSamples >= 12 &&
+            magentaSamples * 4 >= totalSamples * 3;
+    }
+
+    void set_stale_state(screen_t& screen, bool stale, uint64_t now)
+    {
+        if (screen.sourceFrameStale == stale)
+            return;
+        screen.sourceFrameStale = stale;
+        if (stale)
+        {
+            diagnostic_log::writef(
+                "render",
+                "%s source stopped delivering new frames for over 2 seconds.",
+                screen_type_name(screen.type));
+        }
+        else
+        {
+            diagnostic_log::writef(
+                "render", "%s source frame delivery recovered.",
+                screen_type_name(screen.type));
+        }
+        screen.lastIssueDiagnosticTick = now;
+    }
+
+    void inspect_source_frame(
+        screen_t& screen,
+        const std::vector<uint8_t>& frame,
+        uint32_t width,
+        uint32_t height,
+        uint64_t now)
+    {
+        screen.lastSourceFrameTick = now;
+        set_stale_state(screen, false, now);
+        if (screen.lastFrameInspectionTick != 0 &&
+            now - screen.lastFrameInspectionTick < 1000)
+            return;
+        screen.lastFrameInspectionTick = now;
+
+        uint32_t magentaSamples{};
+        uint32_t totalSamples{};
+        const bool suspicious = inspect_magenta_frame(
+            frame, width, height, magentaSamples, totalSamples);
+        screen.magentaSampleCount = magentaSamples;
+        screen.diagnosticSampleCount = totalSamples;
+        if (screen.suspiciousMagentaFrame == suspicious)
+            return;
+
+        screen.suspiciousMagentaFrame = suspicious;
+        if (suspicious)
+        {
+            diagnostic_log::writef(
+                "render",
+                "%s source is predominantly magenta/pink (%u/%u samples, "
+                "%ux%u). This usually indicates a WebView protected-video "
+                "or compositor capture failure; switch Spotify to Embed and "
+                "check PrismMediaClient.log navigation/process events.",
+                screen_type_name(screen.type), magentaSamples, totalSamples,
+                width, height);
+        }
+        else
+        {
+            diagnostic_log::writef(
+                "render", "%s magenta/pink source condition cleared.",
+                screen_type_name(screen.type));
+        }
+        screen.lastIssueDiagnosticTick = now;
+    }
+}
 
 HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData, ID3D11Texture2D** ppTexture2D)
 {
@@ -64,6 +181,7 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
                 screen.liveTextureWidth = modifiedDesc.Width;
                 screen.liveTextureHeight = modifiedDesc.Height;
                 screen.hasUploadedFrame = false;
+                screen.lastTextureMatchTick = GetTickCount64();
 
                 screen.liveTexture = *ppTexture2D;
                 screen.liveTexture->AddRef(); // own a ref independent of the games
@@ -76,9 +194,20 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
                     "[dx11::create_texture_2d] matched texture '%s' "
                     "(safe dynamic upload)",
                     screen.original_texture.c_str());
+                diagnostic_log::writef(
+                    "render",
+                    "Matched %s texture %s and created a %ux%u dynamic "
+                    "BGRA upload target.",
+                    screen_type_name(screen.type),
+                    screen.original_texture.c_str(),
+                    modifiedDesc.Width, modifiedDesc.Height);
             }
             else {
                 scs_log(2, "[dx11::create_texture_2d] rewrite of %s FAILED, hr=0x%08X", screen.original_texture.c_str(), hr);
+                diagnostic_log::writef(
+                    "error", "Texture rewrite failed for %s (HRESULT 0x%08X).",
+                    screen.original_texture.c_str(),
+                    static_cast<unsigned>(hr));
             }
             return hr;
         }
@@ -230,21 +359,64 @@ void new_frame()
             {
                 screen.frameScratchWidth = srcWidth;
                 screen.frameScratchHeight = srcHeight;
+                inspect_source_frame(
+                    screen, screen.frameScratch,
+                    srcWidth, srcHeight, GetTickCount64());
             }
-            else if (screen.hasUploadedFrame ||
-                screen.frameScratch.empty())
+            else
             {
-                continue;
+                const uint64_t now = GetTickCount64();
+                const bool expectsFrames = !screen.paused &&
+                    (!screen.followTruckEngine || g_engine_enabled.load()) &&
+                    g_telemetry_driving.load();
+                const uint64_t reference = screen.lastSourceFrameTick != 0
+                    ? screen.lastSourceFrameTick
+                    : screen.sourceCreatedTick;
+                set_stale_state(
+                    screen,
+                    expectsFrames && reference != 0 && now > reference &&
+                        now - reference >= 2000,
+                    now);
+                if (screen.hasUploadedFrame || screen.frameScratch.empty())
+                    continue;
             }
         }
 
         const UINT dstWidth = screen.liveTextureWidth;
         const UINT dstHeight = screen.liveTextureHeight;
         if (srcWidth == 0 || srcHeight == 0 || dstWidth == 0 || dstHeight == 0)
+        {
+            const uint64_t now = GetTickCount64();
+            if (screen.lastIssueDiagnosticTick == 0 ||
+                now - screen.lastIssueDiagnosticTick >= 5000)
+            {
+                diagnostic_log::writef(
+                    "error",
+                    "%s upload skipped because dimensions were invalid "
+                    "(source %ux%u, target %ux%u).",
+                    screen_type_name(screen.type), srcWidth, srcHeight,
+                    dstWidth, dstHeight);
+                screen.lastIssueDiagnosticTick = now;
+            }
             continue;
+        }
         if (activeFrame->size() <
             static_cast<size_t>(srcWidth) * srcHeight * 4)
+        {
+            const uint64_t now = GetTickCount64();
+            if (screen.lastIssueDiagnosticTick == 0 ||
+                now - screen.lastIssueDiagnosticTick >= 5000)
+            {
+                diagnostic_log::writef(
+                    "error",
+                    "%s source buffer is too small (%llu bytes for %ux%u).",
+                    screen_type_name(screen.type),
+                    static_cast<unsigned long long>(activeFrame->size()),
+                    srcWidth, srcHeight);
+                screen.lastIssueDiagnosticTick = now;
+            }
             continue;
+        }
 
         UINT srcX{};
         UINT srcY{};
@@ -329,14 +501,41 @@ void new_frame()
             screen.brightnessLutScale = brightness;
         }
 
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        if (FAILED(screen.immediateContext->Map(
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        const HRESULT mapResult = screen.immediateContext->Map(
             screen.liveTexture,
             0,
             D3D11_MAP_WRITE_DISCARD,
             0,
-            &mapped)))
+            &mapped);
+        if (FAILED(mapResult))
+        {
+            ++screen.consecutiveMapFailures;
+            screen.lastMapResult = mapResult;
+            const uint64_t now = GetTickCount64();
+            if (screen.lastIssueDiagnosticTick == 0 ||
+                now - screen.lastIssueDiagnosticTick >= 5000)
+            {
+                diagnostic_log::writef(
+                    "error",
+                    "%s dynamic texture Map failed (HRESULT 0x%08X, "
+                    "consecutive=%u).",
+                    screen_type_name(screen.type),
+                    static_cast<unsigned>(mapResult),
+                    screen.consecutiveMapFailures);
+                screen.lastIssueDiagnosticTick = now;
+            }
             continue;
+        }
+        if (screen.consecutiveMapFailures != 0)
+        {
+            diagnostic_log::writef(
+                "render", "%s texture mapping recovered after %u failures.",
+                screen_type_name(screen.type),
+                screen.consecutiveMapFailures);
+            screen.consecutiveMapFailures = 0;
+            screen.lastMapResult = 0;
+        }
 
         const uint8_t* src = activeFrame->data();
         uint8_t* dstBase = static_cast<uint8_t*>(mapped.pData);
@@ -448,6 +647,27 @@ void new_frame()
                 : source_performance_stats_t{};
 	        screen.totalPluginCpuMs =
 	            screen.uploadCpuMs + sourceStats.workerCpuMs;
+
+            if (screen.lastRenderDiagnosticTick == 0 ||
+                nowTick - screen.lastRenderDiagnosticTick >= 10000)
+            {
+                diagnostic_log::writef(
+                    "render",
+                    "%s summary: source=%ux%u target=%ux%u upload=%.3fms "
+                    "worker=%.3fms readback=%.3fms delivered=%.1ffps "
+                    "uploaded=%llu dropped=%llu stale=%d pink=%d.",
+                    screen_type_name(screen.type), srcWidth, srcHeight,
+                    dstWidth, dstHeight, screen.uploadCpuMs,
+                    sourceStats.workerCpuMs, sourceStats.readbackMs,
+                    sourceStats.deliveredFps > 0.0
+                        ? sourceStats.deliveredFps : screen.deliveredFps,
+                    static_cast<unsigned long long>(screen.uploadedFrames),
+                    static_cast<unsigned long long>(
+                        sourceStats.droppedFrames),
+                    screen.sourceFrameStale ? 1 : 0,
+                    screen.suspiciousMagentaFrame ? 1 : 0);
+                screen.lastRenderDiagnosticTick = nowTick;
+            }
 	    }
 
     dx11::internal_render_probe::set_park_activation_requested(

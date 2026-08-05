@@ -23,6 +23,12 @@ namespace thread_scheduling
 
 	inline std::array<std::atomic<uint32_t>, kTrackedProcessors>
 		g_render_processor_hits{};
+	inline std::array<std::atomic<uint32_t>, kTrackedProcessors>
+		g_plugin_processor_hits{};
+	inline std::array<std::atomic<uint32_t>, kTrackedProcessors>
+		g_last_render_processor_hits{};
+	inline std::array<std::atomic<uint32_t>, kTrackedProcessors>
+		g_last_plugin_processor_hits{};
 	inline std::atomic<uint64_t> g_last_analysis_tick{};
 	inline std::atomic<DWORD> g_background_processor_0{
 		kUnassignedProcessor };
@@ -88,11 +94,8 @@ namespace thread_scheduling
 
 		DWORD_PTR processMask{};
 		DWORD_PTR systemMask{};
-		if (!GetProcessAffinityMask(
-			GetCurrentProcess(), &processMask, &systemMask))
-		{
-			return;
-		}
+		const bool haveAffinityMask = GetProcessAffinityMask(
+			GetCurrentProcess(), &processMask, &systemMask) != FALSE;
 
 		SYSTEM_INFO systemInfo{};
 		GetSystemInfo(&systemInfo);
@@ -114,12 +117,24 @@ namespace thread_scheduling
 			const uint32_t hits =
 				g_render_processor_hits[processor].exchange(
 					0, std::memory_order_relaxed);
+			const uint32_t pluginHits =
+				g_plugin_processor_hits[processor].exchange(
+					0, std::memory_order_relaxed);
+			g_last_render_processor_hits[processor].store(
+				hits, std::memory_order_relaxed);
+			g_last_plugin_processor_hits[processor].store(
+				pluginHits, std::memory_order_relaxed);
+			if (!haveAffinityMask)
+				continue;
 			const DWORD_PTR bit = static_cast<DWORD_PTR>(1) << processor;
 			if ((processMask & bit) == 0)
 				continue;
 			insert_candidate(
 				processor, hits, processors, processorHits);
 		}
+
+		if (!haveAffinityMask)
+			return;
 
 		g_background_processor_0.store(
 			processors[0], std::memory_order_relaxed);
@@ -169,6 +184,15 @@ namespace thread_scheduling
 		}
 		lastRefresh = now;
 
+		// One sample per worker every two seconds is sufficient for the UI map
+		// and avoids adding an atomic operation to every captured frame.
+		const DWORD currentProcessor = GetCurrentProcessorNumber();
+		if (currentProcessor < kTrackedProcessors)
+		{
+			g_plugin_processor_hits[currentProcessor].fetch_add(
+				1, std::memory_order_relaxed);
+		}
+
 		const DWORD processor = preferred_processor(slot);
 		if (processor == kUnassignedProcessor ||
 			processor == appliedProcessor)
@@ -180,5 +204,30 @@ namespace thread_scheduling
 		{
 			appliedProcessor = processor;
 		}
+	}
+
+	inline DWORD tracked_processor_count()
+	{
+		SYSTEM_INFO systemInfo{};
+		GetSystemInfo(&systemInfo);
+		return (std::min)(
+			static_cast<DWORD>(kTrackedProcessors),
+			systemInfo.dwNumberOfProcessors);
+	}
+
+	inline uint32_t sampled_game_hits(DWORD processor)
+	{
+		return processor < kTrackedProcessors
+			? g_last_render_processor_hits[processor].load(
+				std::memory_order_relaxed)
+			: 0;
+	}
+
+	inline uint32_t sampled_plugin_hits(DWORD processor)
+	{
+		return processor < kTrackedProcessors
+			? g_last_plugin_processor_hits[processor].load(
+				std::memory_order_relaxed)
+			: 0;
 	}
 }

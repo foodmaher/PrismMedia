@@ -57,6 +57,11 @@ enum class media_service_t : uint8_t {
 	SPOTIFY
 };
 
+enum class spotify_playback_mode_t : uint8_t {
+	EMBED = 0,
+	FULL_WEB_PLAYER
+};
+
 struct screen_t
 {
 	screen_type_t type{};
@@ -71,6 +76,8 @@ struct screen_t
 	std::string source_application_display_name;
 	std::string mediaUrl;
 	media_service_t mediaService = media_service_t::YOUTUBE;
+	spotify_playback_mode_t spotifyPlaybackMode =
+		spotify_playback_mode_t::EMBED;
 	std::vector<std::string> youtubeUrls;
 	std::vector<std::string> spotifyUrls;
 	uint32_t selectedYoutubeUrl{};
@@ -149,6 +156,22 @@ struct screen_t
 	uint64_t lastUploadTick{};
 	uint64_t internalParkLastBlitTick{};
 	bool internalParkWasDisplayed{};
+
+	// Low-frequency render diagnostics. These fields are updated only while
+	// the screens mutex is held and never add a second capture/readback pass.
+	uint64_t sourceCreatedTick{};
+	uint64_t lastSourceFrameTick{};
+	uint64_t lastFrameInspectionTick{};
+	uint64_t lastRenderDiagnosticTick{};
+	uint64_t lastIssueDiagnosticTick{};
+	uint64_t lastTextureMatchTick{};
+	uint64_t lastTextureRedirectTick{};
+	bool suspiciousMagentaFrame{};
+	bool sourceFrameStale{};
+	uint32_t magentaSampleCount{};
+	uint32_t diagnosticSampleCount{};
+	uint32_t consecutiveMapFailures{};
+	long lastMapResult{};
 
 	ID3D11Texture2D* liveTexture{};
 	ID3D11Texture2D* uploadTexture{};

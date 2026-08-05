@@ -5,6 +5,7 @@
 #include "../scs_logging.h"
 using namespace scs_logging;
 
+#include "../diagnostic_log.h"
 #include "../dx11/dx11.h"
 
 #include <winrt/Windows.Graphics.Capture.h>
@@ -215,6 +216,7 @@ namespace sources {
         std::atomic<double> m_readbackMs{};
         std::atomic<double> m_deliveredFps{};
         std::atomic<uint64_t> m_droppedFrames{};
+        uint64_t m_lastErrorLogTick{};
 
         struct StagingSlot
         {
@@ -248,6 +250,11 @@ namespace sources {
             m_stagingWidth = textureDesc.Width;
             m_stagingHeight = textureDesc.Height;
             m_nextStagingSlot = 0;
+            diagnostic_log::writef(
+                "capture",
+                "WGC staging ring created for %s at %ux%u (3 slots).",
+                m_appname ? m_appname : "unknown",
+                textureDesc.Width, textureDesc.Height);
         }
 
         bool TryReadCompletedFrame(ID3D11DeviceContext* ctx, const D3D11_TEXTURE2D_DESC& desc)
@@ -266,9 +273,28 @@ namespace sources {
                     continue;
 
                 D3D11_MAPPED_SUBRESOURCE mapped{};
-                if (ctx->Map(slot.texture.get(), 0, D3D11_MAP_READ,
-                    D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped) != S_OK)
+                const HRESULT mapResult = ctx->Map(
+                    slot.texture.get(), 0, D3D11_MAP_READ,
+                    D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+                if (mapResult != S_OK)
+                {
+                    if (mapResult != DXGI_ERROR_WAS_STILL_DRAWING)
+                    {
+                        const uint64_t tick = GetTickCount64();
+                        if (m_lastErrorLogTick == 0 ||
+                            tick - m_lastErrorLogTick >= 5000)
+                        {
+                            diagnostic_log::writef(
+                                "error",
+                                "WGC non-blocking readback Map for %s failed "
+                                "(HRESULT 0x%08X).",
+                                m_appname ? m_appname : "unknown",
+                                static_cast<unsigned>(mapResult));
+                            m_lastErrorLogTick = tick;
+                        }
+                    }
                     continue;
+                }
 
                 uint32_t outputWidth = desc.Width;
                 uint32_t outputHeight = desc.Height;
@@ -393,6 +419,11 @@ namespace sources {
 
                 if (contentSize.Width != m_lastSize.Width || contentSize.Height != m_lastSize.Height)
                 {
+                    diagnostic_log::writef(
+                        "capture", "WGC source %s resized from %dx%d to %dx%d.",
+                        m_appname ? m_appname : "unknown",
+                        m_lastSize.Width, m_lastSize.Height,
+                        contentSize.Width, contentSize.Height);
                     m_lastSize = contentSize;
                     m_framePool.Recreate(m_wgcDevice, Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, contentSize);
                     return; // next frame arrives at the correct size
@@ -482,7 +513,20 @@ namespace sources {
                     break;
                 }
                 if (!queued)
+                {
                     ++m_droppedFrames;
+                    const uint64_t tick = GetTickCount64();
+                    if (m_lastErrorLogTick == 0 ||
+                        tick - m_lastErrorLogTick >= 5000)
+                    {
+                        diagnostic_log::writef(
+                            "capture",
+                            "WGC staging ring for %s was busy; newest frame "
+                            "was dropped without waiting for the GPU.",
+                            m_appname ? m_appname : "unknown");
+                        m_lastErrorLogTick = tick;
+                    }
+                }
 
                 const double workerMs = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - workerStarted).count();
@@ -492,6 +536,17 @@ namespace sources {
             }
             catch (const winrt::hresult_error& e) {
                 scs_log(2, "[WgcWindowSource] OnFrameArrived failed: 0x%08X", e.code().value);
+                const uint64_t tick = GetTickCount64();
+                if (m_lastErrorLogTick == 0 ||
+                    tick - m_lastErrorLogTick >= 5000)
+                {
+                    diagnostic_log::writef(
+                        "error",
+                        "WGC frame handler for %s failed (HRESULT 0x%08X).",
+                        m_appname ? m_appname : "unknown",
+                        static_cast<unsigned>(e.code().value));
+                    m_lastErrorLogTick = tick;
+                }
             }
         }
 
@@ -538,6 +593,9 @@ namespace sources {
 
 
             scs_log(0, "[WgcWindowSource] Source for %s (%s) has stopped", m_appname, m_apptitle ? m_apptitle : "NO_TITLE");
+            diagnostic_log::writef(
+                "capture", "WGC source stopped: %s (%s).",
+                m_appname, m_apptitle ? m_apptitle : "no title");
             if (m_appname) delete[] m_appname;
             if (m_apptitle) delete[] m_apptitle;
         }
@@ -546,7 +604,13 @@ namespace sources {
         {
             try {
                 m_hwnd = FindWindowByNameAndTitle(m_appname, m_apptitle);
-                if (!m_hwnd) { scs_log(2, "[WgcWindowSource] Application %s (%s) not found at source startup", m_appname, m_apptitle ? m_apptitle : "NO_TITLE"); return false; }
+                if (!m_hwnd) {
+                    scs_log(2, "[WgcWindowSource] Application %s (%s) not found at source startup", m_appname, m_apptitle ? m_apptitle : "NO_TITLE");
+                    diagnostic_log::writef(
+                        "error", "WGC target not found: %s (%s).",
+                        m_appname, m_apptitle ? m_apptitle : "no title");
+                    return false;
+                }
 
                 m_d3dDevice = CreateWgcCaptureDevice(m_hwnd);
 
@@ -556,6 +620,9 @@ namespace sources {
                 m_lastSize = m_item.Size();
                 if (m_lastSize.Width == 0 || m_lastSize.Height == 0) {
                     scs_log(2, "[WgcWindowSource] target window has zero size, deferring start");
+                    diagnostic_log::writef(
+                        "error", "WGC target %s has zero size at startup.",
+                        m_appname);
                     return false;
                 }
 
@@ -573,12 +640,20 @@ namespace sources {
                 //m_session.IsBorderRequired(false); // Disable the windows orange border from capturing
 
                 scs_log(0, "[WgcWindowSource] Source for %s (%s) has started", m_appname, m_apptitle ? m_apptitle : "NO_TITLE");
+                diagnostic_log::writef(
+                    "capture", "WGC source started: %s (%s), %dx%d at %u FPS.",
+                    m_appname, m_apptitle ? m_apptitle : "no title",
+                    m_lastSize.Width, m_lastSize.Height,
+                    static_cast<unsigned>(m_framerate.load()));
 
                 return true;
             }
             catch (const winrt::hresult_error& e)
             {
                 scs_log(2, "[WgcWindowSource] Start failed: 0x%08X %ls", e.code().value, e.message().c_str());
+                diagnostic_log::writef(
+                    "error", "WGC start for %s failed (HRESULT 0x%08X).",
+                    m_appname, static_cast<unsigned>(e.code().value));
                 return false;
             }
         }

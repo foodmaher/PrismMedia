@@ -5,7 +5,8 @@
 | Method | Typical impact | Supported content | Notes |
 | --- | --- | --- | --- |
 | Native Direct Media | Lowest | Local video files and direct media/stream URLs | Media Foundation hardware decode; bypasses window capture |
-| Integrated Media Client | Low to medium | YouTube videos/playlists, direct URLs | Recommended for YouTube; removes the full browser but retains one optimized WGC transfer |
+| Integrated Media Client: YouTube / Spotify Embed | Low to medium | YouTube videos/playlists, Spotify, direct URLs | Recommended; removes the full browser but retains one optimized WGC transfer |
+| Integrated Media Client: Full Spotify Web | Medium to high | Normal Spotify website with persistent login | Experimental; full page and DRM/compositor behavior cost more than Embed |
 | Window Capture | Medium to high | Any visible application | Maximum compatibility; the external app and capture path both consume resources |
 
 YouTube page URLs must use the Integrated Media Client. The plugin does not
@@ -53,12 +54,24 @@ This is normally sufficient for a GPS or dashboard-sized display.
   source-worker CPU time, GPU readback time, delivered FPS, and dropped frames.
   The FPS-loss value is estimated from measured render-thread cost; decoder/GPU
   contention cannot be converted into an exact FPS number on every system.
+- The FPS-loss estimate is smoothed over about 2.5 seconds. Open the nested
+  **CPU logical-processor activity** list only when investigating scheduling.
+  Its red/green/yellow display is a two-second sample of the game render thread
+  and in-process plugin workers, not a full ETW trace of every game/WebView2
+  thread.
+- Pink-frame detection samples only 20 pixels once per second. Other render
+  diagnostics are state-change or ten-second events written asynchronously, so
+  logging does not add another capture/readback pass.
 
 ## Media controls and hotkeys
 
 Play/Pause, Next, Previous, Mute, Volume Up, and Volume Down are available in
 the in-game menu. Every action can be rebound to a key or key combination and
 the bindings persist in `%LOCALAPPDATA%\PrismTextureStreamerFB\config.ini`.
+
+XInput gamepad chords are also persistent and poll at no more than 125 Hz only
+when enabled. Each command can combine None/LB/RB/LT/RT with a face button,
+D-pad, trigger, bumper, stick click, or left/right-stick direction.
 
 For YouTube playlists, Next and Previous change playlist items. For native
 direct media, they seek forward or backward by 30 seconds.

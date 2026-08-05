@@ -156,6 +156,40 @@ namespace settings {
                 section.c_str(), "Shift", binding.shift ? 1 : 0, path.c_str()) != 0;
         }
 
+        g_gamepad_hotkeys_enabled = GetPrivateProfileIntA(
+            "Gamepad", "Enabled", g_gamepad_hotkeys_enabled ? 1 : 0,
+            path.c_str()) != 0;
+        g_gamepad_controller_index = static_cast<int>((std::clamp)(
+            GetPrivateProfileIntA(
+                "Gamepad", "Controller",
+                static_cast<UINT>(g_gamepad_controller_index + 1),
+                path.c_str()),
+            0U, 4U)) - 1;
+        g_gamepad_axis_threshold = (std::clamp)(
+            read_float(
+                path, "Gamepad", "AxisThreshold",
+                g_gamepad_axis_threshold),
+            0.20f, 0.95f);
+        for (size_t bindingIndex = 0;
+            bindingIndex < g_media_gamepad_hotkeys.size(); ++bindingIndex)
+        {
+            const std::string section =
+                "GamepadHotkey" + std::to_string(bindingIndex);
+            auto& binding = g_media_gamepad_hotkeys[bindingIndex];
+            binding.modifier = static_cast<gamepad_modifier_t>((std::clamp)(
+                GetPrivateProfileIntA(
+                    section.c_str(), "Modifier",
+                    static_cast<UINT>(binding.modifier), path.c_str()),
+                0U,
+                static_cast<UINT>(gamepad_modifier_t::COUNT) - 1));
+            binding.input = static_cast<gamepad_input_t>((std::clamp)(
+                GetPrivateProfileIntA(
+                    section.c_str(), "Input",
+                    static_cast<UINT>(binding.input), path.c_str()),
+                0U,
+                static_cast<UINT>(gamepad_input_t::COUNT) - 1));
+        }
+
         {
             std::lock_guard<std::mutex> environmentLock(
                 g_environment_audio_settings_mutex);
@@ -227,6 +261,16 @@ namespace settings {
                     static_cast<UINT>(media_service_t::YOUTUBE),
                     path.c_str()),
                 0U, static_cast<UINT>(media_service_t::SPOTIFY)));
+            screen.spotifyPlaybackMode =
+                static_cast<spotify_playback_mode_t>((std::clamp)(
+                    GetPrivateProfileIntA(
+                        section.c_str(), "SpotifyPlaybackMode",
+                        static_cast<UINT>(
+                            spotify_playback_mode_t::EMBED),
+                        path.c_str()),
+                    0U,
+                    static_cast<UINT>(
+                        spotify_playback_mode_t::FULL_WEB_PLAYER)));
             screen.youtubeUrls =
                 read_url_list(path, section, "YouTubeUrl");
             screen.spotifyUrls =
@@ -430,7 +474,10 @@ namespace settings {
                 screen.source = sources::CreateMediaClientSource(
                     screen.mediaUrl, screen.framerate,
                     screen.targetLiveTextureWidth,
-                    screen.targetLiveTextureHeight);
+                    screen.targetLiveTextureHeight,
+                    screen.mediaService == media_service_t::SPOTIFY &&
+                        screen.spotifyPlaybackMode ==
+                            spotify_playback_mode_t::FULL_WEB_PLAYER);
                 g_screen_source_creation_in_progress = false;
             }
             else if (screen.contentMode == content_mode_t::NATIVE_DIRECT_MEDIA &&
@@ -466,6 +513,7 @@ namespace settings {
 
             if (screen.source)
             {
+                screen.sourceCreatedTick = GetTickCount64();
                 screen.source->SetPaused(screen.paused);
                 screen.source->SetSourceBrightness(screen.brightness);
             }
@@ -526,7 +574,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 14);
+        write_number(temporaryPath, "General", "Version", 15);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
@@ -537,6 +585,29 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "Control", binding.control ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "Alt", binding.alt ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "Shift", binding.shift ? 1 : 0);
+        }
+
+        write_number(
+            temporaryPath, "Gamepad", "Enabled",
+            g_gamepad_hotkeys_enabled ? 1 : 0);
+        write_number(
+            temporaryPath, "Gamepad", "Controller",
+            static_cast<uint32_t>(g_gamepad_controller_index + 1));
+        write_float(
+            temporaryPath, "Gamepad", "AxisThreshold",
+            g_gamepad_axis_threshold);
+        for (size_t bindingIndex = 0;
+            bindingIndex < g_media_gamepad_hotkeys.size(); ++bindingIndex)
+        {
+            const std::string section =
+                "GamepadHotkey" + std::to_string(bindingIndex);
+            const auto& binding = g_media_gamepad_hotkeys[bindingIndex];
+            write_number(
+                temporaryPath, section.c_str(), "Modifier",
+                static_cast<uint32_t>(binding.modifier));
+            write_number(
+                temporaryPath, section.c_str(), "Input",
+                static_cast<uint32_t>(binding.input));
         }
 
 		environment_audio_settings_t environmentSettings;
@@ -637,6 +708,9 @@ namespace settings {
             write_number(
                 temporaryPath, section.c_str(), "MediaService",
                 static_cast<uint32_t>(screen.mediaService));
+            write_number(
+                temporaryPath, section.c_str(), "SpotifyPlaybackMode",
+                static_cast<uint32_t>(screen.spotifyPlaybackMode));
             write_number(
                 temporaryPath, section.c_str(), "SelectedYouTubeUrl",
                 screen.selectedYoutubeUrl);

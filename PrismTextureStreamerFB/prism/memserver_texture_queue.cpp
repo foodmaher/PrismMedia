@@ -5,6 +5,7 @@
 #include "../scs_logging.h"
 using namespace scs_logging;
 
+#include "../diagnostic_log.h"
 #include "../screens.h"
 
 typedef char(__fastcall* memserver_texture_queue_processor_t)(uint8_t* memserver);
@@ -36,6 +37,16 @@ char memserver_texture_queue_processor(uint8_t* memserver)
                         static_cast<uint32_t>(screen.override_texture.size());
 
                     scs_log(0, "[prism::memserver_texture_queue] Replaced '%s' with '%s'", screen.original_texture.c_str(), screen.override_texture.c_str());
+                    const uint64_t now = GetTickCount64();
+                    if (screen.lastTextureRedirectTick == 0 ||
+                        now - screen.lastTextureRedirectTick >= 5000)
+                    {
+                        diagnostic_log::writef(
+                            "render", "Redirected game texture %s to %s.",
+                            screen.original_texture.c_str(),
+                            screen.override_texture.c_str());
+                        screen.lastTextureRedirectTick = now;
+                    }
                 }
             }
 

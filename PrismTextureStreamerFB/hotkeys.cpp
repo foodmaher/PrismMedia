@@ -2,10 +2,14 @@
 #include "hotkeys.h"
 
 #include "screens.h"
+#include "diagnostic_log.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <mutex>
+#include <Xinput.h>
 
 size_t media_command_index(media_command_t command)
 {
@@ -62,6 +66,52 @@ std::string hotkey_name(const hotkey_binding_t& binding)
     return result + "VK " + std::to_string(binding.virtualKey);
 }
 
+const char* gamepad_modifier_name(gamepad_modifier_t modifier)
+{
+    switch (modifier)
+    {
+    case gamepad_modifier_t::NONE: return "None";
+    case gamepad_modifier_t::LEFT_BUMPER: return "LB";
+    case gamepad_modifier_t::RIGHT_BUMPER: return "RB";
+    case gamepad_modifier_t::LEFT_TRIGGER: return "LT";
+    case gamepad_modifier_t::RIGHT_TRIGGER: return "RT";
+    case gamepad_modifier_t::COUNT: break;
+    }
+    return "Unknown";
+}
+
+const char* gamepad_input_name(gamepad_input_t input)
+{
+    switch (input)
+    {
+    case gamepad_input_t::NONE: return "Unassigned";
+    case gamepad_input_t::A: return "A";
+    case gamepad_input_t::B: return "B";
+    case gamepad_input_t::X: return "X";
+    case gamepad_input_t::Y: return "Y";
+    case gamepad_input_t::DPAD_UP: return "D-pad Up";
+    case gamepad_input_t::DPAD_DOWN: return "D-pad Down";
+    case gamepad_input_t::DPAD_LEFT: return "D-pad Left";
+    case gamepad_input_t::DPAD_RIGHT: return "D-pad Right";
+    case gamepad_input_t::LEFT_STICK_CLICK: return "Left Stick Click";
+    case gamepad_input_t::RIGHT_STICK_CLICK: return "Right Stick Click";
+    case gamepad_input_t::LEFT_STICK_UP: return "Left Stick Up";
+    case gamepad_input_t::LEFT_STICK_DOWN: return "Left Stick Down";
+    case gamepad_input_t::LEFT_STICK_LEFT: return "Left Stick Left";
+    case gamepad_input_t::LEFT_STICK_RIGHT: return "Left Stick Right";
+    case gamepad_input_t::RIGHT_STICK_UP: return "Right Stick Up";
+    case gamepad_input_t::RIGHT_STICK_DOWN: return "Right Stick Down";
+    case gamepad_input_t::RIGHT_STICK_LEFT: return "Right Stick Left";
+    case gamepad_input_t::RIGHT_STICK_RIGHT: return "Right Stick Right";
+    case gamepad_input_t::LEFT_TRIGGER: return "LT";
+    case gamepad_input_t::RIGHT_TRIGGER: return "RT";
+    case gamepad_input_t::LEFT_BUMPER: return "LB";
+    case gamepad_input_t::RIGHT_BUMPER: return "RB";
+    case gamepad_input_t::COUNT: break;
+    }
+    return "Unknown";
+}
+
 bool dispatch_media_command(
     screen_t& screen,
     media_command_t command)
@@ -73,6 +123,7 @@ bool dispatch_media_command(
     const bool changeSpotifyLink =
         screen.contentMode == content_mode_t::INTEGRATED_MEDIA &&
         screen.mediaService == media_service_t::SPOTIFY &&
+        screen.spotifyPlaybackMode == spotify_playback_mode_t::EMBED &&
         (command == media_command_t::NEXT ||
             command == media_command_t::PREVIOUS);
     if (!changeSpotifyLink)
@@ -97,6 +148,30 @@ bool dispatch_media_command(
 }
 
 namespace {
+    using XInputGetState_t = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);
+
+    XInputGetState_t load_xinput_get_state()
+    {
+        static XInputGetState_t function = []() -> XInputGetState_t
+        {
+            const char* libraries[] = {
+                "xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll"
+            };
+            for (const char* library : libraries)
+            {
+                const HMODULE module = LoadLibraryA(library);
+                if (!module)
+                    continue;
+                const auto result = reinterpret_cast<XInputGetState_t>(
+                    GetProcAddress(module, "XInputGetState"));
+                if (result)
+                    return result;
+            }
+            return nullptr;
+        }();
+        return function;
+    }
+
     bool binding_pressed(const hotkey_binding_t& binding)
     {
         if (binding.virtualKey == 0)
@@ -143,6 +218,201 @@ namespace {
             }
         }
     }
+
+    bool button_down(const XINPUT_GAMEPAD& pad, WORD button)
+    {
+        return (pad.wButtons & button) != 0;
+    }
+
+    bool trigger_down(BYTE value)
+    {
+        return value >= static_cast<BYTE>((std::clamp)(
+            g_gamepad_axis_threshold, 0.20f, 0.95f) * 255.0f);
+    }
+
+    bool positive_axis(SHORT value)
+    {
+        return value >= static_cast<SHORT>((std::clamp)(
+            g_gamepad_axis_threshold, 0.20f, 0.95f) * 32767.0f);
+    }
+
+    bool negative_axis(SHORT value)
+    {
+        return value <= static_cast<SHORT>(-(std::clamp)(
+            g_gamepad_axis_threshold, 0.20f, 0.95f) * 32767.0f);
+    }
+
+    bool modifier_down(
+        const XINPUT_GAMEPAD& pad,
+        gamepad_modifier_t modifier)
+    {
+        switch (modifier)
+        {
+        case gamepad_modifier_t::NONE: return true;
+        case gamepad_modifier_t::LEFT_BUMPER:
+            return button_down(pad, XINPUT_GAMEPAD_LEFT_SHOULDER);
+        case gamepad_modifier_t::RIGHT_BUMPER:
+            return button_down(pad, XINPUT_GAMEPAD_RIGHT_SHOULDER);
+        case gamepad_modifier_t::LEFT_TRIGGER:
+            return trigger_down(pad.bLeftTrigger);
+        case gamepad_modifier_t::RIGHT_TRIGGER:
+            return trigger_down(pad.bRightTrigger);
+        case gamepad_modifier_t::COUNT: break;
+        }
+        return false;
+    }
+
+    bool input_down(const XINPUT_GAMEPAD& pad, gamepad_input_t input)
+    {
+        switch (input)
+        {
+        case gamepad_input_t::NONE: return false;
+        case gamepad_input_t::A:
+            return button_down(pad, XINPUT_GAMEPAD_A);
+        case gamepad_input_t::B:
+            return button_down(pad, XINPUT_GAMEPAD_B);
+        case gamepad_input_t::X:
+            return button_down(pad, XINPUT_GAMEPAD_X);
+        case gamepad_input_t::Y:
+            return button_down(pad, XINPUT_GAMEPAD_Y);
+        case gamepad_input_t::DPAD_UP:
+            return button_down(pad, XINPUT_GAMEPAD_DPAD_UP);
+        case gamepad_input_t::DPAD_DOWN:
+            return button_down(pad, XINPUT_GAMEPAD_DPAD_DOWN);
+        case gamepad_input_t::DPAD_LEFT:
+            return button_down(pad, XINPUT_GAMEPAD_DPAD_LEFT);
+        case gamepad_input_t::DPAD_RIGHT:
+            return button_down(pad, XINPUT_GAMEPAD_DPAD_RIGHT);
+        case gamepad_input_t::LEFT_STICK_CLICK:
+            return button_down(pad, XINPUT_GAMEPAD_LEFT_THUMB);
+        case gamepad_input_t::RIGHT_STICK_CLICK:
+            return button_down(pad, XINPUT_GAMEPAD_RIGHT_THUMB);
+        case gamepad_input_t::LEFT_STICK_UP:
+            return positive_axis(pad.sThumbLY);
+        case gamepad_input_t::LEFT_STICK_DOWN:
+            return negative_axis(pad.sThumbLY);
+        case gamepad_input_t::LEFT_STICK_LEFT:
+            return negative_axis(pad.sThumbLX);
+        case gamepad_input_t::LEFT_STICK_RIGHT:
+            return positive_axis(pad.sThumbLX);
+        case gamepad_input_t::RIGHT_STICK_UP:
+            return positive_axis(pad.sThumbRY);
+        case gamepad_input_t::RIGHT_STICK_DOWN:
+            return negative_axis(pad.sThumbRY);
+        case gamepad_input_t::RIGHT_STICK_LEFT:
+            return negative_axis(pad.sThumbRX);
+        case gamepad_input_t::RIGHT_STICK_RIGHT:
+            return positive_axis(pad.sThumbRX);
+        case gamepad_input_t::LEFT_TRIGGER:
+            return trigger_down(pad.bLeftTrigger);
+        case gamepad_input_t::RIGHT_TRIGGER:
+            return trigger_down(pad.bRightTrigger);
+        case gamepad_input_t::LEFT_BUMPER:
+            return button_down(pad, XINPUT_GAMEPAD_LEFT_SHOULDER);
+        case gamepad_input_t::RIGHT_BUMPER:
+            return button_down(pad, XINPUT_GAMEPAD_RIGHT_SHOULDER);
+        case gamepad_input_t::COUNT: break;
+        }
+        return false;
+    }
+
+    bool read_gamepad(XINPUT_STATE& state, DWORD& controller)
+    {
+        const XInputGetState_t getState = load_xinput_get_state();
+        if (!getState)
+            return false;
+
+        if (g_gamepad_controller_index >= 0 &&
+            g_gamepad_controller_index < XUSER_MAX_COUNT)
+        {
+            controller = static_cast<DWORD>(g_gamepad_controller_index);
+            return getState(controller, &state) == ERROR_SUCCESS;
+        }
+
+        for (DWORD index = 0; index < XUSER_MAX_COUNT; ++index)
+        {
+            XINPUT_STATE candidate{};
+            if (getState(index, &candidate) != ERROR_SUCCESS)
+                continue;
+            state = candidate;
+            controller = index;
+            return true;
+        }
+        return false;
+    }
+
+    void process_gamepad_bindings()
+    {
+        static std::array<bool, 6> wasDown{};
+        static std::array<uint64_t, 6> pressedAt{};
+        static std::array<uint64_t, 6> repeatedAt{};
+        static int lastController = -2;
+        static uint64_t lastPollTick{};
+
+        if (!g_gamepad_hotkeys_enabled)
+        {
+            wasDown.fill(false);
+            return;
+        }
+
+        const uint64_t now = GetTickCount64();
+        if (lastPollTick != 0 && now - lastPollTick < 8)
+            return;
+        lastPollTick = now;
+
+        XINPUT_STATE state{};
+        DWORD controller{};
+        if (!read_gamepad(state, controller))
+        {
+            wasDown.fill(false);
+            if (lastController != -1)
+            {
+                diagnostic_log::write(
+                    "input", "Configured gamepad is not connected.");
+                lastController = -1;
+            }
+            return;
+        }
+        if (lastController != static_cast<int>(controller))
+        {
+            diagnostic_log::writef(
+                "input", "Using XInput controller %lu for media chords.",
+                static_cast<unsigned long>(controller + 1));
+            lastController = static_cast<int>(controller);
+        }
+
+        for (size_t index = 0; index < g_media_gamepad_hotkeys.size(); ++index)
+        {
+            const auto& binding = g_media_gamepad_hotkeys[index];
+            const bool down = modifier_down(state.Gamepad, binding.modifier) &&
+                input_down(state.Gamepad, binding.input);
+            const bool volumeCommand =
+                index == media_command_index(media_command_t::VOLUME_UP) ||
+                index == media_command_index(media_command_t::VOLUME_DOWN);
+            bool fire = down && !wasDown[index];
+            if (fire)
+            {
+                pressedAt[index] = now;
+                repeatedAt[index] = now;
+            }
+            else if (down && volumeCommand &&
+                now >= pressedAt[index] + 450 &&
+                now >= repeatedAt[index] + 150)
+            {
+                fire = true;
+                repeatedAt[index] = now;
+            }
+            if (fire)
+            {
+                const auto command = static_cast<media_command_t>(index);
+                dispatch(command);
+                diagnostic_log::writef(
+                    "input", "Gamepad media command: %s.",
+                    media_command_name(command));
+            }
+            wasDown[index] = down;
+        }
+    }
 }
 
 void process_media_hotkeys(bool menu_visible)
@@ -161,4 +431,6 @@ void process_media_hotkeys(bool menu_visible)
         if (binding_pressed(binding))
             dispatch(static_cast<media_command_t>(i));
     }
+
+    process_gamepad_bindings();
 }

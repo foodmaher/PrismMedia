@@ -385,14 +385,16 @@ namespace PrismMediaClient
         }
 
         private static int ApplySoftCpuHintsToProcess(
-            int processId, IReadOnlyList<uint> processors)
+            uint processId, IReadOnlyList<uint> processors)
         {
-            if (processId <= 0 || processors == null || processors.Count == 0)
+            if (processId == 0 || processId > Int32.MaxValue ||
+                processors == null || processors.Count == 0)
                 return 0;
             int applied = 0;
             try
             {
-                using (Process process = Process.GetProcessById(processId))
+                using (Process process = Process.GetProcessById(
+                    unchecked((int)processId)))
                 {
                     int index = 0;
                     foreach (ProcessThread thread in process.Threads)
@@ -442,7 +444,7 @@ namespace PrismMediaClient
                 return;
 
             int helperThreads = ApplySoftCpuHintsToProcess(
-                Process.GetCurrentProcess().Id, processors);
+                unchecked((uint)Process.GetCurrentProcess().Id), processors);
             int browserThreads = webView.CoreWebView2 == null
                 ? 0
                 : ApplySoftCpuHintsToProcess(

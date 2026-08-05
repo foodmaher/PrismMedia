@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.9.3-spotify-detached-audio";
+inline const char* g_version = "3.9.4-media-controls-updates";

@@ -27,6 +27,7 @@ using namespace scs_logging;
 #include "../telemetry_state.h"
 #include "../thread_scheduling.h"
 #include "../environment_audio.h"
+#include "../update_checker.h"
 #include "../sources/media_client.h"
 #include "../sources/native_media.h"
 #include "../sources/reverse_camera.h"
@@ -313,9 +314,49 @@ void on_frame()
 		set_menu_visibility(!menu_visible.load());
 	wasPressed = isPressed;
 
+	if (!menu_visible.load() && update_checker::should_show_toast())
+	{
+		const ImGuiViewport* viewport = ImGui::GetMainViewport();
+		ImGui::SetNextWindowPos(
+			ImVec2(
+				viewport->WorkPos.x + viewport->WorkSize.x - 18.0f,
+				viewport->WorkPos.y + 18.0f),
+			ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+		ImGui::SetNextWindowBgAlpha(0.92f);
+		ImGui::Begin(
+			"##prism_update_toast", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize |
+			ImGuiWindowFlags_NoDecoration |
+			ImGuiWindowFlags_NoInputs |
+			ImGuiWindowFlags_NoNav |
+			ImGuiWindowFlags_NoSavedSettings);
+		ImGui::TextColored(
+			ImVec4(0.35f, 0.95f, 0.45f, 1.0f),
+			"PrismTextureStreamer update available: %s",
+			update_checker::latest_tag().c_str());
+		ImGui::TextUnformatted(
+			"Open the plugin menu (Ctrl+F8) for the download page.");
+		ImGui::End();
+	}
+
 	if (menu_visible.load()) {
 		ImGui::SetNextWindowSizeConstraints(ImVec2(680, 350), ImVec2(1000, 900));
 		ImGui::Begin(("Prism3D Texture Streamer v" + std::string(g_version)).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
+
+		if (update_checker::update_available() &&
+			!update_checker::is_dismissed())
+		{
+			ImGui::TextColored(
+				ImVec4(0.35f, 0.95f, 0.45f, 1.0f),
+				"New version available: %s (installed: %s)",
+				update_checker::latest_tag().c_str(), g_version);
+			if (ImGui::Button("Open GitHub Releases"))
+				update_checker::open_releases_page();
+			ImGui::SameLine();
+			if (ImGui::Button("Dismiss for this session"))
+				update_checker::dismiss();
+			ImGui::Separator();
+		}
 
 		static bool unsavedChanges = false;
 		static bool hasGps = false;

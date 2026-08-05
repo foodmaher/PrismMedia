@@ -20,6 +20,7 @@
 #include "diagnostic_log.h"
 #include "environment_audio.h"
 #include "thread_scheduling.h"
+#include "update_checker.h"
 
 #include <algorithm>
 #include <cmath>
@@ -830,6 +831,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
     Gui::init();
 
     settings::load();
+    update_checker::start();
 
     diagnostic_log::write("session", "Plugin initialization completed.");
     scs_log(0, "Plugin Started");
@@ -840,6 +842,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 SCSAPI_VOID scs_telemetry_shutdown()
 {
     diagnostic_log::write("session", "Plugin shutdown started.");
+    update_checker::shutdown();
     settings::save();
     environment_audio::reset();
     {

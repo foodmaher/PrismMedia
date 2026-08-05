@@ -18,6 +18,7 @@
         attached: new WeakSet(),
         observedMedia: new Set(),
         observedReported: new WeakSet(),
+        playbackTracked: new WeakSet(),
         unsafeReported: new WeakSet(),
         failedReported: new WeakSet(),
         destinationGraphs: new WeakMap(),
@@ -41,6 +42,24 @@
         if (!media)
             return;
         state.observedMedia.add(media);
+        if (!state.playbackTracked.has(media)) {
+            state.playbackTracked.add(media);
+            const reportPlaybackState = () => {
+                try {
+                    if (window.chrome && window.chrome.webview) {
+                        window.chrome.webview.postMessage(
+                            "log|spotify|Observed media state: " +
+                            (!media.paused && !media.ended
+                                ? "playing" : "paused") + ".");
+                    }
+                } catch (_) {
+                    // Playback reporting must not affect the media element.
+                }
+            };
+            media.addEventListener("play", reportPlaybackState);
+            media.addEventListener("pause", reportPlaybackState);
+            media.addEventListener("ended", reportPlaybackState);
+        }
         if (!state.observedReported.has(media)) {
             state.observedReported.add(media);
             report("Observed a media element through " + reason +
@@ -66,6 +85,31 @@
             return nativeMediaLoad.apply(this, arguments);
         };
     }
+
+    window.prismGetPlaybackState = () => {
+        let observed = false;
+        for (const media of state.observedMedia) {
+            observed = true;
+            if (!media.paused && !media.ended)
+                return "playing";
+        }
+        return observed ? "paused" : "unknown";
+    };
+
+    window.prismAdjustObservedVolume = delta => {
+        let changed = false;
+        const amount = Number(delta) || 0;
+        for (const media of state.observedMedia) {
+            try {
+                media.volume = Math.max(
+                    0, Math.min(1, Number(media.volume) + amount));
+                changed = true;
+            } catch (_) {
+                // Protected elements can reject direct volume changes.
+            }
+        }
+        return changed;
+    };
 
     function configureFilter(filter, context) {
         filter.type = state.enabled ? "lowpass" : "allpass";

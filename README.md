@@ -110,9 +110,17 @@ performance statistics.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
 
-## Version 3.9.3 Spotify detached-audio filter, session and backups
+## Version 3.9.4 media controls and update notifications
 
-Version `3.9.3-spotify-detached-audio` makes Spotify Full Web receive the same
+Version `3.9.4-media-controls-updates` fixes single-press Spotify Play/Pause,
+Next and Previous behavior by synchronizing commands with the observed media
+state and retrying once only when Spotify is rebuilding a disabled control.
+Spotify volume changes now use the native input setter required by React, with
+a direct observed-media fallback. A non-blocking startup check compares the
+installed semantic version with the latest GitHub release and shows an in-game
+toast plus an **Open GitHub Releases** menu action when an update is available.
+
+Version 3.9.3 makes Spotify Full Web receive the same
 dynamic outside low-pass processing as YouTube. It remembers audio elements at
 their `play()` and `load()` boundary even when Spotify keeps them detached from
 the visible DOM, then routes those remembered elements through the adaptive

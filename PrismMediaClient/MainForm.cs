@@ -683,48 +683,52 @@ namespace PrismMediaClient
                 " helper and " + browserThreads + " browser threads.");
         }
 
-        private async Task<bool> TrySpotifyDomCommandAsync(string command)
+        private async Task<int> TrySpotifyDomCommandAsync(string command)
         {
             string script;
             switch (command)
             {
                 case "playpause":
-                    script = "(() => { const b=document.querySelector('[data-testid=\"control-button-playpause\"]'); if(!b)return false; b.click(); return true; })()";
+                    script = "(() => { const b=document.querySelector('[data-testid=\"control-button-playpause\"]'); if(!b||b.disabled||b.getAttribute('aria-disabled')==='true')return 0; const s=window.prismGetPlaybackState?window.prismGetPlaybackState():(navigator.mediaSession&&navigator.mediaSession.playbackState)||'unknown'; b.click(); return s==='playing'?2:(s==='paused'?3:1); })()";
                     break;
                 case "play":
-                    script = "(() => { const b=document.querySelector('[data-testid=\"control-button-playpause\"]'); if(!b)return false; const a=(b.getAttribute('aria-label')||'').toLowerCase(); if(a.includes('play'))b.click(); return true; })()";
+                    script = "(() => { const b=document.querySelector('[data-testid=\"control-button-playpause\"]'); if(!b||b.disabled||b.getAttribute('aria-disabled')==='true')return 0; const s=window.prismGetPlaybackState?window.prismGetPlaybackState():(navigator.mediaSession&&navigator.mediaSession.playbackState)||'unknown'; if(s==='playing')return 3; const a=(b.getAttribute('aria-label')||'').toLowerCase(); if(s==='paused'||a.includes('play')){b.click();return 3;} return 0; })()";
                     break;
                 case "pause":
-                    script = "(() => { const b=document.querySelector('[data-testid=\"control-button-playpause\"]'); if(!b)return false; const a=(b.getAttribute('aria-label')||'').toLowerCase(); if(a.includes('pause'))b.click(); return true; })()";
+                    script = "(() => { const b=document.querySelector('[data-testid=\"control-button-playpause\"]'); if(!b||b.disabled||b.getAttribute('aria-disabled')==='true')return 0; const s=window.prismGetPlaybackState?window.prismGetPlaybackState():(navigator.mediaSession&&navigator.mediaSession.playbackState)||'unknown'; if(s==='paused')return 2; const a=(b.getAttribute('aria-label')||'').toLowerCase(); if(s==='playing'||a.includes('pause')){b.click();return 2;} return 0; })()";
                     break;
                 case "next":
-                    script = "(() => { const b=document.querySelector('[data-testid=\"control-button-skip-forward\"]'); if(!b)return false; b.click(); return true; })()";
+                    script = "(() => { const b=document.querySelector('[data-testid=\"control-button-skip-forward\"]'); if(!b||b.disabled||b.getAttribute('aria-disabled')==='true')return 0; b.click(); return 1; })()";
                     break;
                 case "previous":
-                    script = "(() => { const b=document.querySelector('[data-testid=\"control-button-skip-back\"]'); if(!b)return false; b.click(); return true; })()";
+                    script = "(() => { const b=document.querySelector('[data-testid=\"control-button-skip-back\"]'); if(!b||b.disabled||b.getAttribute('aria-disabled')==='true')return 0; b.click(); return 1; })()";
                     break;
                 case "mute":
-                    script = "(() => { const b=document.querySelector('[data-testid=\"volume-bar-toggle-mute-button\"]'); if(!b)return false; b.click(); return true; })()";
+                    script = "(() => { const b=document.querySelector('[data-testid=\"volume-bar-toggle-mute-button\"]'); if(!b||b.disabled)return 0; b.click(); return 1; })()";
                     break;
                 case "volumeup":
                 case "volumedown":
                 {
                     int direction = command == "volumeup" ? 1 : -1;
-                    script = "(() => { const s=document.querySelector('[data-testid=\"volume-bar\"] input, input[type=\"range\"][aria-label*=\"volume\" i]'); if(!s)return false; const lo=Number(s.min||0), hi=Number(s.max||1), step=(hi-lo)*0.05; s.value=Math.max(lo,Math.min(hi,Number(s.value)+(" + direction + ")*step)); s.dispatchEvent(new Event('input',{bubbles:true})); s.dispatchEvent(new Event('change',{bubbles:true})); return true; })()";
+                    script = "(() => { const d=(" + direction + ")*0.05; const s=document.querySelector('input[data-testid=\"volume-bar\"], [data-testid=\"volume-bar\"] input, input[type=\"range\"][aria-label*=\"volume\" i]'); if(!s)return window.prismAdjustObservedVolume&&window.prismAdjustObservedVolume(d)?1:0; const lo=Number(s.min||0),hi=Number(s.max||1),step=(hi-lo)*0.05,next=Math.max(lo,Math.min(hi,Number(s.value)+(" + direction + ")*step)); const p=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value'); if(!p||!p.set)return 0; p.set.call(s,next); s.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertReplacementText',data:String(next)})); s.dispatchEvent(new Event('change',{bubbles:true})); return 1; })()";
                     break;
                 }
                 default:
-                    return false;
+                    return 0;
             }
 
             try
             {
                 string result = await webView.CoreWebView2.ExecuteScriptAsync(script);
-                bool handled = string.Equals(
-                    result, "true", StringComparison.OrdinalIgnoreCase);
+                int handled = 0;
+                int.TryParse(
+                    result, NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out handled);
                 ClientDiagnosticLog.Write(
                     "spotify", "DOM command " + command +
-                    (handled ? " succeeded." : " did not find its control."));
+                    (handled != 0
+                        ? " succeeded (state=" + handled + ")."
+                        : " did not find an enabled control."));
                 return handled;
             }
             catch (Exception error)
@@ -732,7 +736,7 @@ namespace PrismMediaClient
                 ClientDiagnosticLog.Write(
                     "error", "Spotify DOM command " + command +
                     " failed: " + error.Message);
-                return false;
+                return 0;
             }
         }
 
@@ -749,8 +753,11 @@ namespace PrismMediaClient
             }
             else if (name == "playpause")
             {
-                userWantsPlayback = !userWantsPlayback;
-                name = userWantsPlayback && vehiclePowered ? "play" : "pause";
+                if (!vehiclePowered)
+                {
+                    userWantsPlayback = !userWantsPlayback;
+                    name = "pause";
+                }
             }
             else if (name == "play")
             {
@@ -775,9 +782,23 @@ namespace PrismMediaClient
                 return;
             }
 
-            bool handled = await TrySpotifyDomCommandAsync(name);
-            if (handled)
+            int handled = await TrySpotifyDomCommandAsync(name);
+            if (handled == 0)
+            {
+                // Spotify replaces its controls during track transitions.
+                // One short internal retry avoids requiring another physical
+                // key press without ever duplicating a successful click.
+                await Task.Delay(120);
+                handled = await TrySpotifyDomCommandAsync(name);
+            }
+            if (handled != 0)
+            {
+                if (handled == 2)
+                    userWantsPlayback = false;
+                else if (handled == 3)
+                    userWantsPlayback = true;
                 return;
+            }
 
             byte key;
             switch (name)

@@ -93,7 +93,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Runtime\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 3.9.1 Spotify Audio Parity + Session Backups
+          PrismTextureStreamerFB 3.9.2 Spotify Low-Pass Hook + Session Backups
 
           Copy PrismTextureStreamerFB.dll AND the PrismTextureStreamerFB
           folder into:
@@ -112,7 +112,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-3.9.1-spotify-audio-parity
+          name: PrismTextureStreamerFB-3.9.2-spotify-lowpass-hook
           path: package
           if-no-files-found: error
           retention-days: 30

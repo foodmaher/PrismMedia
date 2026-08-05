@@ -2,25 +2,119 @@
     if (window.__prismLowPassState)
         return;
 
+    const AudioContextType = window.AudioContext || window.webkitAudioContext;
+    const audioNodePrototype = window.AudioNode && window.AudioNode.prototype;
+    const nativeConnect = audioNodePrototype && audioNodePrototype.connect;
+    const nativeDisconnect = audioNodePrototype && audioNodePrototype.disconnect;
     const state = {
         enabled: false,
         cutoff: 20000,
-        context: null,
+        directContext: null,
         nodes: [],
         attached: new WeakSet(),
-        attaching: false
+        unsafeReported: new WeakSet(),
+        failedReported: new WeakSet(),
+        destinationGraphs: new WeakMap(),
+        routedOutputs: new WeakMap(),
+        internalNodes: new WeakSet(),
+        attaching: false,
+        lastStateReport: ""
     };
     window.__prismLowPassState = state;
 
+    function report(message) {
+        try {
+            if (window.chrome && window.chrome.webview)
+                window.chrome.webview.postMessage("log|audio|" + message);
+        } catch (_) {
+            // Diagnostics must never affect playback.
+        }
+    }
+
+    function configureFilter(filter, context) {
+        filter.type = state.enabled ? "lowpass" : "allpass";
+        filter.Q.value = 0.707;
+        filter.frequency.setTargetAtTime(
+            state.enabled ? state.cutoff : 20000,
+            context.currentTime,
+            0.035);
+    }
+
+    function registerFilter(filter, context, route) {
+        state.nodes.push({ filter, context, route });
+        configureFilter(filter, context);
+    }
+
     function updateNodes() {
         for (const node of state.nodes) {
-            node.type = state.enabled ? "lowpass" : "allpass";
-            node.Q.value = 0.707;
-            node.frequency.setTargetAtTime(
-                state.enabled ? state.cutoff : 20000,
-                state.context.currentTime,
-                0.035);
+            try {
+                configureFilter(node.filter, node.context);
+            } catch (_) {
+                // A navigation can close an AudioContext asynchronously.
+            }
         }
+    }
+
+    function ensureDestinationGraph(context) {
+        let graph = state.destinationGraphs.get(context);
+        if (graph)
+            return graph;
+
+        const input = context.createGain();
+        const filter = context.createBiquadFilter();
+        state.internalNodes.add(input);
+        state.internalNodes.add(filter);
+
+        // Use Chromium's unmodified connect function so these two internal
+        // connections cannot be intercepted recursively.
+        nativeConnect.call(input, filter);
+        nativeConnect.call(filter, context.destination);
+        graph = { input, filter };
+        state.destinationGraphs.set(context, graph);
+        registerFilter(filter, context, "page-output");
+        report("Attached low-pass to a page-owned Web Audio output graph.");
+        return graph;
+    }
+
+    // Spotify can create and own its MediaElementSource before our fallback
+    // scanner sees the audio element. Intercept only final connections to the
+    // page's AudioDestinationNode and place one shared filter at that output.
+    // YouTube/direct HTML media continues to use attachMedia() below.
+    if (nativeConnect) {
+        audioNodePrototype.connect = function(destination) {
+            if (destination && this.context &&
+                destination === this.context.destination &&
+                !state.internalNodes.has(this)) {
+                try {
+                    const graph = ensureDestinationGraph(this.context);
+                    if (arguments.length >= 2)
+                        nativeConnect.call(this, graph.input, arguments[1]);
+                    else
+                        nativeConnect.call(this, graph.input);
+                    state.routedOutputs.set(this, graph.input);
+                    return destination;
+                } catch (error) {
+                    report("Page-output interception failed; using original route (" +
+                        String(error && error.name || "unknown") + ").");
+                }
+            }
+            return nativeConnect.apply(this, arguments);
+        };
+        report("Web Audio destination hook installed.");
+    }
+
+    // Preserve page disconnect(destination, ...) behavior after replacing its
+    // destination with the shared Prism input node.
+    if (nativeDisconnect) {
+        audioNodePrototype.disconnect = function(destination) {
+            const routed = state.routedOutputs.get(this);
+            if (routed && destination === this.context.destination) {
+                const args = Array.prototype.slice.call(arguments);
+                args[0] = routed;
+                return nativeDisconnect.apply(this, args);
+            }
+            return nativeDisconnect.apply(this, arguments);
+        };
     }
 
     function isSafeToRoute(media) {
@@ -39,21 +133,16 @@
     }
 
     async function attachMedia() {
-        if (!state.enabled || state.attaching)
+        if (!state.enabled || state.attaching || !AudioContextType)
             return;
         state.attaching = true;
         try {
-            if (!state.context) {
-                const AudioContextType =
-                    window.AudioContext || window.webkitAudioContext;
-                if (!AudioContextType)
-                    return;
-                state.context = new AudioContextType();
-            }
+            if (!state.directContext)
+                state.directContext = new AudioContextType();
 
-            if (state.context.state !== "running") {
+            if (state.directContext.state !== "running") {
                 try {
-                    await state.context.resume();
+                    await state.directContext.resume();
                 } catch (_) {
                     return;
                 }
@@ -61,24 +150,40 @@
 
             // Never reroute audio into a suspended graph. This is the
             // fail-safe for autoplay-restricted pages.
-            if (state.context.state !== "running")
+            if (state.directContext.state !== "running")
                 return;
 
             for (const media of document.querySelectorAll("video,audio")) {
-                if (state.attached.has(media) || !isSafeToRoute(media))
+                if (state.attached.has(media))
                     continue;
+                if (!isSafeToRoute(media)) {
+                    if (!state.unsafeReported.has(media)) {
+                        state.unsafeReported.add(media);
+                        report("Media-element fallback skipped an unsafe " +
+                            "cross-origin source; waiting for page-output route.");
+                    }
+                    continue;
+                }
                 try {
                     const source =
-                        state.context.createMediaElementSource(media);
+                        state.directContext.createMediaElementSource(media);
                     const filter =
-                        state.context.createBiquadFilter();
-                    source.connect(filter);
-                    filter.connect(state.context.destination);
-                    state.nodes.push(filter);
+                        state.directContext.createBiquadFilter();
+                    state.internalNodes.add(filter);
+                    nativeConnect.call(source, filter);
+                    nativeConnect.call(filter, state.directContext.destination);
+                    registerFilter(filter, state.directContext, "media-element");
                     state.attached.add(media);
-                } catch (_) {
-                    // A page can already own a MediaElementSource. Leave
-                    // that element untouched and keep its original audio.
+                    report("Attached low-pass directly to a media element.");
+                } catch (error) {
+                    // The page can already own this MediaElementSource. Its
+                    // output is handled by the destination hook above.
+                    if (!state.failedReported.has(media)) {
+                        state.failedReported.add(media);
+                        report("Direct media attachment unavailable (" +
+                            String(error && error.name || "unknown") +
+                            "); waiting for page-output route.");
+                    }
                 }
             }
             updateNodes();
@@ -88,17 +193,40 @@
     }
 
     window.prismSetLowPass = (cutoff, enabled) => {
-        state.cutoff = Math.max(20, Math.min(20000, Number(cutoff) || 20000));
+        state.cutoff = Math.max(
+            20, Math.min(20000, Number(cutoff) || 20000));
         state.enabled = Boolean(enabled) && state.cutoff < 19500;
         updateNodes();
+
+        const reportKey = (state.enabled ? "on:" : "off:") +
+            Math.round(state.cutoff) + ":" + state.nodes.length;
+        if (reportKey !== state.lastStateReport) {
+            state.lastStateReport = reportKey;
+            report("Low-pass state: " +
+                (state.enabled ? "enabled" : "disabled") +
+                ", cutoff=" + Math.round(state.cutoff) +
+                " Hz, attached routes=" + state.nodes.length + ".");
+        }
+
         if (state.enabled)
             void attachMedia();
     };
 
-    new MutationObserver(() => {
+    const mediaObserver = new MutationObserver(() => {
         if (state.enabled)
             void attachMedia();
-    }).observe(document.documentElement, { childList: true, subtree: true });
+    });
+    const observeMediaElements = () => {
+        if (document.documentElement) {
+            mediaObserver.observe(
+                document.documentElement,
+                { childList: true, subtree: true });
+        }
+    };
+    if (document.documentElement)
+        observeMediaElements();
+    else
+        addEventListener("DOMContentLoaded", observeMediaElements, { once: true });
 
     addEventListener("pointerdown", () => void attachMedia(), true);
     addEventListener("keydown", () => void attachMedia(), true);

@@ -411,7 +411,8 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
         diagnostic_log::writef(
             "runtime",
             "driving=%d engine=%d reverse=%d camera=%s speed=%.1fkm/h "
-            "environment=%.3f media_gain=%.3f estimator=%.1fus "
+            "environment=%.3f media_gain=%.3f spatial_gain=%.3f "
+            "cutoff=%.0fHz estimator=%.1fus "
             "background_lp=%ld,%ld,%ld",
             g_telemetry_driving.load() ? 1 : 0,
             g_engine_enabled.load() ? 1 : 0,
@@ -420,6 +421,8 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
             std::fabs(g_truck_speed_mps.load()) * 3.6f,
             g_environment_intensity.load(),
             g_environment_media_gain.load(),
+            g_adaptive_audio_distance_gain.load(),
+            g_adaptive_audio_lowpass_hz.load(),
             g_environment_update_cpu_us.load(),
             processor0 == thread_scheduling::kUnassignedProcessor
                 ? -1L : static_cast<long>(processor0),

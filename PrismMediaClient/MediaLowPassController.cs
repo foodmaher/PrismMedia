@@ -18,6 +18,9 @@ namespace PrismMediaClient
         private float cutoffHz = 20000.0f;
         private bool enabled;
         private bool disposed;
+        private bool lastLoggedEnabled;
+        private float lastLoggedCutoffHz = 20000.0f;
+        private DateTime lastCommandLogUtc = DateTime.MinValue;
 
         internal MediaLowPassController(CoreWebView2 webViewCore)
         {
@@ -37,6 +40,22 @@ namespace PrismMediaClient
             cutoffHz = Math.Max(
                 20.0f, Math.Min(20000.0f, desiredCutoffHz));
             enabled = spatialEnabled && cutoffHz < 19500.0f;
+            DateTime now = DateTime.UtcNow;
+            bool stateChanged = enabled != lastLoggedEnabled;
+            bool cutoffChanged = Math.Abs(
+                cutoffHz - lastLoggedCutoffHz) >= 35.0f;
+            if (stateChanged ||
+                (cutoffChanged &&
+                    (now - lastCommandLogUtc).TotalMilliseconds >= 750.0))
+            {
+                ClientDiagnosticLog.Write(
+                    "audio", "Low-pass command received: enabled=" +
+                    enabled + ", cutoff=" + cutoffHz.ToString(
+                        "0.0", CultureInfo.InvariantCulture) + " Hz.");
+                lastLoggedEnabled = enabled;
+                lastLoggedCutoffHz = cutoffHz;
+                lastCommandLogUtc = now;
+            }
             _ = ApplyEverywhereAsync();
         }
 

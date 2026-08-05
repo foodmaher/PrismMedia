@@ -110,11 +110,13 @@ performance statistics.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
 
-## Version 3.9.1 Spotify audio parity, session and backups
+## Version 3.9.2 Spotify low-pass hook, session and backups
 
-Version `3.9.1-spotify-audio-parity` makes Spotify Full Web receive the same
-dynamic outside low-pass processing as YouTube. The cutoff is reapplied after
-each top-level Spotify navigation without polling or render-thread work.
+Version `3.9.2-spotify-lowpass-hook` makes Spotify Full Web receive the same
+dynamic outside low-pass processing as YouTube. It installs the filter at the
+page-owned Web Audio output when Spotify already owns the media source, while
+retaining direct media-element filtering as a fallback. The helper and plugin
+logs now report the selected cutoff and how many filter routes are attached.
 
 Version 3.9 also fixes the supplied Full Spotify Web Player
 logs: WebView2 is initialized only once, Spotify authentication cookies receive

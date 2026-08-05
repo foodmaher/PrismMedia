@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <mmsystem.h>
 #include <Xinput.h>
 
 size_t media_command_index(media_command_t command)
@@ -149,6 +150,15 @@ bool dispatch_media_command(
 
 namespace {
     using XInputGetState_t = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);
+    using JoyGetPosEx_t = MMRESULT(WINAPI*)(UINT, LPJOYINFOEX);
+    using JoyGetDevCapsW_t = MMRESULT(WINAPI*)(UINT_PTR, LPJOYCAPSW, UINT);
+
+    enum class gamepad_backend_t
+    {
+        NONE,
+        XINPUT,
+        WINDOWS_JOYSTICK
+    };
 
     XInputGetState_t load_xinput_get_state()
     {
@@ -170,6 +180,148 @@ namespace {
             return nullptr;
         }();
         return function;
+    }
+
+    struct winmm_functions_t
+    {
+        JoyGetPosEx_t getPosition{};
+        JoyGetDevCapsW_t getCapabilities{};
+    };
+
+    const winmm_functions_t& load_winmm_functions()
+    {
+        static const winmm_functions_t functions = []
+        {
+            winmm_functions_t result{};
+            const HMODULE module = LoadLibraryW(L"winmm.dll");
+            if (!module)
+                return result;
+            result.getPosition = reinterpret_cast<JoyGetPosEx_t>(
+                GetProcAddress(module, "joyGetPosEx"));
+            result.getCapabilities = reinterpret_cast<JoyGetDevCapsW_t>(
+                GetProcAddress(module, "joyGetDevCapsW"));
+            return result;
+        }();
+        return functions;
+    }
+
+    SHORT normalize_joystick_axis(
+        DWORD value, UINT minimum, UINT maximum, bool invert = false)
+    {
+        if (maximum <= minimum)
+            return 0;
+        const double unit = (std::clamp)(
+            (static_cast<double>(value) - minimum) /
+                (static_cast<double>(maximum) - minimum),
+            0.0, 1.0);
+        double normalized = unit * 2.0 - 1.0;
+        if (invert)
+            normalized = -normalized;
+        return static_cast<SHORT>(std::lround(
+            normalized * 32767.0));
+    }
+
+    BYTE normalize_joystick_trigger(
+        DWORD value, UINT minimum, UINT maximum)
+    {
+        if (maximum <= minimum)
+            return 0;
+        const double unit = (std::clamp)(
+            (static_cast<double>(value) - minimum) /
+                (static_cast<double>(maximum) - minimum),
+            0.0, 1.0);
+        return static_cast<BYTE>(std::lround(unit * 255.0));
+    }
+
+    void map_winmm_buttons(DWORD buttons, WORD& mapped)
+    {
+        struct button_map_t { DWORD source; WORD target; };
+        static constexpr button_map_t map[] = {
+            { 1u << 0, XINPUT_GAMEPAD_A },
+            { 1u << 1, XINPUT_GAMEPAD_B },
+            { 1u << 2, XINPUT_GAMEPAD_X },
+            { 1u << 3, XINPUT_GAMEPAD_Y },
+            { 1u << 4, XINPUT_GAMEPAD_LEFT_SHOULDER },
+            { 1u << 5, XINPUT_GAMEPAD_RIGHT_SHOULDER },
+            { 1u << 6, XINPUT_GAMEPAD_BACK },
+            { 1u << 7, XINPUT_GAMEPAD_START },
+            { 1u << 8, XINPUT_GAMEPAD_LEFT_THUMB },
+            { 1u << 9, XINPUT_GAMEPAD_RIGHT_THUMB }
+        };
+        for (const auto& entry : map)
+            if ((buttons & entry.source) != 0)
+                mapped |= entry.target;
+    }
+
+    void map_winmm_pov(DWORD pov, WORD& mapped)
+    {
+        if (pov == JOY_POVCENTERED || pov > 35999)
+            return;
+        if (pov >= 31500 || pov <= 4500)
+            mapped |= XINPUT_GAMEPAD_DPAD_UP;
+        if (pov >= 4500 && pov <= 13500)
+            mapped |= XINPUT_GAMEPAD_DPAD_RIGHT;
+        if (pov >= 13500 && pov <= 22500)
+            mapped |= XINPUT_GAMEPAD_DPAD_DOWN;
+        if (pov >= 22500 && pov <= 31500)
+            mapped |= XINPUT_GAMEPAD_DPAD_LEFT;
+    }
+
+    bool read_winmm_controller(
+        UINT controller, XINPUT_STATE& state)
+    {
+        static std::array<JOYCAPSW, 16> cachedCapabilities{};
+        static std::array<bool, 16> capabilitiesReady{};
+        const auto& functions = load_winmm_functions();
+        if (controller >= cachedCapabilities.size() ||
+            !functions.getPosition || !functions.getCapabilities)
+            return false;
+
+        JOYINFOEX position{};
+        position.dwSize = sizeof(position);
+        position.dwFlags = JOY_RETURNALL;
+        if (functions.getPosition(controller, &position) != JOYERR_NOERROR)
+        {
+            capabilitiesReady[controller] = false;
+            return false;
+        }
+
+        JOYCAPSW& capabilities = cachedCapabilities[controller];
+        if (!capabilitiesReady[controller])
+        {
+            capabilities = {};
+            if (functions.getCapabilities(
+                controller, &capabilities,
+                sizeof(capabilities)) != JOYERR_NOERROR)
+                return false;
+            capabilitiesReady[controller] = true;
+        }
+
+        XINPUT_GAMEPAD& pad = state.Gamepad;
+        map_winmm_buttons(position.dwButtons, pad.wButtons);
+        if ((capabilities.wCaps & JOYCAPS_HASPOV) != 0)
+            map_winmm_pov(position.dwPOV, pad.wButtons);
+        pad.sThumbLX = normalize_joystick_axis(
+            position.dwXpos, capabilities.wXmin, capabilities.wXmax);
+        pad.sThumbLY = normalize_joystick_axis(
+            position.dwYpos, capabilities.wYmin, capabilities.wYmax, true);
+
+        // Most DirectInput-style pads expose the right stick as Z/R.
+        if ((capabilities.wCaps & JOYCAPS_HASZ) != 0)
+            pad.sThumbRX = normalize_joystick_axis(
+                position.dwZpos, capabilities.wZmin, capabilities.wZmax);
+        if ((capabilities.wCaps & JOYCAPS_HASR) != 0)
+            pad.sThumbRY = normalize_joystick_axis(
+                position.dwRpos, capabilities.wRmin, capabilities.wRmax, true);
+
+        // Separate U/V axes, when present, are treated as analog triggers.
+        if ((capabilities.wCaps & JOYCAPS_HASU) != 0)
+            pad.bLeftTrigger = normalize_joystick_trigger(
+                position.dwUpos, capabilities.wUmin, capabilities.wUmax);
+        if ((capabilities.wCaps & JOYCAPS_HASV) != 0)
+            pad.bRightTrigger = normalize_joystick_trigger(
+                position.dwVpos, capabilities.wVmin, capabilities.wVmax);
+        return true;
     }
 
     bool binding_pressed(const hotkey_binding_t& binding)
@@ -316,28 +468,70 @@ namespace {
         return false;
     }
 
-    bool read_gamepad(XINPUT_STATE& state, DWORD& controller)
+    bool read_gamepad(
+        XINPUT_STATE& state,
+        DWORD& controller,
+        gamepad_backend_t& backend,
+        bool& usedAutomaticFallback)
     {
         const XInputGetState_t getState = load_xinput_get_state();
-        if (!getState)
-            return false;
+        usedAutomaticFallback = false;
 
-        if (g_gamepad_controller_index >= 0 &&
+        if (getState && g_gamepad_controller_index >= 0 &&
             g_gamepad_controller_index < XUSER_MAX_COUNT)
         {
             controller = static_cast<DWORD>(g_gamepad_controller_index);
-            return getState(controller, &state) == ERROR_SUCCESS;
+            if (getState(controller, &state) == ERROR_SUCCESS)
+            {
+                backend = gamepad_backend_t::XINPUT;
+                return true;
+            }
+            usedAutomaticFallback = true;
         }
 
-        for (DWORD index = 0; index < XUSER_MAX_COUNT; ++index)
+        if (getState)
         {
+            for (DWORD index = 0; index < XUSER_MAX_COUNT; ++index)
+            {
+                if (g_gamepad_controller_index >= 0 &&
+                    index == static_cast<DWORD>(g_gamepad_controller_index))
+                    continue;
+                XINPUT_STATE candidate{};
+                if (getState(index, &candidate) != ERROR_SUCCESS)
+                    continue;
+                state = candidate;
+                controller = index;
+                backend = gamepad_backend_t::XINPUT;
+                return true;
+            }
+        }
+
+        // Steam Input and many PlayStation/generic controllers are visible to
+        // the legacy Windows joystick API even when XInput exposes no slot.
+        const UINT preferred = g_gamepad_controller_index >= 0
+            ? static_cast<UINT>(g_gamepad_controller_index)
+            : static_cast<UINT>(-1);
+        if (preferred != static_cast<UINT>(-1) &&
+            read_winmm_controller(preferred, state))
+        {
+            controller = preferred;
+            backend = gamepad_backend_t::WINDOWS_JOYSTICK;
+            return true;
+        }
+        for (UINT index = 0; index < 16; ++index)
+        {
+            if (index == preferred)
+                continue;
             XINPUT_STATE candidate{};
-            if (getState(index, &candidate) != ERROR_SUCCESS)
+            if (!read_winmm_controller(index, candidate))
                 continue;
             state = candidate;
             controller = index;
+            backend = gamepad_backend_t::WINDOWS_JOYSTICK;
+            usedAutomaticFallback = preferred != static_cast<UINT>(-1);
             return true;
         }
+        backend = gamepad_backend_t::NONE;
         return false;
     }
 
@@ -347,6 +541,7 @@ namespace {
         static std::array<uint64_t, 6> pressedAt{};
         static std::array<uint64_t, 6> repeatedAt{};
         static int lastController = -2;
+        static gamepad_backend_t lastBackend = gamepad_backend_t::NONE;
         static uint64_t lastPollTick{};
 
         if (!g_gamepad_hotkeys_enabled)
@@ -356,29 +551,45 @@ namespace {
         }
 
         const uint64_t now = GetTickCount64();
-        if (lastPollTick != 0 && now - lastPollTick < 8)
+        const uint64_t pollInterval = lastController == -1 ? 500 : 16;
+        if (lastPollTick != 0 && now - lastPollTick < pollInterval)
             return;
         lastPollTick = now;
 
         XINPUT_STATE state{};
         DWORD controller{};
-        if (!read_gamepad(state, controller))
+        gamepad_backend_t backend{};
+        bool usedAutomaticFallback{};
+        if (!read_gamepad(
+            state, controller, backend, usedAutomaticFallback))
         {
             wasDown.fill(false);
             if (lastController != -1)
             {
                 diagnostic_log::write(
-                    "input", "Configured gamepad is not connected.");
+                    "input", "No XInput or Windows joystick controller is connected.");
                 lastController = -1;
+                lastBackend = gamepad_backend_t::NONE;
             }
             return;
         }
-        if (lastController != static_cast<int>(controller))
+        if (lastController != static_cast<int>(controller) ||
+            lastBackend != backend)
         {
-            diagnostic_log::writef(
-                "input", "Using XInput controller %lu for media chords.",
-                static_cast<unsigned long>(controller + 1));
+            if (backend == gamepad_backend_t::XINPUT)
+                diagnostic_log::writef(
+                    "input", "%sXInput controller %lu for media chords.",
+                    usedAutomaticFallback ?
+                        "Selected slot unavailable; using " : "Using ",
+                    static_cast<unsigned long>(controller + 1));
+            else
+                diagnostic_log::writef(
+                    "input", "%sWindows joystick controller %lu for media chords.",
+                    usedAutomaticFallback ?
+                        "Selected slot unavailable; using " : "Using ",
+                    static_cast<unsigned long>(controller + 1));
             lastController = static_cast<int>(controller);
+            lastBackend = backend;
         }
 
         for (size_t index = 0; index < g_media_gamepad_hotkeys.size(); ++index)

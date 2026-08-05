@@ -411,9 +411,14 @@ void on_frame()
 			ImGui::Separator();
 			ImGui::TextUnformatted("Gamepad media combinations");
 			if (ImGui::Checkbox(
-				"Enable XInput gamepad media controls",
+				"Enable gamepad media controls",
 				&g_gamepad_hotkeys_enabled))
 				saveConfiguration = true;
+			ImGui::TextWrapped(
+				"XInput is preferred. PlayStation and generic controllers may "
+				"fall back to the Windows joystick API. If the log reports no "
+				"controller, disable Steam Input for ETS2/ATS so Windows can "
+				"expose the physical controller directly.");
 
 			const char* controllerChoices[] = {
 				"Automatic (first connected)",

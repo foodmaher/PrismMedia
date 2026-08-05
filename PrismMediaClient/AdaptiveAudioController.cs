@@ -61,6 +61,17 @@ namespace PrismMediaClient
             applyPending = true;
         }
 
+        internal void RequestSessionRefresh(string reason)
+        {
+            nextDiscoveryUtc = DateTime.MinValue;
+            applyPending = true;
+            ClientDiagnosticLog.Write(
+                "audio", "Audio-session refresh requested (" + reason +
+                "). Current spatial gain=" + gain.ToString("0.000") +
+                ", environment gain=" + duckingGain.ToString("0.000") +
+                ", pan=" + pan.ToString("0.000") + ".");
+        }
+
         private void Tick()
         {
             try
@@ -187,6 +198,12 @@ namespace PrismMediaClient
                 ReleaseCom(manager);
                 ReleaseCom(device);
                 ReleaseCom(enumerator);
+            }
+            if (sessionAdded)
+            {
+                ClientDiagnosticLog.Write(
+                    "audio", "Attached adaptive processing to " +
+                    sessions.Count + " WebView audio session(s).");
             }
             return sessionAdded;
         }

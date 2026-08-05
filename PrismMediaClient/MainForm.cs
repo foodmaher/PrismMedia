@@ -214,6 +214,10 @@ namespace PrismMediaClient
                         args.IsSuccess + ", status=" +
                         args.WebErrorStatus + ", source=" +
                         SafeUriForLog(source));
+                    adaptiveAudio.RequestSessionRefresh(
+                        fullSpotifyWeb
+                            ? "Spotify top-level navigation"
+                            : "media navigation");
                     ready = true;
                     while (pendingCommands.Count > 0)
                     {

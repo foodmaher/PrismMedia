@@ -36,7 +36,7 @@ if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.9.0-session-backup-menu'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.9.1-spotify-audio-parity'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }
@@ -63,7 +63,7 @@ Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (
     Join-Path $Runtime 'SPF-OPTIONAL')
 
 @"
-PrismTextureStreamerFB 3.9 Spotify Session + Backups + Gamepad Menu
+PrismTextureStreamerFB 3.9.1 Spotify Audio Parity + Session Backups
 
 Copy PrismTextureStreamerFB.dll and the PrismTextureStreamerFB folder into
 <ETS2 or ATS>\bin\win_x64\plugins. The DLL must stay directly in plugins.

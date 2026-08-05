@@ -23,6 +23,7 @@ namespace PrismMediaClient
         {
             core = webViewCore;
             core.FrameCreated += OnFrameCreated;
+            core.NavigationCompleted += OnTopLevelNavigationCompleted;
         }
 
         internal async Task InstallAsync(string bootstrapScript)
@@ -44,6 +45,25 @@ namespace PrismMediaClient
             CoreWebView2FrameCreatedEventArgs args)
         {
             TrackFrame(args.Frame);
+        }
+
+        private async void OnTopLevelNavigationCompleted(
+            object sender,
+            CoreWebView2NavigationCompletedEventArgs args)
+        {
+            if (disposed || !args.IsSuccess)
+                return;
+
+            // The bootstrap runs in every new document with safe defaults.
+            // YouTube is hosted in a child frame and was already refreshed by
+            // TrackFrame(). Full Spotify Web is the top-level document, so it
+            // also needs the current cutoff reapplied after every navigation.
+            await ApplyEverywhereAsync();
+            ClientDiagnosticLog.Write(
+                "audio", "Adaptive low-pass state reapplied to the " +
+                "top-level media document (enabled=" + enabled +
+                ", cutoff=" + cutoffHz.ToString(
+                    "0.0", CultureInfo.InvariantCulture) + " Hz).");
         }
 
         private void TrackFrame(CoreWebView2Frame frame)
@@ -114,6 +134,7 @@ namespace PrismMediaClient
         {
             disposed = true;
             core.FrameCreated -= OnFrameCreated;
+            core.NavigationCompleted -= OnTopLevelNavigationCompleted;
             frames.Clear();
         }
     }

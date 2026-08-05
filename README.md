@@ -110,9 +110,13 @@ performance statistics.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
 
-## Version 3.9 Spotify session, live capture and backups
+## Version 3.9.1 Spotify audio parity, session and backups
 
-Version `3.9.0-session-backup-menu` fixes the supplied Full Spotify Web Player
+Version `3.9.1-spotify-audio-parity` makes Spotify Full Web receive the same
+dynamic outside low-pass processing as YouTube. The cutoff is reapplied after
+each top-level Spotify navigation without polling or render-thread work.
+
+Version 3.9 also fixes the supplied Full Spotify Web Player
 logs: WebView2 is initialized only once, Spotify authentication cookies receive
 an encrypted per-Windows-user checkpoint, and private login query strings are
 removed from diagnostics. Chromium occlusion/background throttling is disabled

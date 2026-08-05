@@ -2,13 +2,16 @@
 
 #include <Windows.h>
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <string>
 #include <vector>
 
 #include "screens.h"
 #include "dx11/internal_render_probe.h"
+#include "diagnostic_log.h"
 #include "hotkeys.h"
 #include "scs_logging.h"
 #include "sources/media_client.h"
@@ -52,6 +55,122 @@ namespace {
             result.clear();
         result += "PrismTextureStreamerFB.ini";
         return result;
+    }
+
+    constexpr size_t kConfigurationBackupCount = 3;
+
+    bool regular_file_exists(const std::string& path)
+    {
+        const DWORD attributes = GetFileAttributesA(path.c_str());
+        return attributes != INVALID_FILE_ATTRIBUTES &&
+            (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+    }
+
+    std::string backup_path(size_t index)
+    {
+        return config_path() + ".backup" +
+            std::to_string(index + 1) + ".ini";
+    }
+
+    bool files_equal(
+        const std::string& firstPath,
+        const std::string& secondPath)
+    {
+        WIN32_FILE_ATTRIBUTE_DATA firstAttributes{};
+        WIN32_FILE_ATTRIBUTE_DATA secondAttributes{};
+        if (!GetFileAttributesExA(
+                firstPath.c_str(), GetFileExInfoStandard,
+                &firstAttributes) ||
+            !GetFileAttributesExA(
+                secondPath.c_str(), GetFileExInfoStandard,
+                &secondAttributes))
+            return false;
+        if (firstAttributes.nFileSizeHigh != secondAttributes.nFileSizeHigh ||
+            firstAttributes.nFileSizeLow != secondAttributes.nFileSizeLow)
+            return false;
+
+        std::ifstream first(firstPath, std::ios::binary);
+        std::ifstream second(secondPath, std::ios::binary);
+        if (!first || !second)
+            return false;
+        std::array<char, 4096> firstBuffer{};
+        std::array<char, 4096> secondBuffer{};
+        do
+        {
+            first.read(firstBuffer.data(), firstBuffer.size());
+            second.read(secondBuffer.data(), secondBuffer.size());
+            const std::streamsize firstCount = first.gcount();
+            const std::streamsize secondCount = second.gcount();
+            if (firstCount != secondCount ||
+                !std::equal(
+                    firstBuffer.begin(),
+                    firstBuffer.begin() +
+                        static_cast<size_t>(firstCount),
+                    secondBuffer.begin()))
+                return false;
+        } while (first);
+        return true;
+    }
+
+    bool copy_if_present(
+        const std::string& source,
+        const std::string& destination)
+    {
+        if (!regular_file_exists(source))
+            return true;
+        if (CopyFileA(
+            source.c_str(), destination.c_str(), FALSE))
+            return true;
+        diagnostic_log::writef(
+            "settings", "Could not copy configuration backup %s "
+            "(Win32 error %lu).", source.c_str(), GetLastError());
+        return false;
+    }
+
+    bool rotate_configuration_backups(const std::string& activePath)
+    {
+        if (!regular_file_exists(activePath))
+            return true;
+        for (size_t index = kConfigurationBackupCount - 1;
+            index > 0; --index)
+        {
+            if (!copy_if_present(
+                backup_path(index - 1), backup_path(index)))
+                return false;
+        }
+        if (!CopyFileA(
+            activePath.c_str(), backup_path(0).c_str(), FALSE))
+        {
+            diagnostic_log::writef(
+                "settings", "Could not create newest configuration "
+                "backup (Win32 error %lu).", GetLastError());
+            return false;
+        }
+        return true;
+    }
+
+    std::string backup_description(size_t index)
+    {
+        const std::string path = backup_path(index);
+        WIN32_FILE_ATTRIBUTE_DATA attributes{};
+        if (!GetFileAttributesExA(
+            path.c_str(), GetFileExInfoStandard, &attributes))
+            return "Backup " + std::to_string(index + 1) + " - empty";
+
+        FILETIME localTime{};
+        SYSTEMTIME systemTime{};
+        if (!FileTimeToLocalFileTime(
+                &attributes.ftLastWriteTime, &localTime) ||
+            !FileTimeToSystemTime(&localTime, &systemTime))
+            return "Backup " + std::to_string(index + 1);
+        char text[96]{};
+        std::snprintf(
+            text, sizeof(text),
+            "Backup %zu - %04u-%02u-%02u %02u:%02u:%02u",
+            index + 1,
+            systemTime.wYear, systemTime.wMonth, systemTime.wDay,
+            systemTime.wHour, systemTime.wMinute, systemTime.wSecond);
+        return text;
     }
 
     std::string read_string(const std::string& path, const char* section, const char* key)
@@ -170,6 +289,22 @@ namespace settings {
                 path, "Gamepad", "AxisThreshold",
                 g_gamepad_axis_threshold),
             0.20f, 0.95f);
+        g_gamepad_menu_hotkey.modifier =
+            static_cast<gamepad_modifier_t>((std::clamp)(
+                GetPrivateProfileIntA(
+                    "Gamepad", "MenuModifier",
+                    static_cast<UINT>(
+                        g_gamepad_menu_hotkey.modifier), path.c_str()),
+                0U,
+                static_cast<UINT>(gamepad_modifier_t::COUNT) - 1));
+        g_gamepad_menu_hotkey.input =
+            static_cast<gamepad_input_t>((std::clamp)(
+                GetPrivateProfileIntA(
+                    "Gamepad", "MenuInput",
+                    static_cast<UINT>(
+                        g_gamepad_menu_hotkey.input), path.c_str()),
+                0U,
+                static_cast<UINT>(gamepad_input_t::COUNT) - 1));
         for (size_t bindingIndex = 0;
             bindingIndex < g_media_gamepad_hotkeys.size(); ++bindingIndex)
         {
@@ -211,7 +346,13 @@ namespace settings {
 
         const int count = (std::min)(GetPrivateProfileIntA("General", "ScreenCount", 0, path.c_str()), 16U);
         if (count <= 0)
+        {
+            std::lock_guard<std::mutex> lock(g_screens_mutex);
+            g_screens.clear();
+            dx11::internal_render_probe::set_park_activation_requested(false);
+            dx11::internal_render_probe::set_park_render_requested(false);
             return true;
+        }
 
         std::vector<screen_t> loaded;
         loaded.reserve(count);
@@ -574,7 +715,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 15);
+        write_number(temporaryPath, "General", "Version", 16);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
@@ -596,6 +737,12 @@ namespace settings {
         write_float(
             temporaryPath, "Gamepad", "AxisThreshold",
             g_gamepad_axis_threshold);
+        write_number(
+            temporaryPath, "Gamepad", "MenuModifier",
+            static_cast<uint32_t>(g_gamepad_menu_hotkey.modifier));
+        write_number(
+            temporaryPath, "Gamepad", "MenuInput",
+            static_cast<uint32_t>(g_gamepad_menu_hotkey.input));
         for (size_t bindingIndex = 0;
             bindingIndex < g_media_gamepad_hotkeys.size(); ++bindingIndex)
         {
@@ -724,12 +871,83 @@ namespace settings {
         }
 
         WritePrivateProfileStringA(nullptr, nullptr, nullptr, temporaryPath.c_str());
+        if (regular_file_exists(path) && files_equal(temporaryPath, path))
+        {
+            DeleteFileA(temporaryPath.c_str());
+            return true;
+        }
+        if (!rotate_configuration_backups(path))
+        {
+            DeleteFileA(temporaryPath.c_str());
+            scs_log(2, "[Settings] Backup rotation failed; active configuration was not replaced");
+            return false;
+        }
         if (!MoveFileExA(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         {
             scs_log(2, "[Settings] Failed to save configuration, err=%lu", GetLastError());
             return false;
         }
         scs_log(0, "[Settings] Configuration saved");
+        diagnostic_log::write(
+            "settings", "Configuration saved; rolling backup history updated.");
         return true;
+    }
+
+    std::array<configuration_backup_info_t, 3> backup_history()
+    {
+        std::array<configuration_backup_info_t, 3> result{};
+        for (size_t index = 0; index < result.size(); ++index)
+        {
+            result[index].available =
+                regular_file_exists(backup_path(index));
+            result[index].description = backup_description(index);
+        }
+        return result;
+    }
+
+    bool restore_backup(size_t index)
+    {
+        if (index >= kConfigurationBackupCount)
+            return false;
+        const std::string selectedPath = backup_path(index);
+        if (!regular_file_exists(selectedPath))
+            return false;
+
+        const std::string activePath = config_path();
+        const std::string temporaryPath = activePath + ".restore.tmp";
+        DeleteFileA(temporaryPath.c_str());
+        if (!CopyFileA(
+            selectedPath.c_str(), temporaryPath.c_str(), FALSE))
+        {
+            diagnostic_log::writef(
+                "settings", "Could not stage configuration backup %zu "
+                "(Win32 error %lu).", index + 1, GetLastError());
+            return false;
+        }
+
+        if (!rotate_configuration_backups(activePath))
+        {
+            diagnostic_log::write(
+                "settings", "Backup rotation failed; restore was cancelled "
+                "and the active configuration was not replaced.");
+            DeleteFileA(temporaryPath.c_str());
+            return false;
+        }
+        if (!MoveFileExA(
+            temporaryPath.c_str(), activePath.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        {
+            diagnostic_log::writef(
+                "settings", "Could not restore configuration backup %zu "
+                "(Win32 error %lu).", index + 1, GetLastError());
+            DeleteFileA(temporaryPath.c_str());
+            return false;
+        }
+
+        diagnostic_log::writef(
+            "settings", "Restored configuration backup %zu; the previous "
+            "active configuration was preserved as the newest backup.",
+            index + 1);
+        return load();
     }
 }

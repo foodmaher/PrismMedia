@@ -39,6 +39,28 @@ static int hotkey_binding_index = -1;
 static bool configuration_save_pending = false;
 static uint64_t configuration_last_change_tick = 0;
 
+static void set_menu_visibility(bool visible)
+{
+	menu_visible.store(visible);
+	if (!visible)
+	{
+		hotkey_binding_index = -1;
+		g_is_binding_hotkey = false;
+		std::lock_guard<std::mutex> lock(g_screens_mutex);
+		for (auto& screen : g_screens)
+		{
+			screen.reversePreview = false;
+			if (screen.reverseSource)
+				screen.reverseSource->SetPaused(
+					!g_reverse_active.load());
+		}
+	}
+	dinput8::set_mouse(visible);
+
+	if (ImGui::GetCurrentContext())
+		ImGui::GetIO().MouseDrawCursor = visible;
+}
+
 static bool rebuild_source(screen_t& screen)
 {
 	g_screen_source_creation_in_progress = true;
@@ -190,6 +212,62 @@ static bool capture_hotkey(hotkey_binding_t& binding)
 	return false;
 }
 
+static bool edit_gamepad_binding(
+	const char* label,
+	int id,
+	gamepad_binding_t& binding)
+{
+	bool changed = false;
+	ImGui::PushID(id);
+	ImGui::TextUnformatted(label);
+	ImGui::SameLine(150.0f);
+	ImGui::SetNextItemWidth(90.0f);
+	if (ImGui::BeginCombo(
+		"##gamepad_modifier",
+		gamepad_modifier_name(binding.modifier)))
+	{
+		for (int value = 0;
+			value < static_cast<int>(gamepad_modifier_t::COUNT);
+			++value)
+		{
+			const auto candidate =
+				static_cast<gamepad_modifier_t>(value);
+			if (ImGui::Selectable(
+				gamepad_modifier_name(candidate),
+				candidate == binding.modifier))
+			{
+				binding.modifier = candidate;
+				changed = true;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth(190.0f);
+	if (ImGui::BeginCombo(
+		"##gamepad_input",
+		gamepad_input_name(binding.input)))
+	{
+		for (int value = 0;
+			value < static_cast<int>(gamepad_input_t::COUNT);
+			++value)
+		{
+			const auto candidate =
+				static_cast<gamepad_input_t>(value);
+			if (ImGui::Selectable(
+				gamepad_input_name(candidate),
+				candidate == binding.input))
+			{
+				binding.input = candidate;
+				changed = true;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::PopID();
+	return changed;
+}
+
 static void apply_performance_profile(screen_t& screen)
 {
 	switch (screen.performanceProfile)
@@ -228,33 +306,14 @@ void on_frame()
 	bool f8Down = GetAsyncKeyState(VK_F8) & 0x8000;
 	bool isPressed = ctrlDown && f8Down;
 
-	if (isPressed && !wasPressed) {
-		menu_visible = !menu_visible;
-		if (!menu_visible)
-		{
-			hotkey_binding_index = -1;
-			g_is_binding_hotkey = false;
-			std::lock_guard<std::mutex> lock(g_screens_mutex);
-			for (auto& screen : g_screens)
-			{
-				screen.reversePreview = false;
-				if (screen.reverseSource)
-					screen.reverseSource->SetPaused(
-						!g_reverse_active.load());
-			}
-		}
-		dinput8::set_mouse(menu_visible);
-
-		if (ImGui::GetCurrentContext()) {
-			ImGuiIO* io = &ImGui::GetIO();
-			if (io) io->MouseDrawCursor = menu_visible;
-		}
-	}
+	process_media_hotkeys(menu_visible.load());
+	const bool gamepadMenuToggle =
+		consume_gamepad_menu_toggle_request();
+	if ((isPressed && !wasPressed) || gamepadMenuToggle)
+		set_menu_visibility(!menu_visible.load());
 	wasPressed = isPressed;
 
-	process_media_hotkeys(menu_visible);
-
-	if (menu_visible) {
+	if (menu_visible.load()) {
 		ImGui::SetNextWindowSizeConstraints(ImVec2(680, 350), ImVec2(1000, 900));
 		ImGui::Begin(("Prism3D Texture Streamer v" + std::string(g_version)).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize);
 
@@ -373,6 +432,64 @@ void on_frame()
 
 		if (unsavedChanges || justSaved) ImGui::PopStyleColor(3);
 
+		if (ImGui::CollapsingHeader("Configuration Backups"))
+		{
+			static int selectedBackup = 0;
+			static std::string backupStatus;
+			const auto backupHistory = settings::backup_history();
+			const char* backupLabels[] = {
+				backupHistory[0].description.c_str(),
+				backupHistory[1].description.c_str(),
+				backupHistory[2].description.c_str()
+			};
+
+			ImGui::TextWrapped(
+				"The previous three distinct saved configurations are kept "
+				"outside config.ini. Deleting the active configuration does "
+				"not delete these restore points. A new save replaces the "
+				"oldest slot.");
+			ImGui::SetNextItemWidth(330.0f);
+			ImGui::Combo(
+				"Restore point", &selectedBackup,
+				backupLabels, IM_ARRAYSIZE(backupLabels));
+
+			if (ImGui::Button("Save configuration now"))
+			{
+				if (settings::save())
+				{
+					configuration_save_pending = false;
+					configuration_last_change_tick = 0;
+					unsavedChanges = false;
+					backupStatus =
+						"Configuration saved. Previous state preserved.";
+				}
+				else
+					backupStatus = "Configuration save failed; check the log.";
+			}
+			ImGui::SameLine();
+			ImGui::BeginDisabled(
+				!backupHistory[static_cast<size_t>(selectedBackup)].available);
+			if (ImGui::Button("Restore selected backup"))
+			{
+				if (settings::restore_backup(
+					static_cast<size_t>(selectedBackup)))
+				{
+					configuration_save_pending = false;
+					configuration_last_change_tick = 0;
+					unsavedChanges = false;
+					prism::string command("game");
+					prism::execute_command::call(&command, -1);
+					backupStatus =
+						"Backup restored and game textures reloaded.";
+				}
+				else
+					backupStatus = "Backup restore failed; check the log.";
+			}
+			ImGui::EndDisabled();
+			if (!backupStatus.empty())
+				ImGui::TextDisabled("%s", backupStatus.c_str());
+		}
+
 		if (ImGui::CollapsingHeader("Media Hotkeys"))
 		{
 			ImGui::TextWrapped(
@@ -409,16 +526,17 @@ void on_frame()
 			}
 
 			ImGui::Separator();
-			ImGui::TextUnformatted("Gamepad media combinations");
+			ImGui::TextUnformatted("Gamepad combinations");
 			if (ImGui::Checkbox(
-				"Enable gamepad media controls",
+				"Enable gamepad controls",
 				&g_gamepad_hotkeys_enabled))
 				saveConfiguration = true;
 			ImGui::TextWrapped(
 				"XInput is preferred. PlayStation and generic controllers may "
 				"fall back to the Windows joystick API. If the log reports no "
 				"controller, disable Steam Input for ETS2/ATS so Windows can "
-				"expose the physical controller directly.");
+				"expose the physical controller directly. The plugin menu "
+				"combination works even while the menu is closed.");
 
 			const char* controllerChoices[] = {
 				"Automatic (first connected)",
@@ -439,6 +557,11 @@ void on_frame()
 				0.20f, 0.95f, "%.2f"))
 				saveConfiguration = true;
 
+			if (edit_gamepad_binding(
+				"Plugin menu", 10999, g_gamepad_menu_hotkey))
+				saveConfiguration = true;
+			ImGui::Separator();
+
 			for (int commandIndex = 0;
 				commandIndex < static_cast<int>(
 					g_media_gamepad_hotkeys.size());
@@ -448,58 +571,16 @@ void on_frame()
 					static_cast<media_command_t>(commandIndex);
 				auto& binding =
 					g_media_gamepad_hotkeys[commandIndex];
-				ImGui::PushID(11000 + commandIndex);
-				ImGui::TextUnformatted(media_command_name(command));
-				ImGui::SameLine(150.0f);
-				ImGui::SetNextItemWidth(90.0f);
-				if (ImGui::BeginCombo(
-					"##gamepad_modifier",
-					gamepad_modifier_name(binding.modifier)))
-				{
-					for (int value = 0;
-						value < static_cast<int>(
-							gamepad_modifier_t::COUNT); ++value)
-					{
-						const auto candidate =
-							static_cast<gamepad_modifier_t>(value);
-						if (ImGui::Selectable(
-							gamepad_modifier_name(candidate),
-							candidate == binding.modifier))
-						{
-							binding.modifier = candidate;
-							saveConfiguration = true;
-						}
-					}
-					ImGui::EndCombo();
-				}
-				ImGui::SameLine();
-				ImGui::SetNextItemWidth(190.0f);
-				if (ImGui::BeginCombo(
-					"##gamepad_input",
-					gamepad_input_name(binding.input)))
-				{
-					for (int value = 0;
-						value < static_cast<int>(
-							gamepad_input_t::COUNT); ++value)
-					{
-						const auto candidate =
-							static_cast<gamepad_input_t>(value);
-						if (ImGui::Selectable(
-							gamepad_input_name(candidate),
-							candidate == binding.input))
-						{
-							binding.input = candidate;
-							saveConfiguration = true;
-						}
-					}
-					ImGui::EndCombo();
-				}
-				ImGui::PopID();
+				if (edit_gamepad_binding(
+					media_command_name(command),
+					11000 + commandIndex,
+					binding))
+					saveConfiguration = true;
 			}
 			ImGui::TextDisabled(
-				"Default: RB + A plays/pauses; RB + right-stick directions "
-				"control tracks and volume. ETS2/ATS still receives the same "
-				"gamepad input.");
+				"Defaults: LB + Start toggles this menu; RB + A plays/pauses; "
+				"RB + right-stick directions control tracks and volume. "
+				"ETS2/ATS still receives the same gamepad input.");
 		}
 
 			if (ImGui::CollapsingHeader(

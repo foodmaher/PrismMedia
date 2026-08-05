@@ -108,6 +108,8 @@ const char* gamepad_input_name(gamepad_input_t input)
     case gamepad_input_t::RIGHT_TRIGGER: return "RT";
     case gamepad_input_t::LEFT_BUMPER: return "LB";
     case gamepad_input_t::RIGHT_BUMPER: return "RB";
+    case gamepad_input_t::START: return "Start / Menu";
+    case gamepad_input_t::BACK: return "Back / View";
     case gamepad_input_t::COUNT: break;
     }
     return "Unknown";
@@ -159,6 +161,8 @@ namespace {
         XINPUT,
         WINDOWS_JOYSTICK
     };
+
+    std::atomic<bool> gamepadMenuToggleRequested{};
 
     XInputGetState_t load_xinput_get_state()
     {
@@ -463,6 +467,10 @@ namespace {
             return button_down(pad, XINPUT_GAMEPAD_LEFT_SHOULDER);
         case gamepad_input_t::RIGHT_BUMPER:
             return button_down(pad, XINPUT_GAMEPAD_RIGHT_SHOULDER);
+        case gamepad_input_t::START:
+            return button_down(pad, XINPUT_GAMEPAD_START);
+        case gamepad_input_t::BACK:
+            return button_down(pad, XINPUT_GAMEPAD_BACK);
         case gamepad_input_t::COUNT: break;
         }
         return false;
@@ -543,10 +551,12 @@ namespace {
         static int lastController = -2;
         static gamepad_backend_t lastBackend = gamepad_backend_t::NONE;
         static uint64_t lastPollTick{};
+        static bool menuWasDown{};
 
         if (!g_gamepad_hotkeys_enabled)
         {
             wasDown.fill(false);
+            menuWasDown = false;
             return;
         }
 
@@ -564,6 +574,7 @@ namespace {
             state, controller, backend, usedAutomaticFallback))
         {
             wasDown.fill(false);
+            menuWasDown = false;
             if (lastController != -1)
             {
                 diagnostic_log::write(
@@ -591,6 +602,18 @@ namespace {
             lastController = static_cast<int>(controller);
             lastBackend = backend;
         }
+
+        const bool menuDown =
+            modifier_down(
+                state.Gamepad, g_gamepad_menu_hotkey.modifier) &&
+            input_down(state.Gamepad, g_gamepad_menu_hotkey.input);
+        if (menuDown && !menuWasDown)
+        {
+            gamepadMenuToggleRequested.store(true);
+            diagnostic_log::write(
+                "input", "Gamepad requested the plugin menu toggle.");
+        }
+        menuWasDown = menuDown;
 
         for (size_t index = 0; index < g_media_gamepad_hotkeys.size(); ++index)
         {
@@ -644,4 +667,9 @@ void process_media_hotkeys(bool menu_visible)
     }
 
     process_gamepad_bindings();
+}
+
+bool consume_gamepad_menu_toggle_request()
+{
+    return gamepadMenuToggleRequested.exchange(false);
 }

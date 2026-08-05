@@ -3,6 +3,7 @@
 #include "sources/content_source.h"
 #include <Windows.h>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <string>
 
@@ -51,6 +52,8 @@ enum class gamepad_input_t : uint8_t
     RIGHT_TRIGGER,
     LEFT_BUMPER,
     RIGHT_BUMPER,
+    START,
+    BACK,
     COUNT
 };
 
@@ -75,6 +78,10 @@ inline bool g_gamepad_hotkeys_enabled{};
 // -1 automatically uses the first connected controller; 0-3 pins one.
 inline int g_gamepad_controller_index = -1;
 inline float g_gamepad_axis_threshold = 0.65f;
+inline gamepad_binding_t g_gamepad_menu_hotkey{
+    gamepad_modifier_t::LEFT_BUMPER,
+    gamepad_input_t::START
+};
 inline std::array<gamepad_binding_t, 6> g_media_gamepad_hotkeys{ {
     { gamepad_modifier_t::RIGHT_BUMPER, gamepad_input_t::A },
     { gamepad_modifier_t::RIGHT_BUMPER, gamepad_input_t::RIGHT_STICK_RIGHT },
@@ -93,3 +100,4 @@ bool dispatch_media_command(
     screen_t& screen,
     media_command_t command);
 void process_media_hotkeys(bool menu_visible);
+bool consume_gamepad_menu_toggle_request();

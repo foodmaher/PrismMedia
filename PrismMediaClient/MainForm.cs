@@ -6,6 +6,7 @@ using System.IO;
 using System.Globalization;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -23,6 +24,7 @@ namespace PrismMediaClient
         private const int WsExNoActivate = 0x08000000;
         private const uint KeyEventKeyUp = 0x0002;
         private const uint ThreadSetInformation = 0x0020;
+        private const int SpotifySessionFormatVersion = 1;
 
         [DllImport("user32.dll")]
         private static extern int GetWindowLong(IntPtr window, int index);
@@ -68,6 +70,9 @@ namespace PrismMediaClient
         private readonly bool silentStart;
         private bool ready;
         private bool initializing;
+        private bool coreInitialized;
+        private bool spotifySessionRestored;
+        private bool spotifySessionSaveActive;
         private bool fullSpotifyWeb;
         private bool userWantsPlayback = true;
         private bool vehiclePowered = true;
@@ -140,7 +145,7 @@ namespace PrismMediaClient
 
         private async Task InitializePlayerAsync()
         {
-            if (ready || initializing)
+            if (coreInitialized || webView.CoreWebView2 != null || initializing)
                 return;
             initializing = true;
             try
@@ -152,16 +157,26 @@ namespace PrismMediaClient
                         Environment.SpecialFolder.LocalApplicationData),
                     "PrismTextureStreamerFB", "WebView2Profile");
                 Directory.CreateDirectory(profileFolder);
+                var environmentOptions = new CoreWebView2EnvironmentOptions
+                {
+                    AdditionalBrowserArguments =
+                        "--disable-backgrounding-occluded-windows " +
+                        "--disable-background-timer-throttling " +
+                        "--disable-renderer-backgrounding " +
+                        "--disable-features=CalculateNativeWinOcclusion"
+                };
                 CoreWebView2Environment environment =
                     await CoreWebView2Environment.CreateAsync(
-                        null, profileFolder);
+                        null, profileFolder, environmentOptions);
                 await webView.EnsureCoreWebView2Async(environment);
+                coreInitialized = true;
                 webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
                 webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
                 webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
                 adaptiveAudio.SetBrowserProcessId(
                     webView.CoreWebView2.BrowserProcessId);
+                await RestoreSpotifySessionAsync();
                 webView.CoreWebView2.WebMessageReceived += (_, eventArgs) =>
                 {
                     try
@@ -192,16 +207,24 @@ namespace PrismMediaClient
                     CoreWebView2HostResourceAccessKind.Allow);
                 webView.CoreWebView2.NavigationCompleted += async (_, args) =>
                 {
+                    Uri source = webView.Source;
                     ClientDiagnosticLog.Write(
                         args.IsSuccess ? "navigation" : "error",
                         "Navigation completed: success=" +
                         args.IsSuccess + ", status=" +
                         args.WebErrorStatus + ", source=" +
-                        webView.Source);
+                        SafeUriForLog(source));
                     ready = true;
                     while (pendingCommands.Count > 0)
                     {
                         await ApplyCommandAsync(pendingCommands.Dequeue());
+                    }
+                    if (args.IsSuccess && fullSpotifyWeb &&
+                        IsSpotifyUri(source))
+                    {
+                        await Task.Delay(750);
+                        await SaveSpotifySessionAsync(
+                            "successful Spotify navigation");
                     }
                 };
                 webView.CoreWebView2.ProcessFailed += (_, args) =>
@@ -217,13 +240,15 @@ namespace PrismMediaClient
                     args.Handled = true;
                     ClientDiagnosticLog.Write(
                         "spotify", "Opening Spotify popup/login navigation in " +
-                        "the existing helper: " + args.Uri);
+                        "the existing helper: " +
+                        SafeUriForLog(args.Uri));
                     webView.CoreWebView2.Navigate(args.Uri);
                 };
                 webView.CoreWebView2.Navigate(LocalPlayerUrl);
                 ClientDiagnosticLog.Write(
                     "webview", "WebView2 initialization completed with a " +
-                    "persistent profile at " + profileFolder + ".");
+                    "persistent profile at " + profileFolder +
+                    "; occluded-window rendering is enabled.");
             }
             catch (Exception error)
             {
@@ -328,6 +353,205 @@ namespace PrismMediaClient
             return "https://open.spotify.com/";
         }
 
+        private static bool IsSpotifyUri(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri)
+                return false;
+            string host = uri.Host.ToLowerInvariant();
+            return host == "spotify.com" ||
+                host.EndsWith(".spotify.com", StringComparison.Ordinal);
+        }
+
+        private static string SafeUriForLog(Uri uri)
+        {
+            if (uri == null)
+                return "<none>";
+            if (!uri.IsAbsoluteUri)
+                return uri.ToString();
+            return uri.Scheme + "://" + uri.Host + uri.AbsolutePath;
+        }
+
+        private static string SafeUriForLog(string value)
+        {
+            return Uri.TryCreate(value, UriKind.Absolute, out Uri uri)
+                ? SafeUriForLog(uri)
+                : "<invalid URI>";
+        }
+
+        private static string SpotifySessionPath
+        {
+            get
+            {
+                string folder = Path.Combine(
+                    Environment.GetFolderPath(
+                        Environment.SpecialFolder.LocalApplicationData),
+                    "PrismTextureStreamerFB");
+                Directory.CreateDirectory(folder);
+                return Path.Combine(folder, "SpotifySession.dat");
+            }
+        }
+
+        private async Task<List<CoreWebView2Cookie>> GetSpotifyCookiesAsync()
+        {
+            var unique = new Dictionary<string, CoreWebView2Cookie>(
+                StringComparer.OrdinalIgnoreCase);
+            string[] origins = {
+                "https://open.spotify.com/",
+                "https://accounts.spotify.com/",
+                "https://challenge.spotify.com/",
+                "https://spotify.com/"
+            };
+            foreach (string origin in origins)
+            {
+                IReadOnlyList<CoreWebView2Cookie> cookies =
+                    await webView.CoreWebView2.CookieManager
+                        .GetCookiesAsync(origin);
+                foreach (CoreWebView2Cookie cookie in cookies)
+                {
+                    string key = cookie.Domain + "\n" + cookie.Path +
+                        "\n" + cookie.Name;
+                    unique[key] = cookie;
+                }
+            }
+            return new List<CoreWebView2Cookie>(unique.Values);
+        }
+
+        private async Task RestoreSpotifySessionAsync()
+        {
+            if (spotifySessionRestored || webView.CoreWebView2 == null)
+                return;
+            spotifySessionRestored = true;
+            string path = SpotifySessionPath;
+            if (!File.Exists(path))
+            {
+                ClientDiagnosticLog.Write(
+                    "spotify", "No encrypted Spotify session checkpoint exists yet.");
+                return;
+            }
+
+            try
+            {
+                byte[] encrypted = File.ReadAllBytes(path);
+                byte[] payload = ProtectedData.Unprotect(
+                    encrypted, null, DataProtectionScope.CurrentUser);
+                int restored = 0;
+                using (var stream = new MemoryStream(payload, false))
+                using (var reader = new BinaryReader(stream, Encoding.UTF8))
+                {
+                    int version = reader.ReadInt32();
+                    if (version != SpotifySessionFormatVersion)
+                        throw new InvalidDataException(
+                            "Unsupported Spotify session checkpoint version.");
+                    int count = reader.ReadInt32();
+                    if (count < 0 || count > 2048)
+                        throw new InvalidDataException(
+                            "Invalid Spotify session cookie count.");
+                    for (int index = 0; index < count; ++index)
+                    {
+                        string name = reader.ReadString();
+                        string value = reader.ReadString();
+                        string domain = reader.ReadString();
+                        string cookiePath = reader.ReadString();
+                        long expiresBinary = reader.ReadInt64();
+                        bool isHttpOnly = reader.ReadBoolean();
+                        bool isSecure = reader.ReadBoolean();
+                        var sameSite = (CoreWebView2CookieSameSiteKind)
+                            reader.ReadInt32();
+                        DateTime expires = expiresBinary == 0
+                            ? DateTime.MinValue
+                            : DateTime.FromBinary(expiresBinary).ToUniversalTime();
+                        if (expiresBinary != 0 && expires <= DateTime.UtcNow)
+                            continue;
+
+                        CoreWebView2Cookie cookie = webView.CoreWebView2
+                            .CookieManager.CreateCookie(
+                                name, value, domain, cookiePath);
+                        cookie.IsHttpOnly = isHttpOnly;
+                        cookie.IsSecure = isSecure;
+                        cookie.SameSite = sameSite;
+                        if (expiresBinary != 0)
+                            cookie.Expires = expires;
+                        webView.CoreWebView2.CookieManager
+                            .AddOrUpdateCookie(cookie);
+                        ++restored;
+                    }
+                }
+                ClientDiagnosticLog.Write(
+                    "spotify", "Restored " + restored +
+                    " Spotify cookies from the encrypted user checkpoint.");
+            }
+            catch (Exception error)
+            {
+                ClientDiagnosticLog.Write(
+                    "error", "Could not restore the encrypted Spotify " +
+                    "session checkpoint: " + error.Message);
+            }
+            await Task.CompletedTask;
+        }
+
+        private async Task SaveSpotifySessionAsync(string reason)
+        {
+            if (spotifySessionSaveActive || webView.CoreWebView2 == null)
+                return;
+            spotifySessionSaveActive = true;
+            try
+            {
+                List<CoreWebView2Cookie> cookies =
+                    await GetSpotifyCookiesAsync();
+                if (cookies.Count == 0)
+                    return;
+
+                byte[] payload;
+                using (var stream = new MemoryStream())
+                {
+                    using (var writer = new BinaryWriter(
+                        stream, Encoding.UTF8, true))
+                    {
+                        writer.Write(SpotifySessionFormatVersion);
+                        writer.Write(cookies.Count);
+                        foreach (CoreWebView2Cookie cookie in cookies)
+                        {
+                            writer.Write(cookie.Name ?? "");
+                            writer.Write(cookie.Value ?? "");
+                            writer.Write(cookie.Domain ?? "");
+                            writer.Write(cookie.Path ?? "/");
+                            writer.Write(cookie.IsSession
+                                ? 0L
+                                : cookie.Expires.ToUniversalTime().ToBinary());
+                            writer.Write(cookie.IsHttpOnly);
+                            writer.Write(cookie.IsSecure);
+                            writer.Write((int)cookie.SameSite);
+                        }
+                    }
+                    payload = stream.ToArray();
+                }
+
+                byte[] encrypted = ProtectedData.Protect(
+                    payload, null, DataProtectionScope.CurrentUser);
+                string path = SpotifySessionPath;
+                string temporaryPath = path + ".tmp";
+                File.WriteAllBytes(temporaryPath, encrypted);
+                if (File.Exists(path))
+                    File.Replace(temporaryPath, path, null, true);
+                else
+                    File.Move(temporaryPath, path);
+                ClientDiagnosticLog.Write(
+                    "spotify", "Saved " + cookies.Count +
+                    " Spotify cookies to the encrypted user checkpoint (" +
+                    reason + ").");
+            }
+            catch (Exception error)
+            {
+                ClientDiagnosticLog.Write(
+                    "error", "Could not save the encrypted Spotify session " +
+                    "checkpoint: " + error.Message);
+            }
+            finally
+            {
+                spotifySessionSaveActive = false;
+            }
+        }
+
         private async Task NavigateToLocalPlayerAsync(string queuedCommand)
         {
             fullSpotifyWeb = false;
@@ -348,7 +572,7 @@ namespace PrismMediaClient
             string target = NormalizeSpotifyUrl(value);
             ClientDiagnosticLog.Write(
                 "spotify", "Navigating to Full Spotify Web Player: " +
-                target);
+                SafeUriForLog(target));
             webView.CoreWebView2.Navigate(target);
             await Task.CompletedTask;
         }
@@ -634,14 +858,18 @@ namespace PrismMediaClient
             }
             if (string.Equals(command, "spotifyhide", StringComparison.Ordinal))
             {
+                await SaveSpotifySessionAsync("helper returned to silent mode");
                 SetInteractiveWindow(false);
                 return;
             }
             if (string.Equals(command, "clearspotify", StringComparison.Ordinal))
             {
                 await webView.CoreWebView2.Profile.ClearBrowsingDataAsync();
+                if (File.Exists(SpotifySessionPath))
+                    File.Delete(SpotifySessionPath);
                 ClientDiagnosticLog.Write(
-                    "spotify", "Persistent Spotify/WebView session cleared.");
+                    "spotify", "Persistent Spotify/WebView session and " +
+                    "encrypted checkpoint cleared.");
                 await NavigateToLocalPlayerAsync(null);
                 return;
             }

@@ -19,6 +19,7 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Play local files or direct stream URLs through Windows Media Foundation
 - Control media with assignable keyboard keys or configurable XInput gamepad
   chords for Play/Pause, Next, Previous, Mute and Volume
+- Toggle the plugin menu with an assignable gamepad chord
 - Spatialize Integrated Media Client sound from the driver's live head pose
 - Fade and muffle outside-camera media by true camera-to-driver distance with
   the optional SPF companion
@@ -35,6 +36,7 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
   render health, and a collapsed sampled logical-processor activity map
 - Adjust target resolution and framerate
 - Apply changes
+- Restore any of the previous three distinct saved configurations
 
 Whatever's rendering in the picked window gets captured and blitted onto the truck's screen every frame.
 
@@ -107,6 +109,23 @@ performance statistics.
    the subfolder.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
+
+## Version 3.9 Spotify session, live capture and backups
+
+Version `3.9.0-session-backup-menu` fixes the supplied Full Spotify Web Player
+logs: WebView2 is initialized only once, Spotify authentication cookies receive
+an encrypted per-Windows-user checkpoint, and private login query strings are
+removed from diagnostics. Chromium occlusion/background throttling is disabled
+for the silent helper so the GPS keeps receiving live frames while the helper
+is behind the game.
+
+The plugin now retains three timestamped rolling configuration restore points
+outside the active `config.ini`. They can be saved or restored from
+**Configuration Backups**, and they remain available if only the active config
+is deleted. An assignable **Plugin menu** gamepad chord is also available under
+**Media Hotkeys**; its default is `LB + Start/Menu`.
+
+See `PrismTextureStreamerFB\docs\V3.9-SPOTIFY-SESSION-BACKUPS.md`.
 
 ## Version 3.8 Spotify, gamepad and render diagnostics
 

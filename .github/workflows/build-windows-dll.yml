@@ -84,6 +84,7 @@ jobs:
           Copy-Item "V3.6-TELEMETRY-ENVIRONMENT.md" $Docs
           Copy-Item "V3.7-PLAYLIST-CORE-BALANCE.md" $Docs
           Copy-Item "V3.8-SPOTIFY-GAMEPAD-DIAGNOSTICS.md" $Docs
+          Copy-Item "V3.9-SPOTIFY-SESSION-BACKUPS.md" $Docs
 
           $SpfBridge = "$Runtime\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |
@@ -92,7 +93,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Runtime\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 3.8 Spotify + Gamepad + Diagnostics
+          PrismTextureStreamerFB 3.9 Spotify Session + Backups + Gamepad Menu
 
           Copy PrismTextureStreamerFB.dll AND the PrismTextureStreamerFB
           folder into:
@@ -111,7 +112,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-3.8.0-spotify-gamepad-diagnostics
+          name: PrismTextureStreamerFB-3.9.0-session-backup-menu
           path: package
           if-no-files-found: error
           retention-days: 30

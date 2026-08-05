@@ -9,6 +9,8 @@ decode direct media without window capture.
 
 ---
 
+<img width="2560" height="1600" alt="Screenshot_20260806_000354_Artemis" src="https://github.com/user-attachments/assets/6c2a7ef7-fc14-4f3d-85da-e763cdb7d058" />
+
 ## What it does
 Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Add a **GPS** screen, **Dashboard** screen, or a **Custom** screen (The target `.tobj` MUST be a functional screen from a UI Script, such as `/ui/gps.sii`)

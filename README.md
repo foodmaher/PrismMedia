@@ -27,6 +27,9 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Keep the game's own environment audio clear by reducing media dynamically
   from live speed and wheel-contact telemetry
 - Adjust and save brightness independently for every streamed screen
+- Optionally adjust screen brightness automatically from live game lighting
+- Replace engine-off media with the current truck brand/model standby logo
+- Set interior-cab media volume independently from exterior near/far volume
 - Pause and resume media automatically with the truck engine
 - Prevent full-screen video colours from bleeding into the GPS bezel
 - Automatically replace media with a calibrated reverse-mirror view in reverse
@@ -110,6 +113,24 @@ performance statistics.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
 
+## Version 3.10 visual, audio and input reliability
+
+Version `3.10.1-engine-standby-logo` reapplies the saved brightness after every
+WebView navigation, including Spotify after a game restart. It adds optional
+automatic brightness using a dormant, non-blocking 4 x 4 game-lighting sample,
+plus a generated engine-off standby logo using the active truck's localized
+brand and model name. Its brightness is configurable, and media returns when
+the engine starts.
+
+The update also adds an independent interior-cab media-volume slider and moves
+Volume Up/Down to the WebView Windows audio session so YouTube and both Spotify
+modes respond even when webpage controls are protected. Keyboard media keys now
+use plugin-owned edge detection, fixing missed first presses. The overlay uses
+one Win32 cursor, and the legacy `LB + Start/Menu` default migrates to
+`LB + Right Stick Click` so ETS2/ATS does not open its own cursor.
+
+See `PrismTextureStreamerFB\docs\V3.10-VISUAL-AUDIO-INPUT.md`.
+
 ## Version 3.9.4 media controls and update notifications
 
 Version `3.9.4-media-controls-updates` fixes single-press Spotify Play/Pause,
@@ -139,7 +160,8 @@ The plugin now retains three timestamped rolling configuration restore points
 outside the active `config.ini`. They can be saved or restored from
 **Configuration Backups**, and they remain available if only the active config
 is deleted. An assignable **Plugin menu** gamepad chord is also available under
-**Media Hotkeys**; its default is `LB + Start/Menu`.
+**Media Hotkeys**; version 3.10 migrates its former `LB + Start/Menu` default
+to `LB + Right Stick Click` to avoid opening the game cursor.
 
 See `PrismTextureStreamerFB\docs\V3.9-SPOTIFY-SESSION-BACKUPS.md`.
 

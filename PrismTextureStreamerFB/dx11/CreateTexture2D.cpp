@@ -10,6 +10,7 @@
 using namespace scs_logging;
 
 #include "../diagnostic_log.h"
+#include "../engine_standby.h"
 #include "../screens.h"
 #include "../telemetry_state.h"
 #include "../sources/reverse_camera.h"
@@ -228,7 +229,12 @@ void new_frame()
 	    for (auto& screen : g_screens)
 	    {
 	        const auto workStarted = std::chrono::steady_clock::now();
+	        const bool showEngineStandby =
+	            screen.followTruckEngine &&
+	            g_telemetry_driving.load() &&
+	            !g_engine_enabled.load();
 	        const bool reverseRequested =
+	            !showEngineStandby &&
 	            screen.reverseCameraEnabled &&
 	            (g_reverse_active.load() || screen.reversePreview);
             const bool internalParkMethod =
@@ -284,6 +290,48 @@ void new_frame()
         if (!screen.liveTexture || !screen.immediateContext)
             continue;
 
+        truck_identity_snapshot_t truckIdentity{};
+        if (showEngineStandby)
+        {
+            truckIdentity = truck_identity_snapshot();
+            const bool logoNeedsRebuild =
+                screen.engineStandbyScratch.empty() ||
+                screen.engineStandbyScratchWidth != screen.liveTextureWidth ||
+                screen.engineStandbyScratchHeight != screen.liveTextureHeight ||
+                screen.engineStandbyIdentityRevision != truckIdentity.revision;
+            if (logoNeedsRebuild)
+            {
+                engine_standby::render_truck_logo(
+                    screen.engineStandbyScratch,
+                    screen.liveTextureWidth,
+                    screen.liveTextureHeight,
+                    truckIdentity.brand,
+                    truckIdentity.name);
+                screen.engineStandbyScratchWidth = screen.liveTextureWidth;
+                screen.engineStandbyScratchHeight = screen.liveTextureHeight;
+                screen.engineStandbyIdentityRevision = truckIdentity.revision;
+                screen.hasUploadedFrame = false;
+                diagnostic_log::writef(
+                    "render",
+                    "%s engine-off logo prepared for '%s' '%s'.",
+                    screen_type_name(screen.type),
+                    truckIdentity.brand.empty()
+                        ? "Truck" : truckIdentity.brand.c_str(),
+                    truckIdentity.name.empty()
+                        ? "" : truckIdentity.name.c_str());
+            }
+            if (screen.engineStandbyWasDisplayed &&
+                screen.hasUploadedFrame)
+                continue;
+        }
+        else if (screen.engineStandbyWasDisplayed)
+        {
+            // Restore the cached media immediately. A newer live source frame
+            // replaces it normally as capture resumes.
+            screen.engineStandbyWasDisplayed = false;
+            screen.hasUploadedFrame = false;
+        }
+
         bool usingInternalParkFrame{};
         if (reverseRequested && internalParkMethod)
         {
@@ -328,11 +376,13 @@ void new_frame()
             }
         }
 
-	        IContentSource* activeSource = reverseActive
+	        IContentSource* activeSource = showEngineStandby
+	            ? nullptr
+	            : reverseActive
 	            ? screen.reverseSource.get()
 	            : screen.source.get();
 
-	        if (screen.paused && !reverseRequested &&
+	        if (!showEngineStandby && screen.paused && !reverseRequested &&
                 screen.hasUploadedFrame)
 	            continue;
 
@@ -344,7 +394,13 @@ void new_frame()
         uint32_t srcHeight = usingInternalParkFrame
             ? screen.internalParkScratchHeight
             : screen.frameScratchHeight;
-        if (usingInternalParkFrame)
+        if (showEngineStandby)
+        {
+            activeFrame = &screen.engineStandbyScratch;
+            srcWidth = screen.engineStandbyScratchWidth;
+            srcHeight = screen.engineStandbyScratchHeight;
+        }
+        else if (usingInternalParkFrame)
         {
             activeFrame = &screen.internalParkScratch;
         }
@@ -477,13 +533,18 @@ void new_frame()
         // The integrated media helper applies brightness in WebView2's GPU
         // compositor. Other sources retain the compatible CPU fallback.
         const bool sourceHandlesBrightness =
+            !showEngineStandby &&
             !usingInternalParkFrame &&
             !reverseActive &&
             activeSource &&
             activeSource->SupportsSourceBrightness();
-        const float brightness = sourceHandlesBrightness
-            ? 1.0f
-            : (std::clamp)(screen.brightness, 0.10f, 2.0f);
+        const float brightness = showEngineStandby
+            ? (std::clamp)(
+                screen.effectiveBrightness * screen.engineOffBrightness,
+                0.05f, 2.0f)
+            : sourceHandlesBrightness
+                ? 1.0f
+                : (std::clamp)(screen.effectiveBrightness, 0.05f, 2.0f);
         const bool adjustBrightness =
             std::fabs(brightness - 1.0f) > 0.001f;
         if (adjustBrightness &&
@@ -623,6 +684,7 @@ void new_frame()
         screen.immediateContext->Unmap(
             screen.liveTexture, 0);
         screen.hasUploadedFrame = true;
+        screen.engineStandbyWasDisplayed = showEngineStandby;
         ++screen.uploadedFrames;
 
         const double elapsedMs = std::chrono::duration<double, std::milli>(

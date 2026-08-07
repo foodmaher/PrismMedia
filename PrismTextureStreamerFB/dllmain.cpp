@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include <scs_sdk/scssdk_telemetry.h>
+#include <scs_sdk/common/scssdk_telemetry_common_configs.h>
 #include <scs_sdk/common/scssdk_telemetry_truck_common_channels.h>
 #include "scs_logging.h"
 
@@ -24,11 +25,33 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <string>
 using namespace scs_logging;
 #pragma comment(lib, "minhook.x64.lib")
 
 namespace
 {
+    float calculate_effective_brightness(const screen_t& screen)
+    {
+        float effective = (std::clamp)(
+            screen.brightness, 0.10f, 2.0f);
+        if (screen.autoBrightnessEnabled &&
+            g_game_lighting_valid.load())
+        {
+            const float luminance = g_game_lighting_luminance.load();
+            float scene = (std::clamp)(
+                (luminance - 0.06f) / 0.54f, 0.0f, 1.0f);
+            scene = scene * scene * (3.0f - 2.0f * scene);
+            const float multiplier =
+                screen.autoBrightnessDarkMultiplier +
+                (screen.autoBrightnessBrightMultiplier -
+                    screen.autoBrightnessDarkMultiplier) * scene;
+            effective *= multiplier;
+        }
+        return (std::clamp)(effective, 0.05f, 2.0f);
+    }
+
     void update_reverse_state(bool active)
     {
         if (g_reverse_active.load(std::memory_order_relaxed) == active)
@@ -116,6 +139,46 @@ SCSAPI_VOID driving_state_changed(
 		// Frame telemetry can stop immediately after the paused event.
 		environment_audio::reset();
 	}
+}
+
+SCSAPI_VOID truck_configuration_changed(
+    const scs_event_t,
+    const void* const eventInfo,
+    const scs_context_t)
+{
+    const auto* configuration =
+        static_cast<const scs_telemetry_configuration_t*>(eventInfo);
+    if (!configuration || !configuration->id ||
+        std::strcmp(configuration->id, SCS_TELEMETRY_CONFIG_truck) != 0)
+        return;
+
+    std::string brand;
+    std::string name;
+    for (const scs_named_value_t* attribute = configuration->attributes;
+        attribute && attribute->name; ++attribute)
+    {
+        if (attribute->value.type != SCS_VALUE_TYPE_string ||
+            !attribute->value.value_string.value)
+            continue;
+        if (std::strcmp(
+            attribute->name,
+            SCS_TELEMETRY_CONFIG_ATTRIBUTE_brand) == 0)
+        {
+            brand = attribute->value.value_string.value;
+        }
+        else if (std::strcmp(
+            attribute->name,
+            SCS_TELEMETRY_CONFIG_ATTRIBUTE_name) == 0)
+        {
+            name = attribute->value.value_string.value;
+        }
+    }
+
+    set_truck_identity(brand, name);
+    diagnostic_log::writef(
+        "telemetry", "Truck identity changed: brand='%s', name='%s'.",
+        brand.empty() ? "Truck" : brand.c_str(),
+        name.empty() ? "unknown" : name.c_str());
 }
 
 SCSAPI_VOID selected_gear_changed(
@@ -413,6 +476,7 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
             "runtime",
             "driving=%d engine=%d reverse=%d camera=%s speed=%.1fkm/h "
             "environment=%.3f media_gain=%.3f spatial_gain=%.3f "
+            "lighting=%.3f lighting_valid=%d "
             "cutoff=%.0fHz estimator=%.1fus "
             "background_lp=%ld,%ld,%ld",
             g_telemetry_driving.load() ? 1 : 0,
@@ -423,6 +487,8 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
             g_environment_intensity.load(),
             g_environment_media_gain.load(),
             g_adaptive_audio_distance_gain.load(),
+            g_game_lighting_luminance.load(),
+            g_game_lighting_valid.load() ? 1 : 0,
             g_adaptive_audio_lowpass_hz.load(),
             g_environment_update_cpu_us.load(),
             processor0 == thread_scheduling::kUnassignedProcessor
@@ -435,6 +501,7 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
 
     {
         std::lock_guard<std::mutex> lock(g_screens_mutex);
+        bool autoBrightnessRequested = false;
         for (auto& screen : g_screens)
         {
             if (!screen.source && !screen.reverseSource &&
@@ -472,7 +539,30 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                     g_engine_enabled.load();
                 screen.source->SetVehiclePowered(powered);
             }
+
+            const bool screenPowered = !screen.followTruckEngine ||
+                !g_telemetry_driving.load() || g_engine_enabled.load();
+            autoBrightnessRequested = autoBrightnessRequested ||
+                (screen.autoBrightnessEnabled && screenPowered);
+            const float effectiveBrightness =
+                calculate_effective_brightness(screen);
+            if (std::fabs(
+                effectiveBrightness - screen.effectiveBrightness) >= 0.003f)
+            {
+                screen.effectiveBrightness = effectiveBrightness;
+                if (screen.source &&
+                    screen.source->SupportsSourceBrightness())
+                {
+                    screen.source->SetSourceBrightness(
+                        screen.effectiveBrightness);
+                }
+                // CPU-brightness sources can reuse their cached frame. The
+                // engine-off standby logo applies its own saved multiplier in
+                // the texture upload path.
+                screen.hasUploadedFrame = false;
+            }
         }
+        g_auto_brightness_requested = autoBrightnessRequested;
 
         if (spatialAudioTarget && spatialAudioScreen)
         {
@@ -612,6 +702,9 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                     (1.0f - facingAwayVolume) * frontAmount;
                 float gain = 1.0f -
                     strength * (1.0f - directionalGain);
+                gain *= (std::clamp)(
+                    spatialAudioScreen->adaptiveAudioInteriorVolume,
+                    0.0f, 1.0f);
 
                 const float x = g_head_offset_x.load();
                 const float y = g_head_offset_y.load();
@@ -743,6 +836,10 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
     version_params->register_for_event(
         SCS_TELEMETRY_EVENT_started,
         driving_state_changed,
+        nullptr);
+    version_params->register_for_event(
+        SCS_TELEMETRY_EVENT_configuration,
+        truck_configuration_changed,
         nullptr);
     version_params->register_for_channel(
         SCS_TELEMETRY_TRUCK_CHANNEL_head_offset,

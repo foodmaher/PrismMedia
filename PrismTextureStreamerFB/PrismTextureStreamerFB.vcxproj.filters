@@ -41,6 +41,9 @@
     <ClCompile Include="dllmain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="engine_standby.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="dx11\present.cpp">
       <Filter>Source Files\dx11</Filter>
     </ClCompile>
@@ -98,6 +101,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="camera_bridge_client.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="engine_standby.h">
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="diagnostic_log.h">

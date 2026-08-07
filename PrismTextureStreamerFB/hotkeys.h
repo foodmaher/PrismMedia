@@ -80,7 +80,7 @@ inline int g_gamepad_controller_index = -1;
 inline float g_gamepad_axis_threshold = 0.65f;
 inline gamepad_binding_t g_gamepad_menu_hotkey{
     gamepad_modifier_t::LEFT_BUMPER,
-    gamepad_input_t::START
+    gamepad_input_t::RIGHT_STICK_CLICK
 };
 inline std::array<gamepad_binding_t, 6> g_media_gamepad_hotkeys{ {
     { gamepad_modifier_t::RIGHT_BUMPER, gamepad_input_t::A },

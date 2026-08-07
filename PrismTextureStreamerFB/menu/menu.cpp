@@ -40,6 +40,36 @@ static int hotkey_binding_index = -1;
 static bool configuration_save_pending = false;
 static uint64_t configuration_last_change_tick = 0;
 
+static float calculate_effective_brightness(const screen_t& screen)
+{
+	float effective = (std::clamp)(screen.brightness, 0.10f, 2.0f);
+	if (screen.autoBrightnessEnabled && g_game_lighting_valid.load())
+	{
+		const float luminance = g_game_lighting_luminance.load();
+		float scene = (std::clamp)(
+			(luminance - 0.06f) / 0.54f, 0.0f, 1.0f);
+		scene = scene * scene * (3.0f - 2.0f * scene);
+		const float multiplier =
+			screen.autoBrightnessDarkMultiplier +
+			(screen.autoBrightnessBrightMultiplier -
+				screen.autoBrightnessDarkMultiplier) * scene;
+		effective *= multiplier;
+	}
+
+	return (std::clamp)(effective, 0.05f, 2.0f);
+}
+
+static void apply_screen_brightness(screen_t& screen)
+{
+	screen.effectiveBrightness =
+		calculate_effective_brightness(screen);
+	if (screen.source && screen.source->SupportsSourceBrightness())
+		screen.source->SetSourceBrightness(screen.effectiveBrightness);
+	// Reprocess the cached image for CPU-fallback sources and ensure the next
+	// filtered WebView frame replaces the existing texture.
+	screen.hasUploadedFrame = false;
+}
+
 static void set_menu_visibility(bool visible)
 {
 	menu_visible.store(visible);
@@ -59,7 +89,11 @@ static void set_menu_visibility(bool visible)
 	dinput8::set_mouse(visible);
 
 	if (ImGui::GetCurrentContext())
-		ImGui::GetIO().MouseDrawCursor = visible;
+	{
+		// Use the Win32 cursor exclusively. Drawing a second ImGui software
+		// cursor can leave both it and the game's controller cursor visible.
+		ImGui::GetIO().MouseDrawCursor = false;
+	}
 }
 
 static bool rebuild_source(screen_t& screen)
@@ -133,7 +167,7 @@ static bool rebuild_source(screen_t& screen)
 	{
 		screen.sourceCreatedTick = GetTickCount64();
 		screen.source->SetPaused(screen.paused);
-		screen.source->SetSourceBrightness(screen.brightness);
+		apply_screen_brightness(screen);
 	}
 	g_screen_source_creation_in_progress = false;
 	return screen.source != nullptr;
@@ -601,6 +635,13 @@ void on_frame()
 			if (edit_gamepad_binding(
 				"Plugin menu", 10999, g_gamepad_menu_hotkey))
 				saveConfiguration = true;
+			if (g_gamepad_menu_hotkey.input == gamepad_input_t::START)
+			{
+				ImGui::TextColored(
+					ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+					"Start/Menu is also consumed by ETS2/ATS and can show "
+					"the game cursor. Right Stick Click is recommended.");
+			}
 			ImGui::Separator();
 
 			for (int commandIndex = 0;
@@ -619,7 +660,8 @@ void on_frame()
 					saveConfiguration = true;
 			}
 			ImGui::TextDisabled(
-				"Defaults: LB + Start toggles this menu; RB + A plays/pauses; "
+				"Defaults: LB + Right Stick Click toggles this menu; "
+				"RB + A plays/pauses; "
 				"RB + right-stick directions control tracks and volume. "
 				"ETS2/ATS still receives the same gamepad input.");
 		}
@@ -927,19 +969,7 @@ void on_frame()
 						ImGuiSliderFlags_AlwaysClamp))
 					{
 						screen.brightness = brightnessPercent / 100.0f;
-						if (screen.source &&
-							screen.source->SupportsSourceBrightness())
-						{
-							screen.source->SetSourceBrightness(
-								screen.brightness);
-							screen.hasUploadedFrame = false;
-						}
-						else
-						{
-							// Compatible fallback sources reprocess the cached
-							// image, including while capture is paused.
-							screen.hasUploadedFrame = false;
-						}
+						apply_screen_brightness(screen);
 						saveConfiguration = true;
 					}
 					if (ImGui::IsItemHovered())
@@ -956,6 +986,63 @@ void on_frame()
 							  "Native Direct Media use a compatible CPU colour "
 							  "lookup at other values.");
 						ImGui::EndTooltip();
+					}
+
+					if (ImGui::Checkbox(
+						"Automatic brightness from game lighting",
+						&screen.autoBrightnessEnabled))
+					{
+						apply_screen_brightness(screen);
+						saveConfiguration = true;
+					}
+					if (ImGui::IsItemHovered())
+					{
+						ImGui::BeginTooltip();
+						ImGui::TextWrapped(
+							"Samples a 4 x 4 grid from the game before the plugin "
+							"UI is drawn, at most four times per second. GPU work "
+							"is read asynchronously and remains off when this "
+							"option is disabled on every screen.");
+						ImGui::EndTooltip();
+					}
+					if (screen.autoBrightnessEnabled)
+					{
+						float darkPercent =
+							screen.autoBrightnessDarkMultiplier * 100.0f;
+						if (ImGui::SliderFloat(
+							"Dark-scene brightness multiplier",
+							&darkPercent, 25.0f, 125.0f, "%.0f%%",
+							ImGuiSliderFlags_AlwaysClamp))
+						{
+							screen.autoBrightnessDarkMultiplier =
+								darkPercent / 100.0f;
+							apply_screen_brightness(screen);
+							saveConfiguration = true;
+						}
+						float brightPercent =
+							screen.autoBrightnessBrightMultiplier * 100.0f;
+						if (ImGui::SliderFloat(
+							"Bright-scene brightness multiplier",
+							&brightPercent, 50.0f, 200.0f, "%.0f%%",
+							ImGuiSliderFlags_AlwaysClamp))
+						{
+							screen.autoBrightnessBrightMultiplier =
+								brightPercent / 100.0f;
+							apply_screen_brightness(screen);
+							saveConfiguration = true;
+						}
+						if (g_game_lighting_valid.load())
+						{
+							ImGui::TextDisabled(
+								"Game lighting: %.0f%% | effective screen: %.0f%%",
+								g_game_lighting_luminance.load() * 100.0f,
+								screen.effectiveBrightness * 100.0f);
+						}
+						else
+						{
+							ImGui::TextDisabled(
+								"Waiting for the first game-lighting sample...");
+						}
 					}
 
 					uint8_t guardMinimum = 0;
@@ -1417,7 +1504,33 @@ void on_frame()
 									g_engine_enabled.load();
 								screen.source->SetVehiclePowered(powered);
 							}
+							apply_screen_brightness(screen);
 							saveConfiguration = true;
+						}
+						if (screen.followTruckEngine)
+						{
+							float engineOffPercent =
+								screen.engineOffBrightness * 100.0f;
+							if (ImGui::SliderFloat(
+								"Engine-off logo brightness",
+								&engineOffPercent,
+								5.0f, 100.0f, "%.0f%%",
+								ImGuiSliderFlags_AlwaysClamp))
+							{
+								screen.engineOffBrightness =
+									engineOffPercent / 100.0f;
+								apply_screen_brightness(screen);
+								saveConfiguration = true;
+							}
+							if (ImGui::IsItemHovered())
+							{
+								ImGui::BeginTooltip();
+								ImGui::TextWrapped(
+									"Replaces media with the current truck brand and "
+									"model logo while playback is paused. This controls "
+									"the standby logo brightness.");
+								ImGui::EndTooltip();
+							}
 						}
 						ImGui::EndDisabled();
 						if (!supportsVehiclePower)
@@ -1474,6 +1587,26 @@ void on_frame()
 
 							if (screen.adaptiveAudioEnabled)
 							{
+								float interiorVolumePercent =
+									screen.adaptiveAudioInteriorVolume * 100.0f;
+								if (ImGui::SliderFloat(
+									"Interior-cab master volume",
+									&interiorVolumePercent,
+									0.0f, 100.0f, "%.0f%%",
+									ImGuiSliderFlags_AlwaysClamp))
+								{
+									screen.adaptiveAudioInteriorVolume =
+										interiorVolumePercent / 100.0f;
+									saveConfiguration = true;
+								}
+								if (ImGui::IsItemHovered())
+								{
+									ImGui::BeginTooltip();
+									ImGui::TextWrapped(
+										"Reduces media only in the interior camera. "
+										"Outside-cab near and far volumes remain unchanged.");
+									ImGui::EndTooltip();
+								}
 								if (ImGui::SliderFloat(
 									"Spatial strength",
 									&screen.adaptiveAudioStrength,

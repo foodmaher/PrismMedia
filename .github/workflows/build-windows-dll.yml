@@ -85,6 +85,7 @@ jobs:
           Copy-Item "V3.7-PLAYLIST-CORE-BALANCE.md" $Docs
           Copy-Item "V3.8-SPOTIFY-GAMEPAD-DIAGNOSTICS.md" $Docs
           Copy-Item "V3.9-SPOTIFY-SESSION-BACKUPS.md" $Docs
+          Copy-Item "V3.10-VISUAL-AUDIO-INPUT.md" $Docs
 
           $SpfBridge = "$Runtime\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |
@@ -93,7 +94,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Runtime\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 3.9.4 Media Controls + Update Notifications
+          PrismTextureStreamerFB 3.10.1 Engine Standby Logo
 
           Copy PrismTextureStreamerFB.dll AND the PrismTextureStreamerFB
           folder into:
@@ -112,7 +113,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-3.9.4-media-controls-updates
+          name: PrismTextureStreamerFB-3.10.1-engine-standby-logo
           path: package
           if-no-files-found: error
           retention-days: 30

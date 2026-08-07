@@ -144,6 +144,7 @@
     <ClCompile Include="diagnostic_log.cpp" />
     <ClCompile Include="dinput8\dinput8.cpp" />
     <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="engine_standby.cpp" />
     <ClCompile Include="dx11\CreateTexture2D.cpp" />
     <ClCompile Include="dx11\internal_render_probe.cpp" />
     <ClCompile Include="dx11\present.cpp" />
@@ -166,6 +167,7 @@
     <ClInclude Include="bmem.h" />
     <ClInclude Include="camera_bridge_client.h" />
     <ClInclude Include="diagnostic_log.h" />
+    <ClInclude Include="engine_standby.h" />
     <ClInclude Include="dinput8\dinput8.h" />
     <ClInclude Include="dx11\CreateTexture2D.h" />
     <ClInclude Include="dx11\dx11.h" />

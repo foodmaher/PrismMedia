@@ -1,5 +1,6 @@
 #include "dx11.h"
 #include "internal_render_probe.h"
+#include "../telemetry_state.h"
 #include "../thread_scheduling.h"
 #include "../win32/win32.h"
 #include <MinHook/MinHook.h>
@@ -10,8 +11,11 @@ using namespace scs_logging;
 #include <ImGui/imgui_impl_dx11.h>
 #include <ImGui/imgui_impl_win32.h>
 
-#include <vector>
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <functional>
+#include <vector>
 
 static std::vector<std::function<void()>> frame_callbacks{};
 static std::vector<std::function<void()>> pending_callbacks{};
@@ -27,6 +31,228 @@ namespace
 {
     constexpr wchar_t kProbeWindowClass[] =
         L"PrismTextureStreamerDX11Probe";
+
+    constexpr UINT kLightingGridSize = 4;
+    constexpr uint64_t kLightingSampleIntervalMs = 250;
+
+    struct lighting_sample_slot_t
+    {
+        ID3D11Texture2D* staging{};
+        ID3D11Query* completion{};
+        bool pending{};
+    };
+
+    std::array<lighting_sample_slot_t, 2> lightingSlots{};
+    UINT lightingBackbufferWidth{};
+    UINT lightingBackbufferHeight{};
+    DXGI_FORMAT lightingBackbufferFormat{ DXGI_FORMAT_UNKNOWN };
+    size_t nextLightingSlot{};
+    uint64_t lastLightingSampleTick{};
+
+    void reset_lighting_sampler()
+    {
+        for (auto& slot : lightingSlots)
+        {
+            if (slot.completion)
+                slot.completion->Release();
+            if (slot.staging)
+                slot.staging->Release();
+            slot = {};
+        }
+        lightingBackbufferWidth = 0;
+        lightingBackbufferHeight = 0;
+        lightingBackbufferFormat = DXGI_FORMAT_UNKNOWN;
+        nextLightingSlot = 0;
+        lastLightingSampleTick = 0;
+        g_game_lighting_valid = false;
+    }
+
+    bool supported_lighting_format(DXGI_FORMAT format)
+    {
+        return format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+            format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+            format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+            format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    }
+
+    bool ensure_lighting_sampler(const D3D11_TEXTURE2D_DESC& backbuffer)
+    {
+        if (!device || backbuffer.Width < kLightingGridSize ||
+            backbuffer.Height < kLightingGridSize ||
+            backbuffer.SampleDesc.Count != 1 ||
+            !supported_lighting_format(backbuffer.Format))
+            return false;
+
+        if (lightingSlots[0].staging &&
+            lightingBackbufferWidth == backbuffer.Width &&
+            lightingBackbufferHeight == backbuffer.Height &&
+            lightingBackbufferFormat == backbuffer.Format)
+            return true;
+
+        reset_lighting_sampler();
+
+        D3D11_TEXTURE2D_DESC staging{};
+        staging.Width = kLightingGridSize;
+        staging.Height = kLightingGridSize;
+        staging.MipLevels = 1;
+        staging.ArraySize = 1;
+        staging.Format = backbuffer.Format;
+        staging.SampleDesc.Count = 1;
+        staging.Usage = D3D11_USAGE_STAGING;
+        staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+
+        D3D11_QUERY_DESC query{};
+        query.Query = D3D11_QUERY_EVENT;
+        for (auto& slot : lightingSlots)
+        {
+            if (FAILED(device->CreateTexture2D(
+                &staging, nullptr, &slot.staging)) ||
+                FAILED(device->CreateQuery(
+                    &query, &slot.completion)))
+            {
+                reset_lighting_sampler();
+                return false;
+            }
+        }
+
+        lightingBackbufferWidth = backbuffer.Width;
+        lightingBackbufferHeight = backbuffer.Height;
+        lightingBackbufferFormat = backbuffer.Format;
+        return true;
+    }
+
+    float pixel_luminance(const uint8_t* pixel, DXGI_FORMAT format)
+    {
+        const bool bgra = format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+            format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        const float red = pixel[bgra ? 2 : 0] / 255.0f;
+        const float green = pixel[1] / 255.0f;
+        const float blue = pixel[bgra ? 0 : 2] / 255.0f;
+        return red * 0.2126f + green * 0.7152f + blue * 0.0722f;
+    }
+
+    void consume_lighting_samples()
+    {
+        if (!context)
+            return;
+
+        for (auto& slot : lightingSlots)
+        {
+            if (!slot.pending || !slot.completion || !slot.staging)
+                continue;
+            if (context->GetData(
+                slot.completion, nullptr, 0,
+                D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+                continue;
+
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            const HRESULT mapResult = context->Map(
+                slot.staging, 0, D3D11_MAP_READ,
+                D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+            if (mapResult == DXGI_ERROR_WAS_STILL_DRAWING)
+                continue;
+
+            slot.pending = false;
+            if (FAILED(mapResult))
+                continue;
+
+            std::array<float, kLightingGridSize * kLightingGridSize>
+                luminance{};
+            size_t sample = 0;
+            for (UINT y = 0; y < kLightingGridSize; ++y)
+            {
+                const auto* row = static_cast<const uint8_t*>(mapped.pData) +
+                    static_cast<size_t>(y) * mapped.RowPitch;
+                for (UINT x = 0; x < kLightingGridSize; ++x)
+                {
+                    luminance[sample++] = pixel_luminance(
+                        row + static_cast<size_t>(x) * 4,
+                        lightingBackbufferFormat);
+                }
+            }
+            context->Unmap(slot.staging, 0);
+
+            std::sort(luminance.begin(), luminance.end());
+            // The upper quartile sees the world through a dark cab without a
+            // single headlight or UI pixel dominating the adjustment.
+            const float measured = luminance[11];
+            const float previous = g_game_lighting_luminance.load();
+            const float smoothed = g_game_lighting_valid.load()
+                ? previous * 0.72f + measured * 0.28f
+                : measured;
+            g_game_lighting_luminance = smoothed;
+            g_game_lighting_valid = true;
+        }
+    }
+
+    void sample_game_lighting(IDXGISwapChain* swapChain)
+    {
+        if (!g_auto_brightness_requested.load() || !context)
+            return;
+
+        consume_lighting_samples();
+
+        const uint64_t now = GetTickCount64();
+        if (lastLightingSampleTick != 0 &&
+            now >= lastLightingSampleTick &&
+            now - lastLightingSampleTick < kLightingSampleIntervalMs)
+            return;
+
+        size_t targetIndex = lightingSlots.size();
+        for (size_t offset = 0; offset < lightingSlots.size(); ++offset)
+        {
+            const size_t candidateIndex =
+                (nextLightingSlot + offset) % lightingSlots.size();
+            auto& candidate = lightingSlots[candidateIndex];
+            if (!candidate.pending)
+            {
+                targetIndex = candidateIndex;
+                break;
+            }
+        }
+        if (targetIndex == lightingSlots.size())
+            return;
+
+        ID3D11Texture2D* backbuffer{};
+        if (FAILED(swapChain->GetBuffer(
+            0, __uuidof(ID3D11Texture2D),
+            reinterpret_cast<void**>(&backbuffer))))
+            return;
+
+        D3D11_TEXTURE2D_DESC description{};
+        backbuffer->GetDesc(&description);
+        if (!ensure_lighting_sampler(description))
+        {
+            backbuffer->Release();
+            return;
+        }
+
+        // The slot array has stable indices even when a resize recreates its
+        // resources inside ensure_lighting_sampler().
+        auto& target = lightingSlots[targetIndex];
+        nextLightingSlot = (targetIndex + 1) % lightingSlots.size();
+        for (UINT y = 0; y < kLightingGridSize; ++y)
+        {
+            for (UINT x = 0; x < kLightingGridSize; ++x)
+            {
+                const UINT sourceX = (x + 1) * description.Width /
+                    (kLightingGridSize + 1);
+                const UINT sourceY = (y + 1) * description.Height /
+                    (kLightingGridSize + 1);
+                const D3D11_BOX box{
+                    sourceX, sourceY, 0,
+                    sourceX + 1, sourceY + 1, 1
+                };
+                context->CopySubresourceRegion(
+                    target.staging, 0, x, y, 0,
+                    backbuffer, 0, &box);
+            }
+        }
+        context->End(target.completion);
+        target.pending = true;
+        lastLightingSampleTick = now;
+        backbuffer->Release();
+    }
 
     HWND create_probe_window(HINSTANCE instance)
     {
@@ -146,6 +372,9 @@ HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
     }
 
     dx11::internal_render_probe::on_present_frame(context);
+    // Capture the game's lighting before the plugin UI is rendered. The
+    // asynchronous query is consumed on a later frame and never blocks here.
+    sample_game_lighting(SwapChain);
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
@@ -179,6 +408,7 @@ HRESULT hooked_resize_buffers(IDXGISwapChain* SwapChain, UINT BufferCount, UINT 
 
 
     context->OMSetRenderTargets(0, nullptr, nullptr);
+    reset_lighting_sampler();
     if (mainRenderTargetView) {
         mainRenderTargetView->Release();
         mainRenderTargetView = nullptr;
@@ -361,7 +591,7 @@ namespace dx11::present {
         MH_DisableHook(resize_buffers_function_address);
         MH_RemoveHook(resize_buffers_function_address);
 
-
+        reset_lighting_sampler();
         if (device) device->Release();
         if (context) context->Release();
         if (mainRenderTargetView) mainRenderTargetView->Release();

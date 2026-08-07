@@ -18,6 +18,7 @@ namespace PrismMediaClient
         private float gain = 1.0f;
         private float pan;
         private float duckingGain = 1.0f;
+        private float userGain = 1.0f;
         private DateTime nextDiscoveryUtc = DateTime.MinValue;
         private DateTime nextHealthCheckUtc = DateTime.MinValue;
         private bool applyPending = true;
@@ -61,6 +62,21 @@ namespace PrismMediaClient
             applyPending = true;
         }
 
+        internal float AdjustUserVolume(float amount)
+        {
+            float nextGain = Math.Max(
+                0.0f, Math.Min(1.0f, userGain + amount));
+            if (Math.Abs(userGain - nextGain) >= 0.0005f)
+            {
+                userGain = nextGain;
+                applyPending = true;
+            }
+            ClientDiagnosticLog.Write(
+                "audio", "WebView master volume adjusted to " +
+                Math.Round(userGain * 100.0f) + "%.");
+            return userGain;
+        }
+
         internal void RequestSessionRefresh(string reason)
         {
             nextDiscoveryUtc = DateTime.MinValue;
@@ -69,6 +85,7 @@ namespace PrismMediaClient
                 "audio", "Audio-session refresh requested (" + reason +
                 "). Current spatial gain=" + gain.ToString("0.000") +
                 ", environment gain=" + duckingGain.ToString("0.000") +
+                ", WebView volume=" + userGain.ToString("0.000") +
                 ", pan=" + pan.ToString("0.000") + ".");
         }
 
@@ -88,8 +105,9 @@ namespace PrismMediaClient
                 if (!applyPending && !sessionAdded && !healthCheck)
                     return;
 
-                float combinedGain = gain * duckingGain;
-                bool processing = enabled || duckingGain < 0.999f;
+                float combinedGain = gain * duckingGain * userGain;
+                bool processing = enabled || duckingGain < 0.999f ||
+                    userGain < 0.999f;
                 float combinedPan = enabled ? pan : 0.0f;
                 List<string> expired = null;
                 foreach (KeyValuePair<string, AudioSession> item in sessions)

@@ -86,6 +86,11 @@ struct screen_t
 	std::vector<uint8_t> frameScratch;
 	uint32_t frameScratchWidth{};
 	uint32_t frameScratchHeight{};
+	std::vector<uint8_t> engineStandbyScratch;
+	uint32_t engineStandbyScratchWidth{};
+	uint32_t engineStandbyScratchHeight{};
+	uint64_t engineStandbyIdentityRevision{};
+	bool engineStandbyWasDisplayed{};
 	std::vector<uint8_t> internalParkScratch;
 	uint32_t internalParkScratchWidth{};
 	uint32_t internalParkScratchHeight{};
@@ -100,7 +105,11 @@ struct screen_t
 	bool paused = false;
 	bool hotkeyTarget = false;
 	bool followTruckEngine = true;
+	// Brightness multiplier for the generated truck-name standby logo while
+	// engine-follow pauses the media source.
+	float engineOffBrightness = 0.35f;
 	bool adaptiveAudioEnabled = false;
+	float adaptiveAudioInteriorVolume = 1.0f;
 	float adaptiveAudioStrength = 0.85f;
 	float adaptiveAudioSpeakerAzimuth = 0.0f;
 	float adaptiveAudioFacingAwayVolume = 0.05f;
@@ -141,6 +150,12 @@ struct screen_t
 	std::unique_ptr<IContentSource> reverseSource;
 	scale_mode_t scaleMode = scale_mode_t::FIT;
 	float brightness = 1.0f;
+	bool autoBrightnessEnabled = false;
+	float autoBrightnessDarkMultiplier = 0.65f;
+	float autoBrightnessBrightMultiplier = 1.15f;
+	// Runtime brightness after the optional game-lighting adjustment.
+	// This is deliberately not persisted; it is rebuilt from saved controls.
+	float effectiveBrightness = 1.0f;
 	float brightnessLutScale = -1.0f;
 	std::array<uint8_t, 256> brightnessLut{};
 	uint8_t edgeBleedGuard = 2;

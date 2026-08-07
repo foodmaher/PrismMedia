@@ -305,6 +305,19 @@ namespace settings {
                         g_gamepad_menu_hotkey.input), path.c_str()),
                 0U,
                 static_cast<UINT>(gamepad_input_t::COUNT) - 1));
+        if (g_gamepad_menu_hotkey.modifier ==
+                gamepad_modifier_t::LEFT_BUMPER &&
+            g_gamepad_menu_hotkey.input == gamepad_input_t::START)
+        {
+            // LB + Start was the old default. ETS2/ATS also consumes Start and
+            // can expose its own software cursor, leaving two cursors over the
+            // plugin menu. Migrate only that exact legacy default.
+            g_gamepad_menu_hotkey.input =
+                gamepad_input_t::RIGHT_STICK_CLICK;
+            diagnostic_log::write(
+                "input", "Migrated legacy LB + Start menu chord to "
+                "LB + Right Stick Click to prevent the game cursor opening.");
+        }
         for (size_t bindingIndex = 0;
             bindingIndex < g_media_gamepad_hotkeys.size(); ++bindingIndex)
         {
@@ -386,6 +399,20 @@ namespace settings {
             screen.brightness = (std::clamp)(
                 read_float(path, section.c_str(), "Brightness", 1.0f),
                 0.10f, 2.0f);
+            screen.autoBrightnessEnabled = GetPrivateProfileIntA(
+                section.c_str(), "AutoBrightnessEnabled", 0,
+                path.c_str()) != 0;
+            screen.autoBrightnessDarkMultiplier = (std::clamp)(
+                read_float(
+                    path, section.c_str(),
+                    "AutoBrightnessDarkMultiplier", 0.65f),
+                0.25f, 1.25f);
+            screen.autoBrightnessBrightMultiplier = (std::clamp)(
+                read_float(
+                    path, section.c_str(),
+                    "AutoBrightnessBrightMultiplier", 1.15f),
+                0.50f, 2.0f);
+            screen.effectiveBrightness = screen.brightness;
             screen.edgeBleedGuard = static_cast<uint8_t>((std::clamp)(
                 GetPrivateProfileIntA(
                     section.c_str(), "EdgeBleedGuard", 2, path.c_str()),
@@ -454,8 +481,17 @@ namespace settings {
                 section.c_str(), "HotkeyTarget", 0, path.c_str()) != 0;
             screen.followTruckEngine = GetPrivateProfileIntA(
                 section.c_str(), "FollowTruckEngine", 1, path.c_str()) != 0;
+            screen.engineOffBrightness = (std::clamp)(
+                read_float(
+                    path, section.c_str(), "EngineOffBrightness", 0.35f),
+                0.05f, 1.0f);
             screen.adaptiveAudioEnabled = GetPrivateProfileIntA(
                 section.c_str(), "AdaptiveAudioEnabled", 0, path.c_str()) != 0;
+            screen.adaptiveAudioInteriorVolume = (std::clamp)(
+                read_float(
+                    path, section.c_str(),
+                    "AdaptiveAudioInteriorVolume", 1.0f),
+                0.0f, 1.0f);
             screen.adaptiveAudioStrength = (std::clamp)(
                 read_float(path, section.c_str(), "AdaptiveAudioStrength", 0.85f),
                 0.0f, 1.0f);
@@ -656,7 +692,8 @@ namespace settings {
             {
                 screen.sourceCreatedTick = GetTickCount64();
                 screen.source->SetPaused(screen.paused);
-                screen.source->SetSourceBrightness(screen.brightness);
+                screen.source->SetSourceBrightness(
+                    screen.effectiveBrightness);
             }
 
             if (screen.reverseCameraEnabled &&
@@ -790,12 +827,17 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "Paused", screen.paused ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "ScaleMode", static_cast<uint32_t>(screen.scaleMode));
             write_float(temporaryPath, section.c_str(), "Brightness", screen.brightness);
+            write_number(temporaryPath, section.c_str(), "AutoBrightnessEnabled", screen.autoBrightnessEnabled ? 1 : 0);
+            write_float(temporaryPath, section.c_str(), "AutoBrightnessDarkMultiplier", screen.autoBrightnessDarkMultiplier);
+            write_float(temporaryPath, section.c_str(), "AutoBrightnessBrightMultiplier", screen.autoBrightnessBrightMultiplier);
             write_number(temporaryPath, section.c_str(), "EdgeBleedGuard", screen.edgeBleedGuard);
             write_number(temporaryPath, section.c_str(), "PerformanceProfile", static_cast<uint32_t>(screen.performanceProfile));
             write_number(temporaryPath, section.c_str(), "ContentMode", static_cast<uint32_t>(screen.contentMode));
             write_number(temporaryPath, section.c_str(), "HotkeyTarget", screen.hotkeyTarget ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "FollowTruckEngine", screen.followTruckEngine ? 1 : 0);
+            write_float(temporaryPath, section.c_str(), "EngineOffBrightness", screen.engineOffBrightness);
             write_number(temporaryPath, section.c_str(), "AdaptiveAudioEnabled", screen.adaptiveAudioEnabled ? 1 : 0);
+            write_float(temporaryPath, section.c_str(), "AdaptiveAudioInteriorVolume", screen.adaptiveAudioInteriorVolume);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioStrength", screen.adaptiveAudioStrength);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioSpeakerAzimuth", screen.adaptiveAudioSpeakerAzimuth);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioFacingAwayVolume", screen.adaptiveAudioFacingAwayVolume);

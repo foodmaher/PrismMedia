@@ -223,7 +223,7 @@ namespace {
             // capture awake briefly and discard any older queued frame so a
             // paused GPS receives the newly filtered image.
             if (GetTickCount64() <
-                m_brightnessRefreshRequestedTick.load() + 100)
+                m_brightnessRefreshRequestedTick.load() + 300)
                 return false;
 
             if (copied)
@@ -340,7 +340,7 @@ namespace {
         bool SupportsSourceBrightness() const override { return true; }
         void SetSourceBrightness(float brightness) override
         {
-            brightness = (std::clamp)(brightness, 0.10f, 2.0f);
+            brightness = (std::clamp)(brightness, 0.05f, 2.0f);
             if (std::fabs(brightness - m_lastBrightness) < 0.001f)
                 return;
 

@@ -1,4 +1,4 @@
-# PrismTextureStreamerFB 2.8 Performance and Adaptive Features Guide
+# PrismTextureStreamerFB 3.10 Performance and Adaptive Features Guide
 
 ## Choose the playback method
 
@@ -45,6 +45,10 @@ This is normally sufficient for a GPS or dashboard-sized display.
   above `100%`, so the game's upload thread keeps its fast-copy path. Window
   Capture and Native Direct Media retain the compatible CPU colour lookup.
   At `100%`, every mode uses the existing fast-copy path.
+- **Automatic brightness from game lighting** is optional and dormant until a
+  screen enables it. It copies only a 4 x 4 sample grid at up to 4 Hz into two
+  staging slots, checks GPU completion without flushing, and never waits for a
+  readback on the render thread. Disable it if you prefer a fixed brightness.
 - **Edge Colour-Bleed Guard** writes only the outer 0–16 pixels after upload.
   The recommended `2 px` prevents clamp-sampled video colours from tinting the
   truck GPS bezel and has negligible cost.
@@ -136,6 +140,11 @@ Integrated Media Client capture worker also sleeps while engine-paused.
 
 Engine control is inactive in game menus and before the driving session starts,
 so **Volume in menus / before driving** continues to control that state.
+
+While the engine is off, the game texture shows a generated card containing the
+current truck's brand and model instead of retaining the media image. The card
+is generated once per truck/texture-size change, then uploaded once and held;
+it adds no continuous capture, WebView, or per-frame rendering work.
 
 ## Automatic reverse camera
 

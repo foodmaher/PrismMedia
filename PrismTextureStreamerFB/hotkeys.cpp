@@ -328,11 +328,16 @@ namespace {
         return true;
     }
 
-    bool binding_pressed(const hotkey_binding_t& binding)
+    bool binding_down(const hotkey_binding_t& binding)
     {
         if (binding.virtualKey == 0)
             return false;
-        if ((GetAsyncKeyState(static_cast<int>(binding.virtualKey)) & 1) == 0)
+        // The low GetAsyncKeyState transition bit is shared process-wide and
+        // can be consumed by ETS2/ATS before this callback runs. The held bit
+        // plus our own edge state gives keyboard keys the same one-press
+        // behavior as the working gamepad path.
+        if ((GetAsyncKeyState(
+            static_cast<int>(binding.virtualKey)) & 0x8000) == 0)
             return false;
 
         const bool control =
@@ -651,19 +656,52 @@ namespace {
 
 void process_media_hotkeys(bool menu_visible)
 {
+    static std::array<bool, 6> wasDown{};
+    static std::array<uint64_t, 6> pressedAt{};
+    static std::array<uint64_t, 6> repeatedAt{};
+
     if (g_is_binding_hotkey)
+    {
+        wasDown.fill(false);
         return;
+    }
 
     // Normal bindings remain available while the menu is open, except simple
     // unmodified keyboard keys which would interfere with text entry.
+    const uint64_t now = GetTickCount64();
     for (size_t i = 0; i < g_media_hotkeys.size(); ++i)
     {
         const auto& binding = g_media_hotkeys[i];
-        if (menu_visible && !binding.control && !binding.alt && !binding.shift &&
-            binding.virtualKey < VK_BROWSER_BACK)
-            continue;
-        if (binding_pressed(binding))
-            dispatch(static_cast<media_command_t>(i));
+        const bool allowed = !(menu_visible && !binding.control &&
+            !binding.alt && !binding.shift &&
+            binding.virtualKey < VK_BROWSER_BACK);
+        const bool down = allowed && binding_down(binding);
+        const bool volumeCommand =
+            i == media_command_index(media_command_t::VOLUME_UP) ||
+            i == media_command_index(media_command_t::VOLUME_DOWN);
+        bool fire = down && !wasDown[i];
+        if (fire)
+        {
+            pressedAt[i] = now;
+            repeatedAt[i] = now;
+        }
+        else if (down && volumeCommand &&
+            now >= pressedAt[i] + 450 &&
+            now >= repeatedAt[i] + 150)
+        {
+            fire = true;
+            repeatedAt[i] = now;
+        }
+
+        if (fire)
+        {
+            const auto command = static_cast<media_command_t>(i);
+            dispatch(command);
+            diagnostic_log::writef(
+                "input", "Keyboard media command: %s.",
+                media_command_name(command));
+        }
+        wasDown[i] = down;
     }
 
     process_gamepad_bindings();

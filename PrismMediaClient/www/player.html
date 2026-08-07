@@ -60,7 +60,7 @@
     }
 
     function applyBrightness(value) {
-      const brightness = Math.max(0.1, Math.min(2.0, Number(value) || 1));
+      const brightness = Math.max(0.05, Math.min(2.0, Number(value) || 1));
       currentBrightness = brightness;
       const contentFilter = brightness > 1
         ? "brightness(" + brightness.toFixed(4) + ")"

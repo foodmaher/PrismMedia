@@ -76,6 +76,9 @@ namespace PrismMediaClient
         private bool fullSpotifyWeb;
         private bool userWantsPlayback = true;
         private bool vehiclePowered = true;
+        private double desiredBrightness = 1.0;
+        private double lastLoggedBrightness = -1.0;
+        private DateTime lastBrightnessLogUtc = DateTime.MinValue;
 
         internal MainForm(
             string initialUrl,
@@ -223,6 +226,9 @@ namespace PrismMediaClient
                     {
                         await ApplyCommandAsync(pendingCommands.Dequeue());
                     }
+                    if (args.IsSuccess)
+                        await ApplyBrightnessAsync(
+                            "top-level navigation completed");
                     if (args.IsSuccess && fullSpotifyWeb &&
                         IsSpotifyUri(source))
                     {
@@ -324,6 +330,61 @@ namespace PrismMediaClient
                 command, true);
             await webView.CoreWebView2.ExecuteScriptAsync(
                 "window.prismCommand(" + escaped + ");");
+        }
+
+        private async Task ApplyBrightnessAsync(string reason)
+        {
+            if (webView.CoreWebView2 == null)
+                return;
+
+            string value = desiredBrightness.ToString(
+                "0.0000", CultureInfo.InvariantCulture);
+            try
+            {
+                if (!fullSpotifyWeb)
+                {
+                    await ExecuteCommandAsync("brightness|" + value);
+                }
+                else
+                {
+                    double darkness = desiredBrightness < 1.0
+                        ? 1.0 - desiredBrightness : 0.0;
+                    string script =
+                        "(() => { let o=document.getElementById('prism-brightness-overlay');" +
+                        "if(!o){o=document.createElement('div');" +
+                        "o.id='prism-brightness-overlay';" +
+                        "o.style.cssText='position:fixed;inset:0;" +
+                        "z-index:2147483647;background:#000;pointer-events:none';" +
+                        "document.documentElement.appendChild(o);}" +
+                        "o.style.opacity='" + darkness.ToString(
+                            "0.0000", CultureInfo.InvariantCulture) + "';" +
+                        "document.documentElement.style.filter='" +
+                        (desiredBrightness > 1.0
+                            ? "brightness(" + value + ")" : "none") + "';" +
+                        "return true; })()";
+                    await webView.CoreWebView2.ExecuteScriptAsync(script);
+                }
+                DateTime now = DateTime.UtcNow;
+                bool navigationReapply = !string.Equals(
+                    reason, "plugin brightness command",
+                    StringComparison.Ordinal);
+                if (navigationReapply ||
+                    Math.Abs(desiredBrightness - lastLoggedBrightness) >= 0.05 ||
+                    (now - lastBrightnessLogUtc).TotalSeconds >= 5.0)
+                {
+                    ClientDiagnosticLog.Write(
+                        "render", "Brightness " + value +
+                        " reapplied after " + reason + ".");
+                    lastLoggedBrightness = desiredBrightness;
+                    lastBrightnessLogUtc = now;
+                }
+            }
+            catch (Exception error)
+            {
+                ClientDiagnosticLog.Write(
+                    "error", "Brightness reapply failed after " + reason +
+                    ": " + error.Message);
+            }
         }
 
         private static string NormalizeSpotifyUrl(string value)
@@ -769,19 +830,6 @@ namespace PrismMediaClient
             {
                 userWantsPlayback = false;
             }
-            else if (name == "brightness")
-            {
-                if (!double.TryParse(
-                    argument, NumberStyles.Float,
-                    CultureInfo.InvariantCulture, out double brightness))
-                    brightness = 1.0;
-                brightness = Math.Max(0.1, Math.Min(2.0, brightness));
-                double darkness = brightness < 1.0 ? 1.0 - brightness : 0.0;
-                string script = "(() => { let o=document.getElementById('prism-brightness-overlay'); if(!o){o=document.createElement('div');o.id='prism-brightness-overlay';o.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#000;pointer-events:none';document.documentElement.appendChild(o);} o.style.opacity='" + darkness.ToString("0.0000", CultureInfo.InvariantCulture) + "'; document.documentElement.style.filter='" + (brightness > 1.0 ? "brightness(" + brightness.ToString("0.0000", CultureInfo.InvariantCulture) + ")" : "none") + "'; return true; })()";
-                await webView.CoreWebView2.ExecuteScriptAsync(script);
-                return;
-            }
-
             int handled = await TrySpotifyDomCommandAsync(name);
             if (handled == 0)
             {
@@ -830,6 +878,30 @@ namespace PrismMediaClient
                 {
                     parentProcessId = newParentProcessId;
                 }
+                return;
+            }
+            if (command.StartsWith("brightness|", StringComparison.Ordinal))
+            {
+                if (!double.TryParse(
+                    command.Substring(11), NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out desiredBrightness))
+                    desiredBrightness = 1.0;
+                desiredBrightness = Math.Max(
+                    0.05, Math.Min(2.0, desiredBrightness));
+                await ApplyBrightnessAsync("plugin brightness command");
+                return;
+            }
+            if (string.Equals(
+                    command, "volumeup", StringComparison.Ordinal) ||
+                string.Equals(
+                    command, "volumedown", StringComparison.Ordinal))
+            {
+                // Web-player sliders are framework-owned and Spotify can use
+                // protected media elements. Adjust the WebView audio session
+                // directly so every integrated player follows the command.
+                adaptiveAudio.AdjustUserVolume(
+                    command == "volumeup" ? 0.05f : -0.05f);
                 return;
             }
             if (command.StartsWith("spatial|", StringComparison.Ordinal))

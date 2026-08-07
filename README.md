@@ -14,8 +14,7 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Add a **GPS** screen, **Dashboard** screen, or a **Custom** screen (The target `.tobj` MUST be a functional screen from a UI Script, such as `/ui/gps.sii`)
 - Pick a running application window as the source for that screen
 - Play YouTube videos/playlists without running a full browser
-- Play Spotify through either the low-impact Embed player or an experimental
-  persistent-login Full Web Player
+- Play Spotify through the persistent-login Full Web Player with native controls
 - Play local files or direct stream URLs through Windows Media Foundation
 - Control media with assignable keyboard keys or configurable XInput gamepad
   chords for Play/Pause, Next, Previous, Mute and Volume
@@ -23,6 +22,8 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Spatialize Integrated Media Client sound from the driver's live head pose
 - Fade and muffle outside-camera media by true camera-to-driver distance with
   the optional SPF companion
+- Play a screen's playlist from a stable percentage of nearby AI traffic,
+  with positional pan, distance falloff and muffling from the optional SPF feed
 - Apply separate media volume in menus and detect external cameras reliably
 - Keep the game's own environment audio clear by reducing media dynamically
   from live speed and wheel-contact telemetry
@@ -79,9 +80,10 @@ The GPS/dashboard/custom screens are normally only drawn under specific in game 
 
 - **Window Capture** uses modern Windows Graphics Capture by default, with
   `PrintWindow` available only as a compatibility fallback.
-- **Integrated Media Client** hosts the official YouTube or Spotify embedded
-  player, or an HTML5 video element in a minimal hardware-accelerated WebView2 process. The
-  plugin captures this one clean surface rather than a full browser.
+- **Integrated Media Client** hosts the official YouTube player or an HTML5
+  video element in a minimal local page. Spotify URLs always open the normal
+  persistent-login Full Web Player. The plugin captures this clean helper
+  surface rather than an external browser with tabs and extensions.
 - **Native Direct Media** uses Media Foundation and D3D11 hardware decoding for
   local files and direct media URLs. It bypasses window capture completely.
 
@@ -95,8 +97,9 @@ performance statistics.
 - DirectX 11
 - Microsoft Edge WebView2 Runtime for the Integrated Media Client (normally
   already installed on Windows 10/11)
-- Optional: SPF Framework 1.2+ for exact external-camera position. The main
-  plugin retains fixed outside-volume fallback without it.
+- Optional: SPF Framework 1.2+ for exact external-camera position and AI
+  traffic placement. The main plugin retains fixed outside-volume fallback
+  without it; AI traffic music stays off when the bridge is absent.
 - ReShade is not required. The plugin creates a private hidden DirectX 11
   probe window to install its own Present and texture hooks.
 
@@ -113,6 +116,44 @@ performance statistics.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
 
+## Version 3.12.1 cursor-alignment hotfix
+
+Version `3.12.1-cursor-alignment-hotfix` fixes the separated cursors visible
+when the plugin is opened over an ETS2/ATS menu. The input hook previously
+discarded mouse X/Y movement as well as buttons, freezing the game's software
+cursor while the Win32 pointer continued across ImGui. It now passes only X/Y
+movement so both coordinates remain aligned. In game menus, the redundant
+Win32 cursor image is hidden and the SCS cursor is the single visible pointer;
+while driving, the Win32 pointer remains visible because SCS has no menu
+cursor. Buttons and wheel input are still blocked from reaching the game UI
+behind the plugin.
+
+## Version 3.12 independent AI traffic audio
+
+Version `3.12.0-independent-traffic-radio` prevents AI traffic playback from
+interrupting the dashboard Spotify Full Web Player. **AI Traffic Radios
+(SPF)** now has its own saved source list for local audio files and direct
+audio/stream URLs; it never opens a second Spotify or YouTube client. A stable
+hash of the audible AI ID chooses the source and, for seekable media, a
+60-second-grid starting offset. Playback continues normally from that offset:
+the plugin does not create, download, save, or limit playback to one-minute
+clips. Live and non-seekable streams play continuously without seeking.
+
+The dedicated helper pauses when no selected AI is audible and resumes when
+one returns, so it no longer needs an option off/on cycle after the main music
+starts. Only the nearest audible AI is decoded, keeping playback cost bounded.
+
+See `PrismTextureStreamerFB\docs\V3.12-INDEPENDENT-TRAFFIC-RADIO.md`.
+
+## Version 3.11 SPF AI traffic radios
+
+Version 3.11 introduced the optional SPF feed of the 32 nearest live AI
+placements, stable vehicle selection, positional pan, distance falloff and
+low-pass filtering. Version 3.12 retains that spatial model but supersedes its
+shared-playlist/second-Spotify playback design.
+
+See `PrismTextureStreamerFB\docs\V3.11-SPF-TRAFFIC-RADIO.md`.
+
 ## Version 3.10 visual, audio and input reliability
 
 Version `3.10.1-engine-standby-logo` reapplies the saved brightness after every
@@ -123,8 +164,8 @@ brand and model name. Its brightness is configurable, and media returns when
 the engine starts.
 
 The update also adds an independent interior-cab media-volume slider and moves
-Volume Up/Down to the WebView Windows audio session so YouTube and both Spotify
-modes respond even when webpage controls are protected. Keyboard media keys now
+Volume Up/Down to the WebView Windows audio session so YouTube and Spotify Full
+Web respond even when webpage controls are protected. Keyboard media keys now
 use plugin-owned edge detection, fixing missed first presses. The overlay uses
 one Win32 cursor, and the legacy `LB + Start/Menu` default migrates to
 `LB + Right Stick Click` so ETS2/ATS does not open its own cursor.
@@ -167,13 +208,12 @@ See `PrismTextureStreamerFB\docs\V3.9-SPOTIFY-SESSION-BACKUPS.md`.
 
 ## Version 3.8 Spotify, gamepad and render diagnostics
 
-Version `3.8.0-spotify-gamepad-diagnostics` adds two selectable Spotify
-experiences. **Embed** remains the recommended low-impact option. The
-experimental **Full Web Player** loads the normal Spotify website in the
-integrated helper, preserves its login in a dedicated WebView2 profile, and
-routes Play/Pause, Next, Previous, Mute and Volume through page controls with a
-Windows media-key fallback. Buttons in the in-game menu open the helper for
-login and return it to silent capture mode.
+Version `3.8.0-spotify-gamepad-diagnostics` introduced the Spotify Full Web
+Player. Version 3.11.1 makes it the only Spotify implementation and removes the
+former Embed client. Full Web loads the normal Spotify website in the integrated
+helper, preserves its login, and routes Play/Pause, Next, Previous, Mute and
+Volume through page controls with a Windows media-key fallback. Buttons in the
+in-game menu open the helper for login and return it to silent capture mode.
 
 Media commands can also use XInput chords. Every command has an independent
 modifier (None/LB/RB/LT/RT) and button, trigger, D-pad or left/right-stick

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -21,6 +22,22 @@ using namespace scs_logging;
 namespace {
     constexpr ULONG_PTR kPrismCopyDataId = 0x50524953;
     constexpr UINT kPrismEnvironmentMessage = WM_APP + 0x351;
+
+    bool is_spotify_url(const std::string& value)
+    {
+        std::string lower;
+        lower.reserve(value.size());
+        for (const unsigned char character : value)
+            lower.push_back(static_cast<char>(std::tolower(character)));
+        return lower.rfind("spotify:", 0) == 0 ||
+            lower.find("://open.spotify.com") != std::string::npos ||
+            lower.find("://spotify.com") != std::string::npos;
+    }
+
+    std::string media_load_payload(const std::string& url)
+    {
+        return (is_spotify_url(url) ? "loadspotifyweb|" : "load|") + url;
+    }
 
     std::string module_directory()
     {
@@ -173,10 +190,8 @@ namespace {
     {
     public:
         explicit MediaClientSource(
-            std::unique_ptr<IContentSource> capture,
-            bool fullSpotifyWeb)
-            : m_capture(std::move(capture)),
-              m_fullSpotifyWeb(fullSpotifyWeb)
+            std::unique_ptr<IContentSource> capture)
+            : m_capture(std::move(capture))
         {
         }
         ~MediaClientSource() override
@@ -255,23 +270,13 @@ namespace {
         bool SupportsSpatialAudio() const override { return true; }
         bool LoadMedia(const std::string& url) override
         {
-            const bool sent = send_payload(
-                (m_fullSpotifyWeb ? "loadspotifyweb|" : "load|") + url);
+            const bool spotify = is_spotify_url(url);
+            const bool sent = send_payload(media_load_payload(url));
             diagnostic_log::writef(
                 "media", "%s media load request: %s",
-                m_fullSpotifyWeb ? "Full Spotify Web" : "Embedded/local",
+                spotify ? "Full Spotify Web" : "YouTube/direct",
                 sent ? "delivered" : "failed");
             return sent;
-        }
-        bool SetFullSpotifyWeb(bool enabled) override
-        {
-            if (m_fullSpotifyWeb == enabled)
-                return true;
-            m_fullSpotifyWeb = enabled;
-            diagnostic_log::writef(
-                "media", "Spotify playback experience changed to %s.",
-                enabled ? "Full Web Player" : "Embed");
-            return true;
         }
         bool ShowInteractivePlayer(bool show) override
         {
@@ -367,9 +372,7 @@ namespace {
         }
         std::string GetStatusText() const override
         {
-            return m_fullSpotifyWeb
-                ? "Integrated Media Client: Full Spotify Web Player"
-                : "Integrated Media Client running";
+            return "Integrated Media Client: YouTube/direct or Full Spotify Web";
         }
 
     private:
@@ -426,7 +429,6 @@ namespace {
         float m_lastBrightness{ -1.0f };
         std::atomic<bool> m_brightnessRefreshPending{};
         std::atomic<uint64_t> m_brightnessRefreshRequestedTick{};
-        bool m_fullSpotifyWeb{};
         uint64_t m_lastCpuHintCheckTick{};
         DWORD m_lastCpuHint0{ thread_scheduling::kUnassignedProcessor };
         DWORD m_lastCpuHint1{ thread_scheduling::kUnassignedProcessor };
@@ -458,8 +460,7 @@ namespace sources {
         const std::string& media_url,
         uint8_t framerate,
         uint32_t output_width,
-        uint32_t output_height,
-        bool full_spotify_web)
+        uint32_t output_height)
     {
         if (!launch_media_client())
             return nullptr;
@@ -468,9 +469,7 @@ namespace sources {
         {
             // The helper can receive commands as soon as its Win32 window is
             // visible; it queues the URL until WebView2 has initialized.
-            send_payload(
-                (full_spotify_web ? "loadspotifyweb|" : "load|") +
-                media_url);
+            send_payload(media_load_payload(media_url));
         }
         send_payload(
             "resize|" + std::to_string(output_width) + "x" +
@@ -481,7 +480,6 @@ namespace sources {
             framerate, output_width, output_height);
         if (!capture)
             return nullptr;
-        return std::make_unique<MediaClientSource>(
-            std::move(capture), full_spotify_web);
+        return std::make_unique<MediaClientSource>(std::move(capture));
     }
 }

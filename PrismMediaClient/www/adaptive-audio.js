@@ -198,21 +198,17 @@
     }
 
     function isSafeToRoute(media) {
+        if (media.crossOrigin)
+            return true;
         const source = media.currentSrc || media.src || "";
         if (!source)
             return false;
-
-        // A crossOrigin attribute does NOT prove that the response grants
-        // CORS access. createMediaElementSource() permanently takes over the
-        // element's audio path, and Chromium intentionally outputs silence
-        // when the underlying media is not CORS-clean. Only reroute media
-        // whose effective URL belongs to this document (or an inline data
-        // URL). Cross-origin players are handled by the page-output hook.
-        if (source.startsWith("data:"))
+        if (source.startsWith("blob:") || source.startsWith("data:"))
             return true;
         try {
             const url = new URL(source, location.href);
-            return url.origin === location.origin;
+            return url.origin === location.origin ||
+                url.hostname === "traffic.prism.local";
         } catch (_) {
             return false;
         }

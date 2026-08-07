@@ -123,31 +123,7 @@ bool dispatch_media_command(
         !screen.source->SupportsMediaControls())
         return false;
 
-    const bool changeSpotifyLink =
-        screen.contentMode == content_mode_t::INTEGRATED_MEDIA &&
-        screen.mediaService == media_service_t::SPOTIFY &&
-        screen.spotifyPlaybackMode == spotify_playback_mode_t::EMBED &&
-        (command == media_command_t::NEXT ||
-            command == media_command_t::PREVIOUS);
-    if (!changeSpotifyLink)
-        return screen.source->SendMediaCommand(command);
-
-    if (screen.spotifyUrls.empty())
-        return false;
-
-    const size_t count = screen.spotifyUrls.size();
-    size_t selected = (std::min)(
-        static_cast<size_t>(screen.selectedSpotifyUrl),
-        count - 1);
-    if (command == media_command_t::NEXT)
-        selected = (selected + 1) % count;
-    else
-        selected = selected == 0 ? count - 1 : selected - 1;
-
-    screen.selectedSpotifyUrl =
-        static_cast<uint32_t>(selected);
-    screen.mediaUrl = screen.spotifyUrls[selected];
-    return screen.source->LoadMedia(screen.mediaUrl);
+    return screen.source->SendMediaCommand(command);
 }
 
 namespace {

@@ -414,15 +414,6 @@ namespace sources {
             }
             if (SUCCEEDED(result))
                 result = factory->CreateInstance(0, attributes.Get(), engine.GetAddressOf());
-            if (SUCCEEDED(result))
-            {
-                // Do not depend on a Media Foundation implementation's prior
-                // or implicit audio state. A newly-created native source should
-                // always begin audible; the in-game Mute/Volume controls can
-                // then change it intentionally.
-                engine->SetMuted(FALSE);
-                engine->SetVolume(1.0);
-            }
             if (FAILED(result))
             {
                 scs_log(2, "[NativeMedia] Media Engine creation failed: 0x%08X", result);

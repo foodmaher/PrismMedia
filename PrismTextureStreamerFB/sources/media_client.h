@@ -15,6 +15,5 @@ namespace sources {
         const std::string& media_url,
         uint8_t framerate = 30,
         uint32_t output_width = 1280,
-        uint32_t output_height = 720,
-        bool full_spotify_web = false);
+        uint32_t output_height = 720);
 }

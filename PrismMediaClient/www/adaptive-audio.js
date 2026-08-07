@@ -162,7 +162,7 @@
     // YouTube/direct HTML media continues to use attachMedia() below.
     if (nativeConnect) {
         audioNodePrototype.connect = function(destination) {
-            if (destination && this.context &&
+            if (state.enabled && destination && this.context &&
                 destination === this.context.destination &&
                 !state.internalNodes.has(this)) {
                 try {
@@ -180,7 +180,7 @@
             }
             return nativeConnect.apply(this, arguments);
         };
-        report("Web Audio destination hook installed.");
+        report("Web Audio destination hook installed in fail-open mode.");
     }
 
     // Preserve page disconnect(destination, ...) behavior after replacing its

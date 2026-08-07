@@ -9,6 +9,7 @@ namespace PrismMediaClient
     {
         private const uint Th32csSnapProcess = 0x00000002;
         private const int ClsctxAll = 23;
+        private const uint DeviceStateActive = 0x00000001;
 
         private readonly Timer timer;
         private readonly Dictionary<string, AudioSession> sessions =
@@ -150,78 +151,119 @@ namespace PrismMediaClient
                 return false;
 
             bool sessionAdded = false;
-
             IMMDeviceEnumerator enumerator = null;
-            IMMDevice device = null;
-            IAudioSessionManager2 manager = null;
-            IAudioSessionEnumerator sessionEnumerator = null;
+            IMMDeviceCollection devices = null;
             try
             {
-                // A COM coclass is not statically convertible to its interface
-                // with every C# compiler used by the GitHub Windows runners.
-                // Cast through object so the runtime performs QueryInterface.
+                // WebView2/Chromium audio can be routed by Windows to a
+                // non-default output (for example a virtual mixer or a
+                // per-app assigned device). Enumerate every active render
+                // endpoint so we attach to the session that is actually
+                // producing Spotify/YouTube audio rather than assuming the
+                // Multimedia default endpoint owns it.
                 enumerator =
                     (IMMDeviceEnumerator)(object)new MMDeviceEnumerator();
-                Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(
-                    EDataFlow.Render, ERole.Multimedia, out device));
+                Marshal.ThrowExceptionForHR(enumerator.EnumAudioEndpoints(
+                    EDataFlow.Render, DeviceStateActive, out devices));
+                Marshal.ThrowExceptionForHR(devices.GetCount(
+                    out uint deviceCount));
 
-                Guid managerId = typeof(IAudioSessionManager2).GUID;
-                object managerObject;
-                Marshal.ThrowExceptionForHR(device.Activate(
-                    ref managerId, ClsctxAll, IntPtr.Zero, out managerObject));
-                manager = (IAudioSessionManager2)managerObject;
-                Marshal.ThrowExceptionForHR(manager.GetSessionEnumerator(
-                    out sessionEnumerator));
-                Marshal.ThrowExceptionForHR(sessionEnumerator.GetCount(
-                    out int count));
-
-                for (int index = 0; index < count; ++index)
+                for (uint deviceIndex = 0;
+                    deviceIndex < deviceCount; ++deviceIndex)
                 {
-                    IAudioSessionControl2 control = null;
+                    IMMDevice device = null;
+                    IAudioSessionManager2 manager = null;
+                    IAudioSessionEnumerator sessionEnumerator = null;
                     try
                     {
-                        Marshal.ThrowExceptionForHR(
-                            sessionEnumerator.GetSession(index, out control));
-                        Marshal.ThrowExceptionForHR(control.GetProcessId(
-                            out uint processId));
-                        if (!targetProcesses.Contains(processId))
-                            continue;
+                        Marshal.ThrowExceptionForHR(devices.Item(
+                            deviceIndex, out device));
+                        string endpointId = "endpoint:" + deviceIndex;
+                        try
+                        {
+                            if (device.GetId(out string discoveredId) >= 0 &&
+                                !string.IsNullOrEmpty(discoveredId))
+                                endpointId = discoveredId;
+                        }
+                        catch
+                        {
+                        }
 
-                        string instanceId;
-                        if (control.GetSessionInstanceIdentifier(
-                            out instanceId) < 0 ||
-                            string.IsNullOrEmpty(instanceId))
-                            instanceId = "pid:" + processId;
+                        Guid managerId = typeof(IAudioSessionManager2).GUID;
+                        object managerObject;
+                        Marshal.ThrowExceptionForHR(device.Activate(
+                            ref managerId, ClsctxAll, IntPtr.Zero,
+                            out managerObject));
+                        manager = (IAudioSessionManager2)managerObject;
+                        Marshal.ThrowExceptionForHR(manager.GetSessionEnumerator(
+                            out sessionEnumerator));
+                        Marshal.ThrowExceptionForHR(sessionEnumerator.GetCount(
+                            out int count));
 
-                        if (sessions.ContainsKey(instanceId))
-                            continue;
+                        for (int index = 0; index < count; ++index)
+                        {
+                            IAudioSessionControl2 control = null;
+                            try
+                            {
+                                Marshal.ThrowExceptionForHR(
+                                    sessionEnumerator.GetSession(
+                                        index, out control));
+                                Marshal.ThrowExceptionForHR(control.GetProcessId(
+                                    out uint processId));
+                                if (!targetProcesses.Contains(processId))
+                                    continue;
 
-                        sessions.Add(instanceId, new AudioSession(control));
-                        sessionAdded = true;
-                        control = null; // AudioSession now owns the RCW.
+                                string instanceId;
+                                if (control.GetSessionInstanceIdentifier(
+                                    out instanceId) < 0 ||
+                                    string.IsNullOrEmpty(instanceId))
+                                    instanceId = "pid:" + processId;
+
+                                string sessionKey = endpointId + "|" + instanceId;
+                                if (sessions.ContainsKey(sessionKey))
+                                    continue;
+
+                                sessions.Add(
+                                    sessionKey,
+                                    new AudioSession(
+                                        control, processId, endpointId));
+                                sessionAdded = true;
+                                control = null; // AudioSession now owns the RCW.
+                            }
+                            catch
+                            {
+                                // An audio session can expire while enumerated.
+                            }
+                            finally
+                            {
+                                ReleaseCom(control);
+                            }
+                        }
                     }
                     catch
                     {
-                        // An audio session can expire while it is enumerated.
+                        // One disconnected/problematic output device must not
+                        // prevent discovery on the remaining active endpoints.
                     }
                     finally
                     {
-                        ReleaseCom(control);
+                        ReleaseCom(sessionEnumerator);
+                        ReleaseCom(manager);
+                        ReleaseCom(device);
                     }
                 }
             }
             finally
             {
-                ReleaseCom(sessionEnumerator);
-                ReleaseCom(manager);
-                ReleaseCom(device);
+                ReleaseCom(devices);
                 ReleaseCom(enumerator);
             }
             if (sessionAdded)
             {
                 ClientDiagnosticLog.Write(
                     "audio", "Attached adaptive processing to " +
-                    sessions.Count + " WebView audio session(s).");
+                    sessions.Count +
+                    " WebView audio session(s) across active render endpoints.");
             }
             return sessionAdded;
         }
@@ -293,7 +335,10 @@ namespace PrismMediaClient
             private float originalMaster = 1.0f;
             private bool originalMuted;
 
-            internal AudioSession(IAudioSessionControl2 sessionControl)
+            internal AudioSession(
+                IAudioSessionControl2 sessionControl,
+                uint processId,
+                string endpointId)
             {
                 control = sessionControl;
 
@@ -334,9 +379,10 @@ namespace PrismMediaClient
                 }
 
                 ClientDiagnosticLog.Write(
-                    "audio", "WebView audio session baseline: master=" +
-                    originalMaster.ToString("0.000") + ", muted=" +
-                    originalMuted + ", channels=" +
+                    "audio", "WebView audio session baseline: pid=" +
+                    processId + ", endpoint=" + endpointId +
+                    ", master=" + originalMaster.ToString("0.000") +
+                    ", muted=" + originalMuted + ", channels=" +
                     (originalChannels == null ? 0 : originalChannels.Length) +
                     ".");
             }
@@ -475,7 +521,8 @@ namespace PrismMediaClient
         {
             [PreserveSig]
             int EnumAudioEndpoints(
-                EDataFlow dataFlow, uint stateMask, out IntPtr devices);
+                EDataFlow dataFlow, uint stateMask,
+                out IMMDeviceCollection devices);
 
             [PreserveSig]
             int GetDefaultAudioEndpoint(
@@ -491,6 +538,18 @@ namespace PrismMediaClient
 
             [PreserveSig]
             int UnregisterEndpointNotificationCallback(IntPtr client);
+        }
+
+        [ComImport]
+        [Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IMMDeviceCollection
+        {
+            [PreserveSig]
+            int GetCount(out uint count);
+
+            [PreserveSig]
+            int Item(uint index, out IMMDevice device);
         }
 
         [ComImport]

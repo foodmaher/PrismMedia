@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
@@ -28,6 +29,7 @@ namespace
     {
         bool enabled{};
         bool active{};
+        bool localSource{};
         std::string url;
         int32_t emitterId{ -1 };
         uint32_t randomSeed{};
@@ -47,6 +49,31 @@ namespace
     std::mutex g_statusMutex;
     traffic_audio::status_t g_status{};
     int32_t g_selectedEmitter{ -1 };
+
+    std::string lower_ascii(const std::string& value)
+    {
+        std::string lower;
+        lower.reserve(value.size());
+        for (const unsigned char character : value)
+            lower.push_back(static_cast<char>(std::tolower(character)));
+        return lower;
+    }
+
+    bool is_streaming_web_page(const std::string& value)
+    {
+        const std::string lower = lower_ascii(value);
+        return lower.rfind("spotify:", 0) == 0 ||
+            lower.find("spotify.com") != std::string::npos ||
+            lower.find("youtube.com") != std::string::npos ||
+            lower.find("youtu.be") != std::string::npos;
+    }
+
+    bool is_local_source(const std::string& value)
+    {
+        const std::string lower = lower_ascii(value);
+        return lower.rfind("file:", 0) == 0 ||
+            value.find("://") == std::string::npos;
+    }
 
     uint32_t mix_id(uint32_t value)
     {
@@ -201,6 +228,7 @@ namespace
     {
         return first.enabled == second.enabled &&
             first.active == second.active &&
+            first.localSource == second.localSource &&
             first.url == second.url &&
             first.emitterId == second.emitterId &&
             std::fabs(first.gain - second.gain) < 0.008f &&
@@ -213,6 +241,7 @@ namespace
         HWND window{};
         std::string loadedUrl;
         int32_t loadedEmitter = -1;
+        bool wasActive{};
         uint64_t observedGeneration{};
 
         for (;;)
@@ -238,6 +267,7 @@ namespace
                 window = nullptr;
                 loadedUrl.clear();
                 loadedEmitter = -1;
+                wasActive = false;
             }
 
             if (!desired.enabled)
@@ -247,6 +277,7 @@ namespace
                 window = nullptr;
                 loadedUrl.clear();
                 loadedEmitter = -1;
+                wasActive = false;
                 std::lock_guard<std::mutex> lock(g_statusMutex);
                 g_status.helperReady = false;
                 g_status.active = false;
@@ -265,16 +296,22 @@ namespace
 
             if (!desired.active)
             {
+                if (wasActive)
+                    send_payload(window, "pause", 50);
                 send_payload(
                     window,
                     "spatial|1|0.0000|0.0000|20000.0", 50);
+                wasActive = false;
                 continue;
             }
 
             if (loadedUrl != desired.url ||
                 loadedEmitter != desired.emitterId)
             {
-                if (!send_payload(window, "load|" + desired.url))
+                const std::string loadCommand =
+                    (desired.localSource ? "loadlocal|" : "load|") +
+                    desired.url;
+                if (!send_payload(window, loadCommand))
                     continue;
                 send_payload(
                     window,
@@ -287,6 +324,10 @@ namespace
                     "Traffic radio moved to AI id=%d (seed=%u).",
                     desired.emitterId, desired.randomSeed);
             }
+
+            if (!wasActive)
+                send_payload(window, "play", 50);
+            wasActive = true;
 
             char payload[128]{};
             std::snprintf(
@@ -334,6 +375,14 @@ namespace traffic_audio
             config.nearCutoffHz, 20.0f, 20000.0f);
         config.farCutoffHz = (std::clamp)(
             config.farCutoffHz, 20.0f, config.nearCutoffHz);
+        config.sources.erase(
+            std::remove_if(
+                config.sources.begin(), config.sources.end(),
+                [](const std::string& source)
+                {
+                    return source.empty() || is_streaming_web_page(source);
+                }),
+            config.sources.end());
 
         const uint64_t now = GetTickCount64();
         const ai_traffic_snapshot_t traffic = ai_traffic_snapshot();
@@ -342,7 +391,7 @@ namespace traffic_audio
             now >= traffic.updatedTick &&
             now - traffic.updatedTick <= 1000;
         const bool canRun =
-            config.enabled && !config.playlistUrl.empty() &&
+            config.enabled && !config.sources.empty() &&
             g_telemetry_driving.load() && trafficFresh;
 
         const double truckX = g_truck_world_x.load();
@@ -448,10 +497,15 @@ namespace traffic_audio
         g_selectedEmitter = nearestId;
 
         desired_state_t desired{};
-        desired.enabled = config.enabled;
-        desired.url = config.playlistUrl;
+        desired.enabled = config.enabled && !config.sources.empty();
         desired.emitterId = nearestId;
         desired.randomSeed = mix_id(static_cast<uint32_t>(nearestId));
+        if (!config.sources.empty())
+        {
+            desired.url = config.sources[
+                desired.randomSeed % config.sources.size()];
+            desired.localSource = is_local_source(desired.url);
+        }
         desired.active = canRun && nearestId >= 0 &&
             nearestDistance <= config.muteDistance;
         if (desired.active)
@@ -488,6 +542,8 @@ namespace traffic_audio
             g_status.gain = desired.gain;
             g_status.pan = desired.pan;
             g_status.cutoffHz = desired.cutoffHz;
+            g_status.currentSource =
+                desired.active ? desired.url : std::string{};
             if (!desired.active)
                 g_status.active = false;
         }

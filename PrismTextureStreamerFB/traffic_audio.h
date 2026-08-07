@@ -2,13 +2,14 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace traffic_audio
 {
     struct config_t
     {
         bool enabled{};
-        std::string playlistUrl;
+        std::vector<std::string> sources;
         float vehicleDensity{ 0.50f };
         float maximumVolume{ 0.20f };
         float fullVolumeDistance{ 2.5f };
@@ -29,6 +30,7 @@ namespace traffic_audio
         float gain{};
         float pan{};
         float cutoffHz{ 20000.0f };
+        std::string currentSource;
     };
 
     // Called from telemetry with a cheap desired-state update. Helper launch,

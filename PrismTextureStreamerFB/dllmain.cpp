@@ -534,12 +534,11 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
 
             if (!trafficRadioConfig.enabled &&
                 screen.trafficRadioEnabled &&
-                screen.contentMode ==
-                    content_mode_t::INTEGRATED_MEDIA &&
-                !screen.mediaUrl.empty())
+                !screen.trafficRadioSources.empty())
             {
                 trafficRadioConfig.enabled = true;
-                trafficRadioConfig.playlistUrl = screen.mediaUrl;
+                trafficRadioConfig.sources =
+                    screen.trafficRadioSources;
                 trafficRadioConfig.vehicleDensity =
                     screen.trafficRadioVehicleDensity;
                 trafficRadioConfig.maximumVolume =

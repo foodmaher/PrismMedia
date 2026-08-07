@@ -44,7 +44,6 @@ public:
     virtual bool SupportsMediaControls() const { return false; }
     virtual bool LoadMedia(const std::string&) { return false; }
     virtual bool SendMediaCommand(media_command_t) { return false; }
-    virtual bool SetFullSpotifyWeb(bool) { return false; }
     virtual bool ShowInteractivePlayer(bool) { return false; }
     virtual bool ClearBrowserSession() { return false; }
     virtual bool SupportsVehiclePowerControl() const { return false; }

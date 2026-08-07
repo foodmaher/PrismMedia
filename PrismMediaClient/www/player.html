@@ -5,14 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Prism Media Client</title>
   <style>
-    html, body, #youtube, #spotify, #direct {
+    html, body, #youtube, #direct {
       width: 100%; height: 100%; margin: 0; padding: 0;
       border: 0; overflow: hidden; background: #000;
-    }
-    #spotify { display: none; }
-    #spotify iframe {
-      width: 100% !important; height: 100% !important;
-      border: 0; border-radius: 0 !important;
     }
     #direct { display: none; object-fit: contain; }
     #status {
@@ -28,17 +23,13 @@
 </head>
 <body>
   <div id="youtube"></div>
-  <div id="spotify"></div>
   <video id="direct" playsinline></video>
-  <div id="status">Enter a YouTube, Spotify, local file, or direct media URL in the in-game menu.</div>
+  <div id="status">Enter a YouTube, local file, or direct media URL in the in-game menu.</div>
   <div id="brightness-overlay"></div>
   <script>
     "use strict";
     let youtubePlayer = null;
     let youtubeReady = false;
-    let spotifyApi = null;
-    let spotifyController = null;
-    let spotifyReady = false;
     let pendingUrl = "";
     let activeSource = "youtube";
     let activeYouTubePlaylist = "";
@@ -51,8 +42,14 @@
     const direct = document.getElementById("direct");
     const status = document.getElementById("status");
     const brightnessOverlay = document.getElementById("brightness-overlay");
-    direct.addEventListener("loadedmetadata", function () {
-      applyRandomSelection();
+
+    direct.addEventListener("loadedmetadata", applyRandomSelection);
+    direct.addEventListener("error", function () {
+      const code = direct.error ? direct.error.code : 0;
+      const message = "Direct traffic/media source failed (media error " +
+        code + ").";
+      backgroundLog("error", message);
+      showStatus(message);
     });
 
     function backgroundLog(category, message) {
@@ -69,14 +66,8 @@
       const contentFilter = brightness > 1
         ? "brightness(" + brightness.toFixed(4) + ")"
         : "none";
-      const youtube = document.getElementById("youtube");
-      const spotify = document.getElementById("spotify");
-      if (youtube) youtube.style.filter = contentFilter;
-      if (spotify) spotify.style.filter = contentFilter;
+      document.getElementById("youtube").style.filter = contentFilter;
       direct.style.filter = contentFilter;
-
-      // Darkening is a single GPU-composited translucent black layer. It does
-      // not require the game plugin to transform every captured video pixel.
       brightnessOverlay.style.opacity =
         brightness < 1 ? (1 - brightness).toFixed(4) : "0";
     }
@@ -91,8 +82,7 @@
     }
 
     function applyPlaybackState() {
-      if (activeSource === "youtube" &&
-          youtubeReady && youtubePlayer) {
+      if (activeSource === "youtube" && youtubeReady && youtubePlayer) {
         const state = youtubePlayer.getPlayerState();
         if (shouldPlay()) {
           if (state !== YT.PlayerState.PLAYING &&
@@ -102,12 +92,6 @@
                    state === YT.PlayerState.BUFFERING) {
           youtubePlayer.pauseVideo();
         }
-      } else if (activeSource === "spotify" &&
-                 spotifyReady && spotifyController) {
-        if (shouldPlay())
-          spotifyController.resume();
-        else
-          spotifyController.pause();
       } else if (activeSource === "direct" && direct.src) {
         if (shouldPlay())
           direct.play().catch(error =>
@@ -117,100 +101,15 @@
       }
     }
 
-    function spotifyInfo(value) {
-      try {
-        if (/^spotify:(playlist|album|track|artist|show|episode):[A-Za-z0-9]+$/i.test(value))
-          return { entity: value };
-        const url = new URL(value);
-        const host = url.hostname.replace(/^www\./, "");
-        if (host !== "open.spotify.com")
-          return null;
-        const parts = url.pathname.split("/").filter(Boolean);
-        if (parts[0] === "embed")
-          parts.shift();
-        const supported = [
-          "playlist", "album", "track",
-          "artist", "show", "episode"
-        ];
-        if (parts.length < 2 ||
-            !supported.includes(parts[0]) ||
-            !/^[A-Za-z0-9]+$/.test(parts[1]))
-          return null;
-        return {
-          entity: "spotify:" + parts[0] + ":" + parts[1]
-        };
-      } catch (_) {}
-      return null;
-    }
-
-    function showOnly(source) {
-      activeSource = source;
-      document.getElementById("youtube").style.display =
-        source === "youtube" ? "block" : "none";
-      document.getElementById("spotify").style.display =
-        source === "spotify" ? "block" : "none";
-      direct.style.display =
-        source === "direct" ? "block" : "none";
-    }
-
-    function loadSpotify(info, originalUrl) {
-      direct.pause();
-      if (youtubeReady && youtubePlayer)
-        youtubePlayer.pauseVideo();
-      showOnly("spotify");
-      if (!spotifyApi) {
-        pendingUrl = originalUrl;
-        showStatus("Loading Spotify player…");
-        return;
-      }
-
-      if (spotifyController) {
-        spotifyController.loadEntity(info.entity);
-        showStatus("Loading Spotify playlist…");
-        window.setTimeout(applyPlaybackState, 300);
-        return;
-      }
-
-      const element = document.getElementById("spotify");
-      spotifyApi.createController(
-        element,
-        {
-          width: "100%",
-          height: "100%",
-          uri: info.entity
-        },
-        function (controller) {
-          spotifyController = controller;
-          controller.addListener("ready", function () {
-            spotifyReady = true;
-            showStatus("");
-            applyBrightness(currentBrightness);
-            applyPlaybackState();
-            applyRandomSelection();
-          });
-          controller.addListener(
-            "playback_started",
-            function () {
-              showStatus("");
-              if (!shouldPlay())
-                controller.pause();
-            });
-          controller.addListener(
-            "playback_update",
-            function (event) {
-              if (!shouldPlay() && event.data &&
-                  !event.data.isPaused)
-                controller.pause();
-            });
-        });
-    }
-
     function youtubeInfo(value) {
       try {
         const url = new URL(value);
         const host = url.hostname.replace(/^www\./, "");
         if (host === "youtu.be")
-          return { video: url.pathname.slice(1), list: url.searchParams.get("list") };
+          return {
+            video: url.pathname.slice(1),
+            list: url.searchParams.get("list")
+          };
         if (host === "youtube.com" || host === "m.youtube.com" ||
             host === "music.youtube.com") {
           let video = url.searchParams.get("v");
@@ -221,6 +120,13 @@
         }
       } catch (_) {}
       return null;
+    }
+
+    function showOnly(source) {
+      activeSource = source;
+      document.getElementById("youtube").style.display =
+        source === "youtube" ? "block" : "none";
+      direct.style.display = source === "direct" ? "block" : "none";
     }
 
     function refreshYouTubePlaylist(step, reason) {
@@ -234,9 +140,6 @@
       if (playlistRefreshInProgress)
         return;
 
-      // Re-queueing the playlist ID asks YouTube for its latest contents.
-      // This runs only at a track boundary or an explicit Next/Previous
-      // command, so there is no timer, polling or idle CPU/network cost.
       const currentIndex = Math.max(
         0, Number(youtubePlayer.getPlaylistIndex()) || 0);
       const targetIndex = Math.max(0, currentIndex + step);
@@ -256,9 +159,6 @@
       if (shouldPlay()) youtubePlayer.loadPlaylist(options);
       else youtubePlayer.cuePlaylist(options);
 
-      // YouTube does not expose a playlist-refresh completion event. Its
-      // documented queue call is asynchronous, so clear only our small UI
-      // guard after the new queue has had time to become active.
       window.setTimeout(function () {
         if (serial !== playlistRefreshSerial)
           return;
@@ -276,18 +176,9 @@
       ++playlistRefreshSerial;
       playlistRefreshInProgress = false;
       userWantsPlayback = true;
-      const spotify = spotifyInfo(value);
-      if (spotify) {
-        activeYouTubePlaylist = "";
-        backgroundLog("media", "Loading a Spotify embed.");
-        loadSpotify(spotify, value);
-        return;
-      }
       const info = youtubeInfo(value);
       if (info) {
         direct.pause();
-        if (spotifyReady && spotifyController)
-          spotifyController.pause();
         showOnly("youtube");
         if (!youtubeReady) {
           pendingUrl = value;
@@ -305,8 +196,7 @@
           backgroundLog("media", "Loading a single YouTube video.");
           if (shouldPlay()) youtubePlayer.loadVideoById(info.video);
           else youtubePlayer.cueVideoById(info.video);
-        }
-        else {
+        } else {
           activeYouTubePlaylist = "";
           showStatus("This YouTube URL does not contain a video or playlist.");
           return;
@@ -318,8 +208,6 @@
 
       if (youtubeReady && youtubePlayer)
         youtubePlayer.pauseVideo();
-      if (spotifyReady && spotifyController)
-        spotifyController.pause();
       activeYouTubePlaylist = "";
       showOnly("direct");
       backgroundLog("media", "Loading direct/local media.");
@@ -339,23 +227,22 @@
           pendingRandomSeed = null;
           youtubePlayer.playVideoAt(seed % playlist.length);
           backgroundLog(
-            "traffic-audio",
-            "Selected random YouTube playlist item " +
+            "traffic-audio", "Selected random YouTube playlist item " +
             (seed % playlist.length) + ".");
         }
       } else if (activeSource === "direct" &&
                  Number.isFinite(direct.duration) && direct.duration > 10) {
         pendingRandomSeed = null;
-        direct.currentTime = (seed % 10000) / 10000 *
-          Math.max(1, direct.duration - 5);
-      } else if (activeSource === "spotify" && spotifyReady) {
-        // The Spotify Embed API does not expose playlist-length/index access.
-        // Keep its normal entry instead of issuing an unpredictable number of
-        // Next commands against a protected account queue.
-        pendingRandomSeed = null;
+        const latestStart = Math.max(0, direct.duration - 5);
+        const minuteSlots = Math.max(
+          1, Math.floor(latestStart / 60) + 1);
+        const startingOffset = Math.min(
+          latestStart, (seed % minuteSlots) * 60);
+        direct.currentTime = startingOffset;
         backgroundLog(
-          "traffic-audio",
-          "Spotify Embed uses its normal playlist entry.");
+          "traffic-audio", "Selected stable starting offset " +
+          Math.round(startingOffset) +
+          "s; playback continues normally from that point.");
       }
     }
 
@@ -390,8 +277,7 @@
             else if (event.data === YT.PlayerState.ENDED &&
                      activeSource === "youtube" &&
                      activeYouTubePlaylist &&
-                     !playlistRefreshInProgress)
-            {
+                     !playlistRefreshInProgress) {
               backgroundLog(
                 "playlist", "Current YouTube playlist video ended.");
               refreshYouTubePlaylist(
@@ -407,15 +293,6 @@
       });
     };
 
-    window.onSpotifyIframeApiReady = function (IFrameAPI) {
-      spotifyApi = IFrameAPI;
-      if (pendingUrl && spotifyInfo(pendingUrl)) {
-        const value = pendingUrl;
-        pendingUrl = "";
-        loadMedia(value);
-      }
-    };
-
     window.prismCommand = function (payload) {
       const separator = payload.indexOf("|");
       const command = separator < 0 ? payload : payload.slice(0, separator);
@@ -424,11 +301,7 @@
         loadMedia(argument);
       } else if (command === "playpause") {
         userWantsPlayback = !userWantsPlayback;
-        if (activeSource === "spotify" &&
-            spotifyReady && spotifyController)
-          spotifyController.togglePlay();
-        else
-          applyPlaybackState();
+        applyPlaybackState();
       } else if (command === "play") {
         userWantsPlayback = true;
         applyPlaybackState();
@@ -448,50 +321,35 @@
       } else if (command === "next") {
         if (activeSource === "youtube" && youtubeReady)
           refreshYouTubePlaylist(1, "Refreshing playlist and moving next…");
-        else if (activeSource === "spotify")
-          showStatus(
-            "Spotify Next is handled by the plugin saved-link list.");
         else
-          direct.currentTime = Math.min(direct.duration || Infinity, direct.currentTime + 30);
+          direct.currentTime = Math.min(
+            direct.duration || Infinity, direct.currentTime + 30);
       } else if (command === "previous") {
         if (activeSource === "youtube" && youtubeReady)
           refreshYouTubePlaylist(-1, "Refreshing playlist and moving previous…");
-        else if (activeSource === "spotify")
-          showStatus(
-            "Spotify Previous is handled by the plugin saved-link list.");
         else
           direct.currentTime = Math.max(0, direct.currentTime - 30);
       } else if (command === "mute") {
         if (activeSource === "youtube" && youtubeReady) {
           if (youtubePlayer.isMuted()) youtubePlayer.unMute();
           else youtubePlayer.mute();
-        } else if (activeSource === "spotify") {
-          showStatus(
-            "Spotify Embed volume is controlled inside the player.");
         } else {
           direct.muted = !direct.muted;
         }
       } else if (command === "volumeup" || command === "volumedown") {
         const change = command === "volumeup" ? 5 : -5;
         if (activeSource === "youtube" && youtubeReady)
-          youtubePlayer.setVolume(Math.max(0, Math.min(100, youtubePlayer.getVolume() + change)));
-        else if (activeSource === "spotify")
-          showStatus(
-            "Spotify Embed volume is controlled inside the player.");
+          youtubePlayer.setVolume(Math.max(
+            0, Math.min(100, youtubePlayer.getVolume() + change)));
         else
-          direct.volume = Math.max(0, Math.min(1, direct.volume + change / 100));
+          direct.volume = Math.max(
+            0, Math.min(1, direct.volume + change / 100));
       }
     };
 
     const youtubeApi = document.createElement("script");
     youtubeApi.src = "https://www.youtube.com/iframe_api";
     document.head.appendChild(youtubeApi);
-
-    const spotifyApiScript = document.createElement("script");
-    spotifyApiScript.src =
-      "https://open.spotify.com/embed/iframe-api/v1";
-    spotifyApiScript.async = true;
-    document.head.appendChild(spotifyApiScript);
   </script>
 </body>
 </html>

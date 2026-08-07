@@ -20,6 +20,7 @@ namespace PrismMediaClient
         private const ulong PrismCopyDataId = 0x50524953;
         private const string LocalPlayerUrl =
             "https://prism.local/player.html";
+        private const string TrafficLocalHost = "traffic.prism.local";
         private const int GwlExStyle = -20;
         private const int WsExNoActivate = 0x08000000;
         private const uint KeyEventKeyUp = 0x0002;
@@ -431,6 +432,18 @@ namespace PrismMediaClient
             string host = uri.Host.ToLowerInvariant();
             return host == "spotify.com" ||
                 host.EndsWith(".spotify.com", StringComparison.Ordinal);
+        }
+
+        private static bool IsSpotifyValue(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+            value = value.Trim();
+            if (value.StartsWith(
+                "spotify:", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return Uri.TryCreate(value, UriKind.Absolute, out Uri uri) &&
+                IsSpotifyUri(uri);
         }
 
         private static string SafeUriForLog(Uri uri)
@@ -872,6 +885,48 @@ namespace PrismMediaClient
                 "spotify", "Used Windows media-key fallback for " + name + ".");
         }
 
+        private async Task LoadTrafficLocalFileAsync(string value)
+        {
+            try
+            {
+                string path = (value ?? "").Trim().Trim('"');
+                if (Uri.TryCreate(path, UriKind.Absolute, out Uri fileUri) &&
+                    fileUri.IsFile)
+                {
+                    path = fileUri.LocalPath;
+                }
+                path = Path.GetFullPath(
+                    Environment.ExpandEnvironmentVariables(path));
+                if (!File.Exists(path))
+                {
+                    ClientDiagnosticLog.Write(
+                        "error", "Traffic audio file was not found: " +
+                        Path.GetFileName(path));
+                    return;
+                }
+
+                string folder = Path.GetDirectoryName(path);
+                webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                    TrafficLocalHost, folder,
+                    CoreWebView2HostResourceAccessKind.Allow);
+                string target = "https://" + TrafficLocalHost + "/" +
+                    Uri.EscapeDataString(Path.GetFileName(path));
+                ClientDiagnosticLog.Write(
+                    "traffic-audio", "Loading local traffic source: " +
+                    Path.GetFileName(path));
+                if (fullSpotifyWeb)
+                    await NavigateToLocalPlayerAsync("load|" + target);
+                else
+                    await ExecuteCommandAsync("load|" + target);
+            }
+            catch (Exception error)
+            {
+                ClientDiagnosticLog.Write(
+                    "error", "Could not load local traffic audio: " +
+                    error.Message);
+            }
+        }
+
         private async Task ApplyCommandAsync(string command)
         {
             if (command.StartsWith("parent|", StringComparison.Ordinal))
@@ -991,10 +1046,29 @@ namespace PrismMediaClient
                 await NavigateToFullSpotifyAsync(command.Substring(15));
                 return;
             }
-            if (command.StartsWith("load|", StringComparison.Ordinal) &&
-                fullSpotifyWeb)
+            if (command.StartsWith("loadlocal|", StringComparison.Ordinal))
             {
-                await NavigateToLocalPlayerAsync(command);
+                await LoadTrafficLocalFileAsync(command.Substring(10));
+                return;
+            }
+            if (command.StartsWith("loadmedia|", StringComparison.Ordinal) ||
+                command.StartsWith("load|", StringComparison.Ordinal))
+            {
+                int prefixLength = command.StartsWith(
+                    "loadmedia|", StringComparison.Ordinal) ? 10 : 5;
+                string value = command.Substring(prefixLength);
+                if (IsSpotifyValue(value))
+                {
+                    await NavigateToFullSpotifyAsync(value);
+                }
+                else if (fullSpotifyWeb)
+                {
+                    await NavigateToLocalPlayerAsync("load|" + value);
+                }
+                else
+                {
+                    await ExecuteCommandAsync("load|" + value);
+                }
                 return;
             }
             if (fullSpotifyWeb)

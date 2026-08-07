@@ -27,6 +27,7 @@ using namespace scs_logging;
 #include "../telemetry_state.h"
 #include "../thread_scheduling.h"
 #include "../environment_audio.h"
+#include "../traffic_audio.h"
 #include "../update_checker.h"
 #include "../sources/media_client.h"
 #include "../sources/native_media.h"
@@ -1814,6 +1815,113 @@ void on_frame()
 									"distance and follows the moving truck. Without SPF, "
 									"camera keys and telemetry freshness provide a safe "
 									"fixed-volume fallback.");
+							}
+							ImGui::EndDisabled();
+							ImGui::TreePop();
+						}
+
+						if (ImGui::TreeNode("AI Traffic Radios (SPF)"))
+						{
+							const bool supported =
+								screen.contentMode ==
+									content_mode_t::INTEGRATED_MEDIA &&
+								!screen.mediaUrl.empty() &&
+								sources::IsMediaClientInstalled();
+							if (!supported)
+							{
+								ImGui::TextColored(
+									ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+									"Select Integrated Media and load a playlist first.");
+							}
+							ImGui::TextWrapped(
+								"Uses this screen's playlist for nearby AI vehicles. "
+								"Vehicle IDs are selected consistently, and only the "
+								"nearest audible radio is decoded to keep WebView cost low.");
+
+							ImGui::BeginDisabled(!supported);
+							if (ImGui::Checkbox(
+								"Enable positional AI traffic music",
+								&screen.trafficRadioEnabled))
+								saveConfiguration = true;
+							if (screen.trafficRadioEnabled)
+							{
+								float densityPercent =
+									screen.trafficRadioVehicleDensity * 100.0f;
+								if (ImGui::SliderFloat(
+									"AI vehicles with music",
+									&densityPercent, 0.0f, 100.0f, "%.0f%%",
+									ImGuiSliderFlags_AlwaysClamp))
+								{
+									screen.trafficRadioVehicleDensity =
+										densityPercent / 100.0f;
+									saveConfiguration = true;
+								}
+								float volumePercent =
+									screen.trafficRadioMaximumVolume * 100.0f;
+								if (ImGui::SliderFloat(
+									"Maximum traffic-radio volume",
+									&volumePercent, 0.0f, 100.0f, "%.0f%%",
+									ImGuiSliderFlags_AlwaysClamp))
+								{
+									screen.trafficRadioMaximumVolume =
+										volumePercent / 100.0f;
+									saveConfiguration = true;
+								}
+								if (ImGui::SliderFloat(
+									"Traffic-radio full-volume distance",
+									&screen.trafficRadioFullVolumeDistance,
+									0.0f, 10.0f, "%.1f m",
+									ImGuiSliderFlags_AlwaysClamp))
+									saveConfiguration = true;
+								if (ImGui::SliderFloat(
+									"Traffic-radio mute distance",
+									&screen.trafficRadioMuteDistance,
+									5.0f, 60.0f, "%.1f m",
+									ImGuiSliderFlags_AlwaysClamp))
+									saveConfiguration = true;
+								if (ImGui::SliderFloat(
+									"Traffic-radio near cutoff",
+									&screen.trafficRadioNearCutoff,
+									100.0f, 8000.0f, "%.0f Hz",
+									ImGuiSliderFlags_Logarithmic |
+										ImGuiSliderFlags_AlwaysClamp))
+									saveConfiguration = true;
+								if (ImGui::SliderFloat(
+									"Traffic-radio far cutoff",
+									&screen.trafficRadioFarCutoff,
+									20.0f,
+									(std::max)(
+										20.0f, screen.trafficRadioNearCutoff),
+									"%.0f Hz",
+									ImGuiSliderFlags_Logarithmic |
+										ImGuiSliderFlags_AlwaysClamp))
+									saveConfiguration = true;
+
+								const auto radioStatus = traffic_audio::status();
+								if (!radioStatus.bridgeAvailable)
+								{
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+										"Waiting for SPF AI traffic data.");
+								}
+								else if (radioStatus.active)
+								{
+									ImGui::TextColored(
+										ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
+										"AI %d at %.1f m | gain %.0f%% | pan %.2f | %.0f Hz",
+										radioStatus.emitterId,
+										radioStatus.distance,
+										radioStatus.gain * 100.0f,
+										radioStatus.pan,
+										radioStatus.cutoffHz);
+								}
+								else
+								{
+									ImGui::TextDisabled(
+										"Observed %u AI; %u selected; none in range.",
+										radioStatus.observedVehicles,
+										radioStatus.eligibleVehicles);
+								}
 							}
 							ImGui::EndDisabled();
 							ImGui::TreePop();

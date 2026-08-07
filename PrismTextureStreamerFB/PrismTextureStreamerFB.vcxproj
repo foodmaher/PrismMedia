@@ -154,6 +154,7 @@
     <ClCompile Include="prism\execute_command.cpp" />
     <ClCompile Include="prism\memserver_texture_queue.cpp" />
     <ClCompile Include="settings.cpp" />
+    <ClCompile Include="traffic_audio.cpp" />
     <ClCompile Include="update_checker.cpp" />
     <ClCompile Include="sources\media_client.cpp" />
     <ClCompile Include="sources\native_media.cpp" />
@@ -183,6 +184,7 @@
     <ClInclude Include="scs_logging.h" />
     <ClInclude Include="settings.h" />
     <ClInclude Include="telemetry_state.h" />
+    <ClInclude Include="traffic_audio.h" />
     <ClInclude Include="update_checker.h" />
     <ClInclude Include="thread_scheduling.h" />
     <ClInclude Include="sources\content_source.h" />

@@ -47,9 +47,13 @@
     let userWantsPlayback = true;
     let vehiclePowered = true;
     let currentBrightness = 1;
+    let pendingRandomSeed = null;
     const direct = document.getElementById("direct");
     const status = document.getElementById("status");
     const brightnessOverlay = document.getElementById("brightness-overlay");
+    direct.addEventListener("loadedmetadata", function () {
+      applyRandomSelection();
+    });
 
     function backgroundLog(category, message) {
       try {
@@ -182,6 +186,7 @@
             showStatus("");
             applyBrightness(currentBrightness);
             applyPlaybackState();
+            applyRandomSelection();
           });
           controller.addListener(
             "playback_started",
@@ -323,6 +328,37 @@
       applyPlaybackState();
     }
 
+    function applyRandomSelection() {
+      if (pendingRandomSeed === null)
+        return;
+      const seed = Math.abs(Number(pendingRandomSeed) || 0);
+      if (activeSource === "youtube" && youtubeReady && youtubePlayer) {
+        const playlist = youtubePlayer.getPlaylist
+          ? youtubePlayer.getPlaylist() : null;
+        if (playlist && playlist.length > 1) {
+          pendingRandomSeed = null;
+          youtubePlayer.playVideoAt(seed % playlist.length);
+          backgroundLog(
+            "traffic-audio",
+            "Selected random YouTube playlist item " +
+            (seed % playlist.length) + ".");
+        }
+      } else if (activeSource === "direct" &&
+                 Number.isFinite(direct.duration) && direct.duration > 10) {
+        pendingRandomSeed = null;
+        direct.currentTime = (seed % 10000) / 10000 *
+          Math.max(1, direct.duration - 5);
+      } else if (activeSource === "spotify" && spotifyReady) {
+        // The Spotify Embed API does not expose playlist-length/index access.
+        // Keep its normal entry instead of issuing an unpredictable number of
+        // Next commands against a protected account queue.
+        pendingRandomSeed = null;
+        backgroundLog(
+          "traffic-audio",
+          "Spotify Embed uses its normal playlist entry.");
+      }
+    }
+
     window.onYouTubeIframeAPIReady = function () {
       youtubePlayer = new YT.Player("youtube", {
         width: "100%", height: "100%",
@@ -340,8 +376,13 @@
               loadMedia(value);
             }
             applyPlaybackState();
+            window.setTimeout(applyRandomSelection, 600);
           },
           onStateChange: function (event) {
+            if (pendingRandomSeed !== null &&
+                (event.data === YT.PlayerState.CUED ||
+                 event.data === YT.PlayerState.PLAYING))
+              window.setTimeout(applyRandomSelection, 150);
             if (!shouldPlay() &&
                 (event.data === YT.PlayerState.PLAYING ||
                  event.data === YT.PlayerState.BUFFERING))
@@ -399,6 +440,11 @@
         applyPlaybackState();
       } else if (command === "brightness") {
         applyBrightness(argument);
+      } else if (command === "randomize") {
+        pendingRandomSeed = Number(argument) || 0;
+        applyRandomSelection();
+        window.setTimeout(applyRandomSelection, 600);
+        window.setTimeout(applyRandomSelection, 1400);
       } else if (command === "next") {
         if (activeSource === "youtube" && youtubeReady)
           refreshYouTubePlaylist(1, "Refreshing playlist and moving next…");

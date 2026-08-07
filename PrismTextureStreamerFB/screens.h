@@ -123,6 +123,15 @@ struct screen_t
 	float adaptiveAudioExternalMuteDistance = 20.0f;
 	bool adaptiveAudioExternalLowPassEnabled = true;
 	float adaptiveAudioExternalMinimumCutoff = 120.0f;
+	// Optional AI traffic radio. A stable percentage of SPF traffic actors is
+	// eligible, while one dedicated helper follows only the nearest audible car.
+	bool trafficRadioEnabled = false;
+	float trafficRadioVehicleDensity = 0.50f;
+	float trafficRadioMaximumVolume = 0.20f;
+	float trafficRadioFullVolumeDistance = 2.5f;
+	float trafficRadioMuteDistance = 28.0f;
+	float trafficRadioNearCutoff = 1400.0f;
+	float trafficRadioFarCutoff = 260.0f;
 	bool reverseCameraEnabled = false;
 	bool reversePreview = false;
 	bool reverseZeroForwardImpact = true;

@@ -555,6 +555,39 @@ namespace settings {
                         "AdaptiveAudioExternalMinimumCutoff",
                         120.0f),
                     20.0f, 8000.0f);
+            screen.trafficRadioEnabled = GetPrivateProfileIntA(
+                section.c_str(), "TrafficRadioEnabled", 0,
+                path.c_str()) != 0;
+            screen.trafficRadioVehicleDensity = (std::clamp)(
+                read_float(
+                    path, section.c_str(),
+                    "TrafficRadioVehicleDensity", 0.50f),
+                0.0f, 1.0f);
+            screen.trafficRadioMaximumVolume = (std::clamp)(
+                read_float(
+                    path, section.c_str(),
+                    "TrafficRadioMaximumVolume", 0.20f),
+                0.0f, 1.0f);
+            screen.trafficRadioFullVolumeDistance = (std::clamp)(
+                read_float(
+                    path, section.c_str(),
+                    "TrafficRadioFullVolumeDistance", 2.5f),
+                0.0f, 25.0f);
+            screen.trafficRadioMuteDistance = (std::clamp)(
+                read_float(
+                    path, section.c_str(),
+                    "TrafficRadioMuteDistance", 28.0f),
+                1.0f, 100.0f);
+            screen.trafficRadioNearCutoff = (std::clamp)(
+                read_float(
+                    path, section.c_str(),
+                    "TrafficRadioNearCutoff", 1400.0f),
+                20.0f, 20000.0f);
+            screen.trafficRadioFarCutoff = (std::clamp)(
+                read_float(
+                    path, section.c_str(),
+                    "TrafficRadioFarCutoff", 260.0f),
+                20.0f, screen.trafficRadioNearCutoff);
             screen.reverseCameraEnabled = GetPrivateProfileIntA(
                 section.c_str(), "ReverseCameraEnabled", 0, path.c_str()) != 0;
             screen.reverseCameraMethod =
@@ -851,6 +884,13 @@ namespace settings {
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalMuteDistance", screen.adaptiveAudioExternalMuteDistance);
             write_number(temporaryPath, section.c_str(), "AdaptiveAudioExternalLowPassEnabled", screen.adaptiveAudioExternalLowPassEnabled ? 1 : 0);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalMinimumCutoff", screen.adaptiveAudioExternalMinimumCutoff);
+            write_number(temporaryPath, section.c_str(), "TrafficRadioEnabled", screen.trafficRadioEnabled ? 1 : 0);
+            write_float(temporaryPath, section.c_str(), "TrafficRadioVehicleDensity", screen.trafficRadioVehicleDensity);
+            write_float(temporaryPath, section.c_str(), "TrafficRadioMaximumVolume", screen.trafficRadioMaximumVolume);
+            write_float(temporaryPath, section.c_str(), "TrafficRadioFullVolumeDistance", screen.trafficRadioFullVolumeDistance);
+            write_float(temporaryPath, section.c_str(), "TrafficRadioMuteDistance", screen.trafficRadioMuteDistance);
+            write_float(temporaryPath, section.c_str(), "TrafficRadioNearCutoff", screen.trafficRadioNearCutoff);
+            write_float(temporaryPath, section.c_str(), "TrafficRadioFarCutoff", screen.trafficRadioFarCutoff);
             write_number(temporaryPath, section.c_str(), "ReverseCameraEnabled", screen.reverseCameraEnabled ? 1 : 0);
             write_number(
                 temporaryPath, section.c_str(),

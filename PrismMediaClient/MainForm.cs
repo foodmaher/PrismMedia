@@ -68,6 +68,7 @@ namespace PrismMediaClient
         private readonly Timer parentMonitor = new Timer();
         private int parentProcessId;
         private readonly bool silentStart;
+        private readonly string profileSuffix;
         private bool ready;
         private bool initializing;
         private bool coreInitialized;
@@ -83,11 +84,15 @@ namespace PrismMediaClient
         internal MainForm(
             string initialUrl,
             int parentProcessId,
-            bool silentStart)
+            bool silentStart,
+            string windowTitle,
+            string profileSuffix)
         {
             this.parentProcessId = parentProcessId;
             this.silentStart = silentStart;
-            Text = "Prism Media Client";
+            this.profileSuffix = profileSuffix ?? "";
+            Text = string.IsNullOrWhiteSpace(windowTitle)
+                ? "Prism Media Client" : windowTitle;
             StartPosition = FormStartPosition.CenterScreen;
             Width = 1280;
             Height = 720;
@@ -158,7 +163,8 @@ namespace PrismMediaClient
                 string profileFolder = Path.Combine(
                     Environment.GetFolderPath(
                         Environment.SpecialFolder.LocalApplicationData),
-                    "PrismTextureStreamerFB", "WebView2Profile");
+                    "PrismTextureStreamerFB",
+                    "WebView2Profile" + this.profileSuffix);
                 Directory.CreateDirectory(profileFolder);
                 var environmentOptions = new CoreWebView2EnvironmentOptions
                 {
@@ -880,6 +886,11 @@ namespace PrismMediaClient
                 }
                 return;
             }
+            if (string.Equals(command, "shutdown", StringComparison.Ordinal))
+            {
+                Close();
+                return;
+            }
             if (command.StartsWith("brightness|", StringComparison.Ordinal))
             {
                 if (!double.TryParse(
@@ -928,6 +939,11 @@ namespace PrismMediaClient
                         spatialEnabled != 0,
                         cutoffHz <= 0.0f ? 20000.0f : cutoffHz);
                 }
+                return;
+            }
+            if (command.StartsWith("randomize|", StringComparison.Ordinal))
+            {
+                await ExecuteCommandAsync(command);
                 return;
             }
             if (command.StartsWith("resize|", StringComparison.Ordinal))

@@ -1,9 +1,9 @@
-OPTIONAL EXACT EXTERNAL-CAMERA DISTANCE
-=======================================
+OPTIONAL CAMERA DISTANCE AND AI TRAFFIC AUDIO
+=============================================
 
 The main PrismTextureStreamerFB plugin works without SPF. Install this
 companion only if you want true camera-to-driver distance falloff and the
-distance-controlled low-pass effect.
+distance-controlled low-pass effect, or positional music from AI traffic.
 
 1. Install the latest SPF Framework runtime from:
    https://github.com/TrackAndTruckDevs/SPF-Framework/releases
@@ -35,11 +35,20 @@ distance-controlled low-pass effect.
 
    The menu should show the exact camera distance when you switch outside.
 
-The same bridge also publishes the live placement of the last connected
-trailer. Prism uses this as the safe data foundation for trailer-aware camera
-development. SPF 1.2 does not expose an independent render-to-texture camera,
-so the current working GPS reverse feed still uses an F2 virtual side mirror
-and never replaces the driver's main camera.
+7. For AI traffic music, use an Integrated Media screen with a YouTube,
+   Spotify, local-file or direct-media link, then open:
+   Ctrl+F8 > your screen > AI Traffic Radios (SPF)
+
+   Enable positional AI traffic music. The status line should report observed
+   AI actors and the nearest selected actor when one is inside the mute range.
+
+The same bridge publishes the live placement of the last connected trailer and
+up to 32 nearby AI traffic actors. AI placement uses SPF's current per-frame
+handles and rejects an actor safely if it despawns during the copy. SPF 1.2
+does not expose an independent render-to-texture camera, so the current working
+GPS reverse feed still uses an F2 virtual side mirror and never replaces the
+driver's main camera.
 
 If SPF or the companion is missing, Prism automatically falls back to its
-fixed outside-volume setting. Game audio is never passed through the filter.
+fixed outside-volume setting, and AI traffic music remains silent. Game audio
+is never passed through the filter.

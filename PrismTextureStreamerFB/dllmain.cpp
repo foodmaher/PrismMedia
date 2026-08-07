@@ -20,6 +20,7 @@
 #include "camera_bridge_client.h"
 #include "diagnostic_log.h"
 #include "environment_audio.h"
+#include "traffic_audio.h"
 #include "thread_scheduling.h"
 #include "update_checker.h"
 
@@ -270,6 +271,7 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
     IContentSource* spatialAudioTarget{};
     IContentSource* spatialAudioFallback{};
     screen_t* spatialAudioScreen{};
+    traffic_audio::config_t trafficRadioConfig{};
     const bool reverseActive = g_reverse_active.load();
 
     camera_bridge::poll();
@@ -530,6 +532,28 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                 }
             }
 
+            if (!trafficRadioConfig.enabled &&
+                screen.trafficRadioEnabled &&
+                screen.contentMode ==
+                    content_mode_t::INTEGRATED_MEDIA &&
+                !screen.mediaUrl.empty())
+            {
+                trafficRadioConfig.enabled = true;
+                trafficRadioConfig.playlistUrl = screen.mediaUrl;
+                trafficRadioConfig.vehicleDensity =
+                    screen.trafficRadioVehicleDensity;
+                trafficRadioConfig.maximumVolume =
+                    screen.trafficRadioMaximumVolume;
+                trafficRadioConfig.fullVolumeDistance =
+                    screen.trafficRadioFullVolumeDistance;
+                trafficRadioConfig.muteDistance =
+                    screen.trafficRadioMuteDistance;
+                trafficRadioConfig.nearCutoffHz =
+                    screen.trafficRadioNearCutoff;
+                trafficRadioConfig.farCutoffHz =
+                    screen.trafficRadioFarCutoff;
+            }
+
             if (screen.source &&
                 screen.source->SupportsVehiclePowerControl())
             {
@@ -738,6 +762,16 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
         }
     }
 
+    static uint64_t lastTrafficAudioUpdate{};
+    const uint64_t trafficAudioNow = GetTickCount64();
+    if (lastTrafficAudioUpdate == 0 ||
+        trafficAudioNow < lastTrafficAudioUpdate ||
+        trafficAudioNow - lastTrafficAudioUpdate >= 50)
+    {
+        lastTrafficAudioUpdate = trafficAudioNow;
+        traffic_audio::update(trafficRadioConfig);
+    }
+
     if (has_gps != gps_patched)
     {
         static uint64_t patch_addr{};
@@ -940,6 +974,7 @@ SCSAPI_VOID scs_telemetry_shutdown()
 {
     diagnostic_log::write("session", "Plugin shutdown started.");
     update_checker::shutdown();
+    traffic_audio::shutdown();
     settings::save();
     environment_audio::reset();
     {

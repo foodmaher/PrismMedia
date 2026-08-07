@@ -9,8 +9,6 @@ decode direct media without window capture.
 
 ---
 
-<img width="2560" height="1600" alt="Screenshot_20260806_000354_Artemis" src="https://github.com/user-attachments/assets/6c2a7ef7-fc14-4f3d-85da-e763cdb7d058" />
-
 ## What it does
 Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Add a **GPS** screen, **Dashboard** screen, or a **Custom** screen (The target `.tobj` MUST be a functional screen from a UI Script, such as `/ui/gps.sii`)
@@ -25,6 +23,8 @@ Press **Ctrl+F8** in game to open an ImGui overlay. From there you can:
 - Spatialize Integrated Media Client sound from the driver's live head pose
 - Fade and muffle outside-camera media by true camera-to-driver distance with
   the optional SPF companion
+- Play a screen's playlist from a stable percentage of nearby AI traffic,
+  with positional pan, distance falloff and muffling from the optional SPF feed
 - Apply separate media volume in menus and detect external cameras reliably
 - Keep the game's own environment audio clear by reducing media dynamically
   from live speed and wheel-contact telemetry
@@ -97,8 +97,9 @@ performance statistics.
 - DirectX 11
 - Microsoft Edge WebView2 Runtime for the Integrated Media Client (normally
   already installed on Windows 10/11)
-- Optional: SPF Framework 1.2+ for exact external-camera position. The main
-  plugin retains fixed outside-volume fallback without it.
+- Optional: SPF Framework 1.2+ for exact external-camera position and AI
+  traffic placement. The main plugin retains fixed outside-volume fallback
+  without it; AI traffic music stays off when the bridge is absent.
 - ReShade is not required. The plugin creates a private hidden DirectX 11
   probe window to install its own Present and texture hooks.
 
@@ -114,6 +115,19 @@ performance statistics.
    the subfolder.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
+
+## Version 3.11 SPF AI traffic radios
+
+Version `3.11.0-spf-traffic-radio` extends the optional SPF bridge with the
+32 nearest live AI placements. Under **AI Traffic Radios (SPF)**, an Integrated
+Media screen can reuse its current playlist for a stable percentage of AI
+vehicles (50% by default). One dedicated hidden helper follows only the nearest
+eligible car, applies left/right pan, distance falloff and a configurable
+low-pass cutoff, and selects a deterministic random YouTube playlist entry when
+the audible vehicle changes. This keeps playback cost bounded instead of
+starting a WebView for every traffic actor.
+
+See `PrismTextureStreamerFB\docs\V3.11-SPF-TRAFFIC-RADIO.md`.
 
 ## Version 3.10 visual, audio and input reliability
 

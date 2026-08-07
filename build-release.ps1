@@ -36,7 +36,7 @@ if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.12.0-independent-traffic-radio'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.12.1-cursor-alignment-hotfix'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }
@@ -59,6 +59,7 @@ Copy-Item (Join-Path $ProjectRoot 'V3.9-SPOTIFY-SESSION-BACKUPS.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'V3.10-VISUAL-AUDIO-INPUT.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'V3.11-SPF-TRAFFIC-RADIO.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'V3.12-INDEPENDENT-TRAFFIC-RADIO.md') $Docs
+Copy-Item (Join-Path $ProjectRoot 'V3.12.1-CURSOR-HOTFIX.md') $Docs
 $SpfBridge = Join-Path $Runtime 'SPF-OPTIONAL\PrismCameraBridge'
 New-Item -ItemType Directory -Path $SpfBridge -Force | Out-Null
 Copy-Item $BridgeDll $SpfBridge
@@ -66,7 +67,7 @@ Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (
     Join-Path $Runtime 'SPF-OPTIONAL')
 
 @"
-PrismTextureStreamerFB 3.12.0 Independent AI Traffic Radio
+PrismTextureStreamerFB 3.12.1 Cursor Alignment Hotfix
 
 Copy PrismTextureStreamerFB.dll and the PrismTextureStreamerFB folder into
 <ETS2 or ATS>\bin\win_x64\plugins. The DLL must stay directly in plugins.

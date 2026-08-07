@@ -2,6 +2,8 @@
 
 #include <MinHook/MinHook.h>
 
+#include <atomic>
+
 #include "../scs_logging.h"
 using namespace scs_logging;
 
@@ -10,14 +12,14 @@ using namespace scs_logging;
 #pragma comment(lib, "Dinput8.lib")
 #pragma comment(lib, "Dxguid.lib")
 
-static bool mouse_visible{};
+static std::atomic_bool mouse_visible{};
 static void* getDeviceDataFunc{};
 
 typedef BOOL(WINAPI* SetCursorPosT)(int, int);
 SetCursorPosT originalSetCursorPos{};
 
 BOOL WINAPI hookSetCursorPos(int x, int y) {
-    if (mouse_visible)
+    if (mouse_visible.load(std::memory_order_relaxed))
         return true; // Stop windows from resetting the mouse position
 
     return originalSetCursorPos(x, y);
@@ -30,8 +32,30 @@ GetDeviceDataT originalGetDeviceData{};
 HRESULT hookedGetDeviceData(IDirectInputDevice8* pThis, DWORD cbObjectData, LPDIDEVICEOBJECTDATA rgdod, LPDWORD pdwInOut, DWORD dwFlags) {
     HRESULT result = originalGetDeviceData(pThis, cbObjectData, rgdod, pdwInOut, dwFlags);
 
-    if (SUCCEEDED(result) && mouse_visible && pdwInOut) {
-        *pdwInOut = 0;
+    if (SUCCEEDED(result) &&
+        mouse_visible.load(std::memory_order_relaxed) && pdwInOut) {
+        // ETS2/ATS renders a separate software cursor in its menus. Dropping
+        // every event froze that cursor at its old position while the Win32
+        // pointer continued moving over ImGui, producing the two separated
+        // cursors shown by users. Pass only X/Y movement so the game cursor
+        // follows the same physical pointer. Buttons and the wheel remain
+        // blocked, preventing interaction with the game UI behind ImGui.
+        if (!rgdod) {
+            *pdwInOut = 0;
+            return result;
+        }
+
+        const DWORD received = *pdwInOut;
+        DWORD retained{};
+        for (DWORD index = 0; index < received; ++index) {
+            if (rgdod[index].dwOfs != DIMOFS_X &&
+                rgdod[index].dwOfs != DIMOFS_Y)
+                continue;
+            if (retained != index)
+                rgdod[retained] = rgdod[index];
+            ++retained;
+        }
+        *pdwInOut = retained;
     }
 
     return result;
@@ -74,12 +98,12 @@ namespace dinput8 {
 
 
     void hide_mouse() {
-        mouse_visible = false;
+        mouse_visible.store(false, std::memory_order_relaxed);
     }
     void show_mouse() {
-        mouse_visible = true;
+        mouse_visible.store(true, std::memory_order_relaxed);
     }
     void set_mouse(bool visible) {
-        mouse_visible = visible;
+        mouse_visible.store(visible, std::memory_order_relaxed);
     }
 }

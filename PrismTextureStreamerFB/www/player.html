@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Prism Media Client</title>
+  <style>
+    html, body, #youtube, #direct {
+      width: 100%; height: 100%; margin: 0; padding: 0;
+      border: 0; overflow: hidden; background: #000;
+    }
+    #direct { display: none; object-fit: contain; }
+    #status {
+      position: fixed; left: 16px; bottom: 12px; z-index: 5;
+      color: #ddd; background: rgba(0,0,0,.65); padding: 6px 9px;
+      border-radius: 4px; font: 13px "Segoe UI", sans-serif;
+    }
+    #brightness-overlay {
+      position: fixed; inset: 0; z-index: 100;
+      background: #000; opacity: 0; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="youtube"></div>
+  <video id="direct" playsinline></video>
+  <div id="status">Enter a YouTube, local file, or direct media URL in the in-game menu.</div>
+  <div id="brightness-overlay"></div>
+  <script>
+    "use strict";
+    let youtubePlayer = null;
+    let youtubeReady = false;
+    let pendingUrl = "";
+    let activeSource = "youtube";
+    let activeYouTubePlaylist = "";
+    let playlistRefreshSerial = 0;
+    let playlistRefreshInProgress = false;
+    let userWantsPlayback = true;
+    let vehiclePowered = true;
+    let currentBrightness = 1;
+    let pendingRandomSeed = null;
+    const direct = document.getElementById("direct");
+    const status = document.getElementById("status");
+    const brightnessOverlay = document.getElementById("brightness-overlay");
+
+    direct.addEventListener("loadedmetadata", applyRandomSelection);
+    direct.addEventListener("error", function () {
+      const code = direct.error ? direct.error.code : 0;
+      const message = "Direct traffic/media source failed (media error " +
+        code + ").";
+      backgroundLog("error", message);
+      showStatus(message);
+    });
+
+    function backgroundLog(category, message) {
+      try {
+        if (window.chrome && window.chrome.webview)
+          window.chrome.webview.postMessage(
+            "log|" + category + "|" + message);
+      } catch (_) {}
+    }
+
+    function applyBrightness(value) {
+      const brightness = Math.max(0.05, Math.min(2.0, Number(value) || 1));
+      currentBrightness = brightness;
+      const contentFilter = brightness > 1
+        ? "brightness(" + brightness.toFixed(4) + ")"
+        : "none";
+      document.getElementById("youtube").style.filter = contentFilter;
+      direct.style.filter = contentFilter;
+      brightnessOverlay.style.opacity =
+        brightness < 1 ? (1 - brightness).toFixed(4) : "0";
+    }
+
+    function showStatus(text) {
+      status.textContent = text;
+      status.style.display = text ? "block" : "none";
+    }
+
+    function shouldPlay() {
+      return userWantsPlayback && vehiclePowered;
+    }
+
+    function applyPlaybackState() {
+      if (activeSource === "youtube" && youtubeReady && youtubePlayer) {
+        const state = youtubePlayer.getPlayerState();
+        if (shouldPlay()) {
+          if (state !== YT.PlayerState.PLAYING &&
+              state !== YT.PlayerState.BUFFERING)
+            youtubePlayer.playVideo();
+        } else if (state === YT.PlayerState.PLAYING ||
+                   state === YT.PlayerState.BUFFERING) {
+          youtubePlayer.pauseVideo();
+        }
+      } else if (activeSource === "direct" && direct.src) {
+        if (shouldPlay())
+          direct.play().catch(error =>
+            showStatus("Unable to play media: " + error.message));
+        else
+          direct.pause();
+      }
+    }
+
+    function youtubeInfo(value) {
+      try {
+        const url = new URL(value);
+        const host = url.hostname.replace(/^www\./, "");
+        if (host === "youtu.be")
+          return {
+            video: url.pathname.slice(1),
+            list: url.searchParams.get("list")
+          };
+        if (host === "youtube.com" || host === "m.youtube.com" ||
+            host === "music.youtube.com") {
+          let video = url.searchParams.get("v");
+          const parts = url.pathname.split("/").filter(Boolean);
+          if (!video && (parts[0] === "embed" || parts[0] === "shorts"))
+            video = parts[1];
+          return { video, list: url.searchParams.get("list") };
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    function showOnly(source) {
+      activeSource = source;
+      document.getElementById("youtube").style.display =
+        source === "youtube" ? "block" : "none";
+      direct.style.display = source === "direct" ? "block" : "none";
+    }
+
+    function refreshYouTubePlaylist(step, reason) {
+      if (!youtubeReady || !youtubePlayer || !activeYouTubePlaylist) {
+        if (youtubeReady && youtubePlayer) {
+          if (step < 0) youtubePlayer.previousVideo();
+          else youtubePlayer.nextVideo();
+        }
+        return;
+      }
+      if (playlistRefreshInProgress)
+        return;
+
+      const currentIndex = Math.max(
+        0, Number(youtubePlayer.getPlaylistIndex()) || 0);
+      const targetIndex = Math.max(0, currentIndex + step);
+      const serial = ++playlistRefreshSerial;
+      playlistRefreshInProgress = true;
+      backgroundLog(
+        "playlist", "Refresh requested: " +
+        (reason || "track boundary") + ", target index " + targetIndex + ".");
+      showStatus(reason || "Refreshing YouTube playlist…");
+
+      const options = {
+        list: activeYouTubePlaylist,
+        listType: "playlist",
+        index: targetIndex,
+        startSeconds: 0
+      };
+      if (shouldPlay()) youtubePlayer.loadPlaylist(options);
+      else youtubePlayer.cuePlaylist(options);
+
+      window.setTimeout(function () {
+        if (serial !== playlistRefreshSerial)
+          return;
+        playlistRefreshInProgress = false;
+        backgroundLog(
+          "playlist", "Refresh queue became active at target index " +
+          targetIndex + ".");
+        showStatus("");
+        if (!shouldPlay())
+          youtubePlayer.pauseVideo();
+      }, 1200);
+    }
+
+    function loadMedia(value) {
+      ++playlistRefreshSerial;
+      playlistRefreshInProgress = false;
+      userWantsPlayback = true;
+      const info = youtubeInfo(value);
+      if (info) {
+        direct.pause();
+        showOnly("youtube");
+        if (!youtubeReady) {
+          pendingUrl = value;
+          showStatus("Loading YouTube player…");
+          return;
+        }
+        if (info.list) {
+          activeYouTubePlaylist = info.list;
+          backgroundLog("media", "Loading a YouTube playlist.");
+          const options = { list: info.list, listType: "playlist" };
+          if (shouldPlay()) youtubePlayer.loadPlaylist(options);
+          else youtubePlayer.cuePlaylist(options);
+        } else if (info.video) {
+          activeYouTubePlaylist = "";
+          backgroundLog("media", "Loading a single YouTube video.");
+          if (shouldPlay()) youtubePlayer.loadVideoById(info.video);
+          else youtubePlayer.cueVideoById(info.video);
+        } else {
+          activeYouTubePlaylist = "";
+          showStatus("This YouTube URL does not contain a video or playlist.");
+          return;
+        }
+        showStatus("");
+        applyPlaybackState();
+        return;
+      }
+
+      if (youtubeReady && youtubePlayer)
+        youtubePlayer.pauseVideo();
+      activeYouTubePlaylist = "";
+      showOnly("direct");
+      backgroundLog("media", "Loading direct/local media.");
+      direct.src = value;
+      showStatus("");
+      applyPlaybackState();
+    }
+
+    function applyRandomSelection() {
+      if (pendingRandomSeed === null)
+        return;
+      const seed = Math.abs(Number(pendingRandomSeed) || 0);
+      if (activeSource === "youtube" && youtubeReady && youtubePlayer) {
+        const playlist = youtubePlayer.getPlaylist
+          ? youtubePlayer.getPlaylist() : null;
+        if (playlist && playlist.length > 1) {
+          pendingRandomSeed = null;
+          youtubePlayer.playVideoAt(seed % playlist.length);
+          backgroundLog(
+            "traffic-audio", "Selected random YouTube playlist item " +
+            (seed % playlist.length) + ".");
+        }
+      } else if (activeSource === "direct" &&
+                 Number.isFinite(direct.duration) && direct.duration > 10) {
+        pendingRandomSeed = null;
+        const latestStart = Math.max(0, direct.duration - 5);
+        const minuteSlots = Math.max(
+          1, Math.floor(latestStart / 60) + 1);
+        const startingOffset = Math.min(
+          latestStart, (seed % minuteSlots) * 60);
+        direct.currentTime = startingOffset;
+        backgroundLog(
+          "traffic-audio", "Selected stable starting offset " +
+          Math.round(startingOffset) +
+          "s; playback continues normally from that point.");
+      }
+    }
+
+    window.onYouTubeIframeAPIReady = function () {
+      youtubePlayer = new YT.Player("youtube", {
+        width: "100%", height: "100%",
+        playerVars: {
+          autoplay: 1, controls: 0, disablekb: 1,
+          enablejsapi: 1, playsinline: 1, rel: 0
+        },
+        events: {
+          onReady: function () {
+            youtubeReady = true;
+            applyBrightness(currentBrightness);
+            if (pendingUrl) {
+              const value = pendingUrl;
+              pendingUrl = "";
+              loadMedia(value);
+            }
+            applyPlaybackState();
+            window.setTimeout(applyRandomSelection, 600);
+          },
+          onStateChange: function (event) {
+            if (pendingRandomSeed !== null &&
+                (event.data === YT.PlayerState.CUED ||
+                 event.data === YT.PlayerState.PLAYING))
+              window.setTimeout(applyRandomSelection, 150);
+            if (!shouldPlay() &&
+                (event.data === YT.PlayerState.PLAYING ||
+                 event.data === YT.PlayerState.BUFFERING))
+              youtubePlayer.pauseVideo();
+            else if (event.data === YT.PlayerState.ENDED &&
+                     activeSource === "youtube" &&
+                     activeYouTubePlaylist &&
+                     !playlistRefreshInProgress) {
+              backgroundLog(
+                "playlist", "Current YouTube playlist video ended.");
+              refreshYouTubePlaylist(
+                1, "Checking for newly added playlist videos…");
+            }
+          },
+          onError: function (event) {
+            backgroundLog(
+              "error", "YouTube playback error " + event.data + ".");
+            showStatus("YouTube playback error " + event.data);
+          }
+        }
+      });
+    };
+
+    window.prismCommand = function (payload) {
+      const separator = payload.indexOf("|");
+      const command = separator < 0 ? payload : payload.slice(0, separator);
+      const argument = separator < 0 ? "" : payload.slice(separator + 1);
+      if (command === "load") {
+        loadMedia(argument);
+      } else if (command === "playpause") {
+        userWantsPlayback = !userWantsPlayback;
+        applyPlaybackState();
+      } else if (command === "play") {
+        userWantsPlayback = true;
+        applyPlaybackState();
+      } else if (command === "pause") {
+        userWantsPlayback = false;
+        applyPlaybackState();
+      } else if (command === "vehiclepower") {
+        vehiclePowered = argument === "1";
+        applyPlaybackState();
+      } else if (command === "brightness") {
+        applyBrightness(argument);
+      } else if (command === "randomize") {
+        pendingRandomSeed = Number(argument) || 0;
+        applyRandomSelection();
+        window.setTimeout(applyRandomSelection, 600);
+        window.setTimeout(applyRandomSelection, 1400);
+      } else if (command === "next") {
+        if (activeSource === "youtube" && youtubeReady)
+          refreshYouTubePlaylist(1, "Refreshing playlist and moving next…");
+        else
+          direct.currentTime = Math.min(
+            direct.duration || Infinity, direct.currentTime + 30);
+      } else if (command === "previous") {
+        if (activeSource === "youtube" && youtubeReady)
+          refreshYouTubePlaylist(-1, "Refreshing playlist and moving previous…");
+        else
+          direct.currentTime = Math.max(0, direct.currentTime - 30);
+      } else if (command === "mute") {
+        if (activeSource === "youtube" && youtubeReady) {
+          if (youtubePlayer.isMuted()) youtubePlayer.unMute();
+          else youtubePlayer.mute();
+        } else {
+          direct.muted = !direct.muted;
+        }
+      } else if (command === "volumeup" || command === "volumedown") {
+        const change = command === "volumeup" ? 5 : -5;
+        if (activeSource === "youtube" && youtubeReady)
+          youtubePlayer.setVolume(Math.max(
+            0, Math.min(100, youtubePlayer.getVolume() + change)));
+        else
+          direct.volume = Math.max(
+            0, Math.min(1, direct.volume + change / 100));
+      }
+    };
+
+    const youtubeApi = document.createElement("script");
+    youtubeApi.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(youtubeApi);
+  </script>
+</body>
+</html>

@@ -116,6 +116,18 @@ performance statistics.
 2. Launch the game, Ctrl+F8 to open the menu
 3. Add a screen, pick a source window, hit Apply
 
+## Version 3.12.1 cursor-alignment hotfix
+
+Version `3.12.1-cursor-alignment-hotfix` fixes the separated cursors visible
+when the plugin is opened over an ETS2/ATS menu. The input hook previously
+discarded mouse X/Y movement as well as buttons, freezing the game's software
+cursor while the Win32 pointer continued across ImGui. It now passes only X/Y
+movement so both coordinates remain aligned. In game menus, the redundant
+Win32 cursor image is hidden and the SCS cursor is the single visible pointer;
+while driving, the Win32 pointer remains visible because SCS has no menu
+cursor. Buttons and wheel input are still blocked from reaching the game UI
+behind the plugin.
+
 ## Version 3.12 independent AI traffic audio
 
 Version `3.12.0-independent-traffic-radio` prevents AI traffic playback from

@@ -2,9 +2,7 @@
 #include <d3d11.h>
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <cmath>
-#include <iterator>
 #include <map>
 #include <vector>
 
@@ -17,6 +15,7 @@ using namespace scs_logging;
 #include "../dx11/internal_render_probe.h"
 #include "../dx11/present.h"
 #include "../dinput8/dinput8.h"
+#include "../win32/win32.h"
 
 #include <ImGui/imgui.h>
 #include "../misc/imgui_stdlib.h"
@@ -29,7 +28,6 @@ using namespace scs_logging;
 #include "../telemetry_state.h"
 #include "../thread_scheduling.h"
 #include "../environment_audio.h"
-#include "../traffic_audio.h"
 #include "../update_checker.h"
 #include "../sources/media_client.h"
 #include "../sources/native_media.h"
@@ -42,18 +40,6 @@ static std::atomic<bool> menu_visible{};
 static int hotkey_binding_index = -1;
 static bool configuration_save_pending = false;
 static uint64_t configuration_last_change_tick = 0;
-
-static bool is_traffic_streaming_web_page(const std::string& value)
-{
-	std::string lower;
-	lower.reserve(value.size());
-	for (const unsigned char character : value)
-		lower.push_back(static_cast<char>(std::tolower(character)));
-	return lower.rfind("spotify:", 0) == 0 ||
-		lower.find("spotify.com") != std::string::npos ||
-		lower.find("youtube.com") != std::string::npos ||
-		lower.find("youtu.be") != std::string::npos;
-}
 
 static float calculate_effective_brightness(const screen_t& screen)
 {
@@ -102,12 +88,16 @@ static void set_menu_visibility(bool visible)
 		}
 	}
 	dinput8::set_mouse(visible);
+	win32::set_menu_mouse_capture(visible);
 
 	if (ImGui::GetCurrentContext())
 	{
-		// Use the Win32 cursor exclusively. Drawing a second ImGui software
-		// cursor can leave both it and the game's controller cursor visible.
-		ImGui::GetIO().MouseDrawCursor = false;
+		// Draw exactly one cursor from ImGui while the plugin menu is open.
+		// This cursor uses the same ImGui mouse coordinates as hover/click
+		// detection, so it cannot drift above/left when Windows DPI scaling,
+		// ETS2 render scaling, or the game's own cursor uses another space.
+		// The Win32 layer hides the native client-area cursor at the same time.
+		ImGui::GetIO().MouseDrawCursor = visible;
 	}
 }
 
@@ -164,7 +154,10 @@ static bool rebuild_source(screen_t& screen)
 			screen.source = sources::CreateMediaClientSource(
 				screen.mediaUrl, screen.framerate,
 				screen.targetLiveTextureWidth,
-				screen.targetLiveTextureHeight);
+				screen.targetLiveTextureHeight,
+				screen.mediaService == media_service_t::SPOTIFY &&
+					screen.spotifyPlaybackMode ==
+						spotify_playback_mode_t::FULL_WEB_PLAYER);
 		break;
 	case content_mode_t::NATIVE_DIRECT_MEDIA:
 		if (!screen.mediaUrl.empty())
@@ -887,26 +880,14 @@ void on_frame()
 							"game upload all use resources.");
 						break;
 					case content_mode_t::INTEGRATED_MEDIA:
-						if (screen.mediaService == media_service_t::SPOTIFY)
-						{
-							ImGui::TextColored(
-								ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-								"Expected impact: Medium / High");
-							ImGui::TextWrapped(
-								"Spotify always uses its Full Web Player for persistent "
-								"login and complete controls. The old Embed path is removed.");
-						}
-						else
-						{
-							ImGui::TextColored(
-								ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
-								"Expected impact: Low / Medium");
-							ImGui::TextWrapped(
-								"YouTube uses its official player in a clean, "
-								"hardware-accelerated helper without browser tabs or "
-								"extensions. One optimized Windows capture transfer is "
-								"still required.");
-						}
+						ImGui::TextColored(
+							ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
+							"Expected impact: Low / Medium");
+						ImGui::TextWrapped(
+							"Recommended for YouTube and Spotify playlists. Uses the "
+							"official embedded players in a clean hardware-accelerated "
+							"helper, avoiding a full browser, tabs and extensions. "
+							"One optimized Windows capture transfer is still required.");
 						if (!sources::IsMediaClientInstalled())
 							ImGui::TextColored(
 								ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
@@ -1191,6 +1172,13 @@ void on_frame()
 								{
 									screen.mediaUrl.clear();
 								}
+								if (screen.source)
+									screen.source->SetFullSpotifyWeb(
+										screen.mediaService ==
+											media_service_t::SPOTIFY &&
+										screen.spotifyPlaybackMode ==
+											spotify_playback_mode_t::
+												FULL_WEB_PLAYER);
 								if (screen.source &&
 									!screen.mediaUrl.empty())
 								{
@@ -1203,23 +1191,62 @@ void on_frame()
 							if (screen.mediaService ==
 								media_service_t::SPOTIFY)
 							{
-								ImGui::TextColored(
-									ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-									"Spotify uses Full Web Player");
-								ImGui::TextWrapped(
-									"The normal Spotify website provides persistent "
-									"login and native track controls. All Spotify "
-									"playback now follows this single implementation.");
-								if (screen.source && ImGui::Button(
-									"Open Spotify login / controls"))
-									screen.source->ShowInteractivePlayer(true);
-								ImGui::SameLine();
-								if (screen.source && ImGui::Button(
-									"Return helper to silent mode"))
-									screen.source->ShowInteractivePlayer(false);
-								if (screen.source && ImGui::Button(
-									"Clear Spotify login/session"))
-									screen.source->ClearBrowserSession();
+								const char* spotifyModes[] = {
+									"Embed (low impact)",
+									"Full Web Player (experimental)"
+								};
+								int spotifyMode = static_cast<int>(
+									screen.spotifyPlaybackMode);
+								if (ImGui::Combo(
+									"Spotify Experience", &spotifyMode,
+									spotifyModes,
+									IM_ARRAYSIZE(spotifyModes)))
+								{
+									screen.spotifyPlaybackMode =
+										static_cast<spotify_playback_mode_t>(
+											spotifyMode);
+									if (screen.source)
+									{
+										screen.source->SetFullSpotifyWeb(
+											screen.spotifyPlaybackMode ==
+												spotify_playback_mode_t::
+													FULL_WEB_PLAYER);
+										if (!screen.mediaUrl.empty())
+											screen.source->LoadMedia(
+												screen.mediaUrl);
+									}
+									saveConfiguration = true;
+								}
+
+								if (screen.spotifyPlaybackMode ==
+									spotify_playback_mode_t::EMBED)
+								{
+									ImGui::TextWrapped(
+										"Lowest overhead and no login. Spotify "
+										"limits Next/Previous inside embeds, so "
+										"those commands cycle your saved links.");
+								}
+								else
+								{
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+										"Expected impact: Medium / High");
+									ImGui::TextWrapped(
+										"Runs the normal Spotify website with a "
+										"persistent login. It supports native "
+										"track controls but uses more CPU/GPU and "
+										"may expose DRM/compositor capture limits.");
+									if (screen.source && ImGui::Button(
+										"Open Spotify login / controls"))
+										screen.source->ShowInteractivePlayer(true);
+									ImGui::SameLine();
+									if (screen.source && ImGui::Button(
+										"Return helper to silent mode"))
+										screen.source->ShowInteractivePlayer(false);
+									if (screen.source && ImGui::Button(
+										"Clear Spotify login/session"))
+										screen.source->ClearBrowserSession();
+								}
 							}
 
 							auto& mediaUrls =
@@ -1439,6 +1466,18 @@ void on_frame()
 								dispatch_media_command(
 									screen,
 									media_command_t::VOLUME_UP);
+							if (screen.contentMode ==
+								content_mode_t::INTEGRATED_MEDIA &&
+								screen.mediaService ==
+									media_service_t::SPOTIFY &&
+								screen.spotifyPlaybackMode ==
+									spotify_playback_mode_t::EMBED)
+							{
+								ImGui::TextDisabled(
+									"Spotify Next/Previous cycles saved Spotify "
+									"links; Spotify Embed cannot skip tracks.");
+							}
+
 						bool isHotkeyTarget = screen.hotkeyTarget;
 						if (ImGui::Checkbox(
 							"Use this screen for media hotkeys",
@@ -1780,217 +1819,6 @@ void on_frame()
 									"distance and follows the moving truck. Without SPF, "
 									"camera keys and telemetry freshness provide a safe "
 									"fixed-volume fallback.");
-							}
-							ImGui::EndDisabled();
-							ImGui::TreePop();
-						}
-
-						if (ImGui::TreeNode("AI Traffic Radios (SPF)"))
-						{
-							ImGui::TextWrapped(
-								"Uses independent local audio files or direct audio URLs. "
-								"It never opens Spotify or YouTube, so the dashboard "
-								"player keeps its playback session. One nearest audible "
-								"AI vehicle is decoded at a time.");
-
-							if (!screen.trafficRadioSources.empty())
-							{
-								screen.selectedTrafficRadioSource = (std::min)(
-									screen.selectedTrafficRadioSource,
-									static_cast<uint32_t>(
-										screen.trafficRadioSources.size() - 1));
-								const std::string& preview = screen.trafficRadioSources[
-									screen.selectedTrafficRadioSource];
-								if (ImGui::BeginCombo(
-									"Traffic audio sources", preview.c_str()))
-								{
-									for (uint32_t index = 0;
-										index < screen.trafficRadioSources.size(); ++index)
-									{
-										const bool selected =
-											index == screen.selectedTrafficRadioSource;
-										if (ImGui::Selectable(
-											screen.trafficRadioSources[index].c_str(), selected))
-										{
-											screen.selectedTrafficRadioSource = index;
-											screen.trafficRadioSourceDraft =
-												screen.trafficRadioSources[index];
-											saveConfiguration = true;
-										}
-										if (selected)
-											ImGui::SetItemDefaultFocus();
-									}
-									ImGui::EndCombo();
-								}
-							}
-							ImGui::InputTextWithHint(
-								"##traffic_audio_source",
-								"C:\\Music\\song.mp3 or https://host/audio.mp3",
-								&screen.trafficRadioSourceDraft);
-							const bool invalidPage = is_traffic_streaming_web_page(
-								screen.trafficRadioSourceDraft);
-							if (invalidPage)
-							{
-								ImGui::TextColored(
-									ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-									"Spotify/YouTube page links cannot be traffic sources. "
-									"Use a local audio file or a direct media/stream URL.");
-							}
-							const bool sourceReady =
-								!screen.trafficRadioSourceDraft.empty() && !invalidPage;
-							ImGui::BeginDisabled(!sourceReady);
-							if (ImGui::Button("Add traffic source"))
-							{
-								const auto existing = std::find(
-									screen.trafficRadioSources.begin(),
-									screen.trafficRadioSources.end(),
-									screen.trafficRadioSourceDraft);
-								if (existing == screen.trafficRadioSources.end())
-									screen.trafficRadioSources.push_back(
-										screen.trafficRadioSourceDraft);
-								screen.selectedTrafficRadioSource =
-									static_cast<uint32_t>(
-										std::distance(
-											screen.trafficRadioSources.begin(),
-											std::find(
-												screen.trafficRadioSources.begin(),
-												screen.trafficRadioSources.end(),
-												screen.trafficRadioSourceDraft)));
-								saveConfiguration = true;
-							}
-							ImGui::SameLine();
-							ImGui::BeginDisabled(screen.trafficRadioSources.empty());
-							if (ImGui::Button("Update selected"))
-							{
-								screen.trafficRadioSources[
-									screen.selectedTrafficRadioSource] =
-										screen.trafficRadioSourceDraft;
-								saveConfiguration = true;
-							}
-							ImGui::EndDisabled();
-							ImGui::EndDisabled();
-							ImGui::SameLine();
-							ImGui::BeginDisabled(screen.trafficRadioSources.empty());
-							if (ImGui::Button("Remove selected"))
-							{
-								screen.trafficRadioSources.erase(
-									screen.trafficRadioSources.begin() +
-										screen.selectedTrafficRadioSource);
-								if (screen.trafficRadioSources.empty())
-								{
-									screen.selectedTrafficRadioSource = 0;
-									screen.trafficRadioSourceDraft.clear();
-									screen.trafficRadioEnabled = false;
-								}
-								else
-								{
-									screen.selectedTrafficRadioSource = (std::min)(
-										screen.selectedTrafficRadioSource,
-										static_cast<uint32_t>(
-											screen.trafficRadioSources.size() - 1));
-									screen.trafficRadioSourceDraft =
-										screen.trafficRadioSources[
-											screen.selectedTrafficRadioSource];
-								}
-								saveConfiguration = true;
-							}
-							ImGui::EndDisabled();
-
-							const bool supported =
-								!screen.trafficRadioSources.empty() &&
-								sources::IsMediaClientInstalled();
-							if (!sources::IsMediaClientInstalled())
-								ImGui::TextColored(
-									ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-									"PrismMediaClient.exe is required.");
-
-							ImGui::BeginDisabled(!supported);
-							if (ImGui::Checkbox(
-								"Enable positional AI traffic music",
-								&screen.trafficRadioEnabled))
-								saveConfiguration = true;
-							if (screen.trafficRadioEnabled)
-							{
-								float densityPercent =
-									screen.trafficRadioVehicleDensity * 100.0f;
-								if (ImGui::SliderFloat(
-									"AI vehicles with music",
-									&densityPercent, 0.0f, 100.0f, "%.0f%%",
-									ImGuiSliderFlags_AlwaysClamp))
-								{
-									screen.trafficRadioVehicleDensity =
-										densityPercent / 100.0f;
-									saveConfiguration = true;
-								}
-								float volumePercent =
-									screen.trafficRadioMaximumVolume * 100.0f;
-								if (ImGui::SliderFloat(
-									"Maximum traffic-radio volume",
-									&volumePercent, 0.0f, 100.0f, "%.0f%%",
-									ImGuiSliderFlags_AlwaysClamp))
-								{
-									screen.trafficRadioMaximumVolume =
-										volumePercent / 100.0f;
-									saveConfiguration = true;
-								}
-								if (ImGui::SliderFloat(
-									"Traffic-radio full-volume distance",
-									&screen.trafficRadioFullVolumeDistance,
-									0.0f, 10.0f, "%.1f m",
-									ImGuiSliderFlags_AlwaysClamp))
-									saveConfiguration = true;
-								if (ImGui::SliderFloat(
-									"Traffic-radio mute distance",
-									&screen.trafficRadioMuteDistance,
-									5.0f, 60.0f, "%.1f m",
-									ImGuiSliderFlags_AlwaysClamp))
-									saveConfiguration = true;
-								if (ImGui::SliderFloat(
-									"Traffic-radio near cutoff",
-									&screen.trafficRadioNearCutoff,
-									100.0f, 8000.0f, "%.0f Hz",
-									ImGuiSliderFlags_Logarithmic |
-										ImGuiSliderFlags_AlwaysClamp))
-									saveConfiguration = true;
-								if (ImGui::SliderFloat(
-									"Traffic-radio far cutoff",
-									&screen.trafficRadioFarCutoff,
-									20.0f,
-									(std::max)(
-										20.0f, screen.trafficRadioNearCutoff),
-									"%.0f Hz",
-									ImGuiSliderFlags_Logarithmic |
-										ImGuiSliderFlags_AlwaysClamp))
-									saveConfiguration = true;
-
-								const auto radioStatus = traffic_audio::status();
-								if (!radioStatus.bridgeAvailable)
-								{
-									ImGui::TextColored(
-										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-										"Waiting for SPF AI traffic data.");
-								}
-								else if (radioStatus.active)
-								{
-									ImGui::TextColored(
-										ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
-										"AI %d at %.1f m | gain %.0f%% | pan %.2f | %.0f Hz",
-										radioStatus.emitterId,
-										radioStatus.distance,
-										radioStatus.gain * 100.0f,
-										radioStatus.pan,
-										radioStatus.cutoffHz);
-									ImGui::TextWrapped(
-										"Source: %s",
-										radioStatus.currentSource.c_str());
-								}
-								else
-								{
-									ImGui::TextDisabled(
-										"Observed %u AI; %u selected; none in range.",
-										radioStatus.observedVehicles,
-										radioStatus.eligibleVehicles);
-								}
 							}
 							ImGui::EndDisabled();
 							ImGui::TreePop();

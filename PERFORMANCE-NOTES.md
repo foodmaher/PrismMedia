@@ -5,9 +5,8 @@
 | Method | Typical impact | Supported content | Notes |
 | --- | --- | --- | --- |
 | Native Direct Media | Lowest | Local video files and direct media/stream URLs | Media Foundation hardware decode; bypasses window capture |
-| Integrated Media Client: YouTube / direct | Low to medium | YouTube videos/playlists and direct URLs | Uses the minimal local player and one optimized WGC transfer |
-| Integrated Media Client: Full Spotify Web | Medium to high | Normal Spotify website with persistent login | The only Spotify path; reserved for dashboard playback so traffic audio cannot steal its session |
-| AI Traffic Radio helper | Low to medium while audible | Local audio files and direct audio/stream URLs | One decoder for the nearest selected AI; pauses when none is in range |
+| Integrated Media Client: YouTube / Spotify Embed | Low to medium | YouTube videos/playlists, Spotify, direct URLs | Recommended; removes the full browser but retains one optimized WGC transfer |
+| Integrated Media Client: Full Spotify Web | Medium to high | Normal Spotify website with persistent login | Experimental; full page and DRM/compositor behavior cost more than Embed |
 | Window Capture | Medium to high | Any visible application | Maximum compatibility; the external app and capture path both consume resources |
 
 YouTube page URLs must use the Integrated Media Client. The plugin does not

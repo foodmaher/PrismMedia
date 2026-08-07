@@ -378,6 +378,10 @@ HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    // While the plugin menu owns the mouse, refresh ImGui from the actual
+    // Win32 client-space cursor position before the frame consumes events.
+    // The software cursor and menu hit testing therefore use identical coords.
+    win32::sync_menu_mouse_position();
     ImGui::NewFrame();
 
     if (!pending_callbacks.empty()) {

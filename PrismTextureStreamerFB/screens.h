@@ -57,6 +57,11 @@ enum class media_service_t : uint8_t {
 	SPOTIFY
 };
 
+enum class spotify_playback_mode_t : uint8_t {
+	EMBED = 0,
+	FULL_WEB_PLAYER
+};
+
 struct screen_t
 {
 	screen_type_t type{};
@@ -71,6 +76,8 @@ struct screen_t
 	std::string source_application_display_name;
 	std::string mediaUrl;
 	media_service_t mediaService = media_service_t::YOUTUBE;
+	spotify_playback_mode_t spotifyPlaybackMode =
+		spotify_playback_mode_t::EMBED;
 	std::vector<std::string> youtubeUrls;
 	std::vector<std::string> spotifyUrls;
 	uint32_t selectedYoutubeUrl{};
@@ -116,18 +123,6 @@ struct screen_t
 	float adaptiveAudioExternalMuteDistance = 20.0f;
 	bool adaptiveAudioExternalLowPassEnabled = true;
 	float adaptiveAudioExternalMinimumCutoff = 120.0f;
-	// Optional AI traffic radio. A stable percentage of SPF traffic actors is
-	// eligible, while one dedicated helper follows only the nearest audible car.
-	bool trafficRadioEnabled = false;
-	std::vector<std::string> trafficRadioSources;
-	uint32_t selectedTrafficRadioSource{};
-	std::string trafficRadioSourceDraft;
-	float trafficRadioVehicleDensity = 0.50f;
-	float trafficRadioMaximumVolume = 0.20f;
-	float trafficRadioFullVolumeDistance = 2.5f;
-	float trafficRadioMuteDistance = 28.0f;
-	float trafficRadioNearCutoff = 1400.0f;
-	float trafficRadioFarCutoff = 260.0f;
 	bool reverseCameraEnabled = false;
 	bool reversePreview = false;
 	bool reverseZeroForwardImpact = true;

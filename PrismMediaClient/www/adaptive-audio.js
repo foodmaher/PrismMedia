@@ -198,12 +198,17 @@
     }
 
     function isSafeToRoute(media) {
-        if (media.crossOrigin)
-            return true;
         const source = media.currentSrc || media.src || "";
         if (!source)
             return false;
-        if (source.startsWith("blob:") || source.startsWith("data:"))
+
+        // A crossOrigin attribute alone does not prove that the response is
+        // CORS-clean. Once createMediaElementSource() takes ownership,
+        // Chromium intentionally outputs silence for a tainted cross-origin
+        // resource. Only route same-origin/inline media, plus the app-owned
+        // traffic.prism.local virtual host whose resources are explicitly
+        // exposed by WebView2 with HostResourceAccessKind.Allow.
+        if (source.startsWith("data:"))
             return true;
         try {
             const url = new URL(source, location.href);

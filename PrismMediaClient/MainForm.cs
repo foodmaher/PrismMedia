@@ -170,6 +170,7 @@ namespace PrismMediaClient
                 var environmentOptions = new CoreWebView2EnvironmentOptions
                 {
                     AdditionalBrowserArguments =
+                        "--autoplay-policy=no-user-gesture-required " +
                         "--disable-backgrounding-occluded-windows " +
                         "--disable-background-timer-throttling " +
                         "--disable-renderer-backgrounding " +

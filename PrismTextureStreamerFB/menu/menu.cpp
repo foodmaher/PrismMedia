@@ -17,6 +17,7 @@ using namespace scs_logging;
 #include "../dx11/internal_render_probe.h"
 #include "../dx11/present.h"
 #include "../dinput8/dinput8.h"
+#include "../win32/win32.h"
 
 #include <ImGui/imgui.h>
 #include "../misc/imgui_stdlib.h"
@@ -102,12 +103,15 @@ static void set_menu_visibility(bool visible)
 		}
 	}
 	dinput8::set_mouse(visible);
+	win32::set_menu_mouse_capture(visible);
 
 	if (ImGui::GetCurrentContext())
 	{
-		// Use the Win32 cursor exclusively. Drawing a second ImGui software
-		// cursor can leave both it and the game's controller cursor visible.
-		ImGui::GetIO().MouseDrawCursor = false;
+		// Render the overlay cursor from ImGui itself. The same ImGui mouse
+		// coordinates drive both this cursor and widget hit-testing, so Windows
+		// DPI scaling or ETS2/ATS render scaling cannot create an above/left
+		// visual offset between the pointer and the selected control.
+		ImGui::GetIO().MouseDrawCursor = visible;
 	}
 }
 

@@ -291,10 +291,30 @@ namespace PrismMediaClient
             private ISimpleAudioVolume simple;
             private float[] originalChannels;
             private float originalMaster = 1.0f;
+            private bool originalMuted;
 
             internal AudioSession(IAudioSessionControl2 sessionControl)
             {
                 control = sessionControl;
+
+                // WebView sessions normally expose both master and per-channel
+                // volume. Acquire them independently so channel support does
+                // not accidentally disable master gain/ducking.
+                try
+                {
+                    simple = (ISimpleAudioVolume)sessionControl;
+                    Marshal.ThrowExceptionForHR(
+                        simple.GetMasterVolume(out originalMaster));
+                    Marshal.ThrowExceptionForHR(
+                        simple.GetMute(out originalMuted));
+                }
+                catch
+                {
+                    simple = null;
+                    originalMaster = 1.0f;
+                    originalMuted = false;
+                }
+
                 try
                 {
                     channels = (IChannelAudioVolume)sessionControl;
@@ -311,25 +331,38 @@ namespace PrismMediaClient
                 {
                     channels = null;
                     originalChannels = null;
-                    try
-                    {
-                        simple = (ISimpleAudioVolume)sessionControl;
-                        Marshal.ThrowExceptionForHR(
-                            simple.GetMasterVolume(out originalMaster));
-                    }
-                    catch
-                    {
-                        simple = null;
-                    }
                 }
+
+                ClientDiagnosticLog.Write(
+                    "audio", "WebView audio session baseline: master=" +
+                    originalMaster.ToString("0.000") + ", muted=" +
+                    originalMuted + ", channels=" +
+                    (originalChannels == null ? 0 : originalChannels.Length) +
+                    ".");
             }
 
-            internal void Apply(bool spatialEnabled, float gain, float pan)
+            internal void Apply(bool processingEnabled, float gain, float pan)
             {
-                if (!spatialEnabled)
+                if (!processingEnabled)
                 {
                     gain = 1.0f;
                     pan = 0.0f;
+                }
+
+                gain = Math.Max(0.0f, Math.Min(1.0f, gain));
+                pan = Math.Max(-1.0f, Math.Min(1.0f, pan));
+
+                // Overall volume/ducking belongs on the session master. Keep
+                // per-channel controls for stereo balance only; otherwise the
+                // gain can be lost or multiplied twice depending on which COM
+                // interfaces WebView exposes.
+                if (simple != null)
+                {
+                    Guid eventContext = Guid.Empty;
+                    Marshal.ThrowExceptionForHR(simple.SetMasterVolume(
+                        Math.Max(0.0f, Math.Min(
+                            1.0f, originalMaster * gain)),
+                        ref eventContext));
                 }
 
                 if (channels != null && originalChannels != null)
@@ -341,30 +374,23 @@ namespace PrismMediaClient
                     float right = Math.Min(
                         1.0f, (float)Math.Sin(angle) * 1.41421356f);
 
+                    float channelMaster = simple == null ? gain : 1.0f;
                     Guid eventContext = Guid.Empty;
                     for (int index = 0;
                         index < originalChannels.Length; ++index)
                     {
-                        float channelGain = gain;
+                        float channelGain = channelMaster;
                         if (index == 0)
                             channelGain *= left;
                         else if (index == 1)
                             channelGain *= right;
-                        channels.SetChannelVolume(
+                        Marshal.ThrowExceptionForHR(channels.SetChannelVolume(
                             (uint)index,
                             Math.Max(0.0f, Math.Min(
                                 1.0f,
                                 originalChannels[index] * channelGain)),
-                            ref eventContext);
+                            ref eventContext));
                     }
-                }
-                else if (simple != null)
-                {
-                    Guid eventContext = Guid.Empty;
-                    simple.SetMasterVolume(
-                        Math.Max(0.0f, Math.Min(
-                            1.0f, originalMaster * gain)),
-                        ref eventContext);
                 }
             }
 

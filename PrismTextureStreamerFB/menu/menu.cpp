@@ -17,7 +17,6 @@ using namespace scs_logging;
 #include "../dx11/internal_render_probe.h"
 #include "../dx11/present.h"
 #include "../dinput8/dinput8.h"
-#include "../win32/win32.h"
 
 #include <ImGui/imgui.h>
 #include "../misc/imgui_stdlib.h"
@@ -103,14 +102,13 @@ static void set_menu_visibility(bool visible)
 		}
 	}
 	dinput8::set_mouse(visible);
-	win32::set_menu_mouse_capture(visible);
 
 	if (ImGui::GetCurrentContext())
 	{
-		// Render the overlay cursor from ImGui itself. The same ImGui mouse
-		// coordinates drive both this cursor and widget hit-testing, so Windows
-		// DPI scaling or ETS2/ATS render scaling cannot create an above/left
-		// visual offset between the pointer and the selected control.
+		// Use ImGui's software cursor while the plugin menu is open. The
+		// cursor is rendered from the exact same io.MousePos coordinates
+		// ImGui uses for hovering/clicking, so the visible pointer cannot
+		// drift above/left of the control that is actually selected.
 		ImGui::GetIO().MouseDrawCursor = visible;
 	}
 }

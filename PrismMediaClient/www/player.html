@@ -37,7 +37,6 @@
     let playlistRefreshInProgress = false;
     let userWantsPlayback = true;
     let vehiclePowered = true;
-    let userMuted = false;
     let currentBrightness = 1;
     let pendingRandomSeed = null;
     const direct = document.getElementById("direct");
@@ -86,8 +85,6 @@
       if (activeSource === "youtube" && youtubeReady && youtubePlayer) {
         const state = youtubePlayer.getPlayerState();
         if (shouldPlay()) {
-          if (!userMuted && youtubePlayer.isMuted())
-            youtubePlayer.unMute();
           if (state !== YT.PlayerState.PLAYING &&
               state !== YT.PlayerState.BUFFERING)
             youtubePlayer.playVideo();
@@ -96,7 +93,6 @@
           youtubePlayer.pauseVideo();
         }
       } else if (activeSource === "direct" && direct.src) {
-        direct.muted = userMuted;
         if (shouldPlay())
           direct.play().catch(error =>
             showStatus("Unable to play media: " + error.message));
@@ -260,8 +256,6 @@
         events: {
           onReady: function () {
             youtubeReady = true;
-            if (!userMuted)
-              youtubePlayer.unMute();
             applyBrightness(currentBrightness);
             if (pendingUrl) {
               const value = pendingUrl;
@@ -337,12 +331,10 @@
           direct.currentTime = Math.max(0, direct.currentTime - 30);
       } else if (command === "mute") {
         if (activeSource === "youtube" && youtubeReady) {
-          userMuted = !youtubePlayer.isMuted();
-          if (userMuted) youtubePlayer.mute();
-          else youtubePlayer.unMute();
+          if (youtubePlayer.isMuted()) youtubePlayer.unMute();
+          else youtubePlayer.mute();
         } else {
-          userMuted = !direct.muted;
-          direct.muted = userMuted;
+          direct.muted = !direct.muted;
         }
       } else if (command === "volumeup" || command === "volumedown") {
         const change = command === "volumeup" ? 5 : -5;

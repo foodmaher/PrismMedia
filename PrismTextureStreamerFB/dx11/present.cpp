@@ -378,9 +378,6 @@ HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
-    // Refresh from the actual Win32 client-space pointer after the backend
-    // update and before ImGui consumes input for this frame.
-    win32::sync_menu_mouse_position();
     ImGui::NewFrame();
 
     if (!pending_callbacks.empty()) {

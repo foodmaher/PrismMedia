@@ -170,7 +170,6 @@ namespace PrismMediaClient
                 var environmentOptions = new CoreWebView2EnvironmentOptions
                 {
                     AdditionalBrowserArguments =
-                        "--autoplay-policy=no-user-gesture-required " +
                         "--disable-backgrounding-occluded-windows " +
                         "--disable-background-timer-throttling " +
                         "--disable-renderer-backgrounding " +
@@ -181,15 +180,6 @@ namespace PrismMediaClient
                         null, profileFolder, environmentOptions);
                 await webView.EnsureCoreWebView2Async(environment);
                 coreInitialized = true;
-                EnsureCoreAudioUnmuted("initialization");
-                webView.CoreWebView2.IsMutedChanged += (_, __) =>
-                {
-                    EnsureCoreAudioUnmuted("IsMutedChanged");
-                };
-                webView.CoreWebView2.IsDocumentPlayingAudioChanged += (_, __) =>
-                {
-                    LogCoreAudioState("IsDocumentPlayingAudioChanged");
-                };
                 webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
                 webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
@@ -238,8 +228,6 @@ namespace PrismMediaClient
                         fullSpotifyWeb
                             ? "Spotify top-level navigation"
                             : "media navigation");
-                    if (args.IsSuccess)
-                        EnsureCoreAudioUnmuted("navigation completed");
                     ready = true;
                     while (pendingCommands.Count > 0)
                     {
@@ -648,49 +636,6 @@ namespace PrismMediaClient
             }
         }
 
-        private void EnsureCoreAudioUnmuted(string reason)
-        {
-            try
-            {
-                CoreWebView2 core = webView.CoreWebView2;
-                if (core == null)
-                    return;
-
-                bool wasMuted = core.IsMuted;
-                if (wasMuted)
-                    core.IsMuted = false;
-
-                ClientDiagnosticLog.Write(
-                    "audio", "WebView2 core audio state (" + reason +
-                    "): muted=" + core.IsMuted +
-                    ", documentPlaying=" + core.IsDocumentPlayingAudio +
-                    (wasMuted ? "; forced unmuted." : "."));
-            }
-            catch (Exception error)
-            {
-                ClientDiagnosticLog.Write(
-                    "error", "Could not verify WebView2 core audio state: " +
-                    error.Message);
-            }
-        }
-
-        private void LogCoreAudioState(string reason)
-        {
-            try
-            {
-                CoreWebView2 core = webView.CoreWebView2;
-                if (core == null)
-                    return;
-                ClientDiagnosticLog.Write(
-                    "audio", "WebView2 core audio state (" + reason +
-                    "): muted=" + core.IsMuted +
-                    ", documentPlaying=" + core.IsDocumentPlayingAudio + ".");
-            }
-            catch
-            {
-            }
-        }
-
         private async Task NavigateToLocalPlayerAsync(string queuedCommand)
         {
             fullSpotifyWeb = false;
@@ -705,7 +650,6 @@ namespace PrismMediaClient
 
         private async Task NavigateToFullSpotifyAsync(string value)
         {
-            EnsureCoreAudioUnmuted("Spotify navigation requested");
             fullSpotifyWeb = true;
             userWantsPlayback = true;
             ready = false;
@@ -905,8 +849,6 @@ namespace PrismMediaClient
             {
                 userWantsPlayback = false;
             }
-            if (name == "play" || name == "playpause")
-                EnsureCoreAudioUnmuted("Spotify " + name + " command");
             int handled = await TrySpotifyDomCommandAsync(name);
             if (handled == 0)
             {

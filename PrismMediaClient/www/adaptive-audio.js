@@ -162,7 +162,7 @@
     // YouTube/direct HTML media continues to use attachMedia() below.
     if (nativeConnect) {
         audioNodePrototype.connect = function(destination) {
-            if (state.enabled && destination && this.context &&
+            if (destination && this.context &&
                 destination === this.context.destination &&
                 !state.internalNodes.has(this)) {
                 try {
@@ -180,7 +180,7 @@
             }
             return nativeConnect.apply(this, arguments);
         };
-        report("Web Audio destination hook installed in fail-open mode.");
+        report("Web Audio destination hook installed.");
     }
 
     // Preserve page disconnect(destination, ...) behavior after replacing its
@@ -198,17 +198,12 @@
     }
 
     function isSafeToRoute(media) {
+        if (media.crossOrigin)
+            return true;
         const source = media.currentSrc || media.src || "";
         if (!source)
             return false;
-
-        // A crossOrigin attribute alone does not prove that the response is
-        // CORS-clean. Once createMediaElementSource() takes ownership,
-        // Chromium intentionally outputs silence for a tainted cross-origin
-        // resource. Only route same-origin/inline media, plus the app-owned
-        // traffic.prism.local virtual host whose resources are explicitly
-        // exposed by WebView2 with HostResourceAccessKind.Allow.
-        if (source.startsWith("data:"))
+        if (source.startsWith("blob:") || source.startsWith("data:"))
             return true;
         try {
             const url = new URL(source, location.href);

@@ -414,13 +414,6 @@ namespace sources {
             }
             if (SUCCEEDED(result))
                 result = factory->CreateInstance(0, attributes.Get(), engine.GetAddressOf());
-            if (SUCCEEDED(result))
-            {
-                // Start every newly-created Media Foundation source audible.
-                // Do not inherit an implementation-specific/stale mute state.
-                engine->SetMuted(FALSE);
-                engine->SetVolume(1.0);
-            }
             if (FAILED(result))
             {
                 scs_log(2, "[NativeMedia] Media Engine creation failed: 0x%08X", result);

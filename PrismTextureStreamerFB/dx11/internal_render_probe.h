@@ -75,6 +75,7 @@ namespace dx11::internal_render_probe
 	bool init();
 	void shutdown();
 	void on_present_frame(ID3D11DeviceContext* context);
+	void on_game_context_available(ID3D11DeviceContext* context);
 	void begin_trace(uint32_t seconds = 10);
 	void end_trace();
 	void set_park_activation_requested(bool requested);

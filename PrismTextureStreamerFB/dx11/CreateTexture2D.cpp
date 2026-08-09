@@ -191,6 +191,8 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
                 screen.uploadTexture = nullptr;
                 screen.liveTextureRenderTarget = nullptr;
                 pDevice->GetImmediateContext(&screen.immediateContext);
+				dx11::internal_render_probe::on_game_context_available(
+					screen.immediateContext);
 
                 scs_log(
                     0,

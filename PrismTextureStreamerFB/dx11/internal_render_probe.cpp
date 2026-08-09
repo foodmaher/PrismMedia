@@ -124,6 +124,7 @@ namespace
 	std::atomic<bool> g_contextHookInstalled{};
 	std::atomic<bool> g_mirrorJobHookInstalled{};
 	std::atomic<bool> g_commandListHooksInstalled{};
+	std::atomic<bool> g_gameContextObserverConfirmed{};
 	std::atomic<bool> g_mirrorScheduleSeen{};
 	std::atomic<bool> g_tracing{};
 	std::atomic<bool> g_parkActivationRequested{};
@@ -178,6 +179,7 @@ namespace
 	void* g_resourceInitAddress{};
 	void* g_activeMaskAddress{};
 	void* g_omSetRenderTargetsAddress{};
+	void* g_gameOmSetRenderTargetsAddress{};
 	void* g_finishCommandListAddress{};
 	void* g_executeCommandListAddress{};
 	void* g_mirrorRenderDispatchAddress{};
@@ -185,6 +187,7 @@ namespace
 	resource_init_t g_originalResourceInit{};
 	active_mask_t g_originalActiveMask{};
 	om_set_render_targets_t g_originalOmSetRenderTargets{};
+	om_set_render_targets_t g_originalGameOmSetRenderTargets{};
 	finish_command_list_t g_originalFinishCommandList{};
 	execute_command_list_t g_originalExecuteCommandList{};
 	mirror_render_dispatch_t g_originalMirrorRenderDispatch{};
@@ -195,6 +198,7 @@ namespace
 	bool g_parkSourcePositionValid{};
 
 	std::mutex g_candidateMutex;
+	std::mutex g_gameContextHookMutex;
 	std::unordered_map<uintptr_t, candidate_record_t> g_candidates;
 	uint32_t g_nextCandidateId = 1;
 	thread_local uint32_t g_mirrorScheduleDepth{};
@@ -685,10 +689,21 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		if (!texture ||
 			!g_parkRenderRequested.load(
 				std::memory_order_relaxed) ||
-			description.SampleDesc.Count != 1 ||
-			description.Format !=
-				DXGI_FORMAT_R11G11B10_FLOAT)
+			description.SampleDesc.Count != 1)
 		{
+			return;
+		}
+		switch (description.Format)
+		{
+		case DXGI_FORMAT_R11G11B10_FLOAT:
+		case DXGI_FORMAT_R16G16B16A16_FLOAT:
+		case DXGI_FORMAT_R10G10B10A2_UNORM:
+		case DXGI_FORMAT_R8G8B8A8_UNORM:
+		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+		case DXGI_FORMAT_B8G8R8A8_UNORM:
+		case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+			break;
+		default:
 			return;
 		}
 
@@ -698,9 +713,15 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		const uint32_t height =
 			g_slotHeight[kParkSlot].load(
 				std::memory_order_relaxed);
+		const bool exactSize =
+			description.Width == width &&
+			description.Height == height;
+		const bool scaledSize =
+			width <= UINT32_MAX / 2 && height <= UINT32_MAX / 2 &&
+			description.Width == width * 2 &&
+			description.Height == height * 2;
 		if (width == 0 || height == 0 ||
-			description.Width != width ||
-			description.Height != height)
+			(!exactSize && !scaledSize))
 		{
 			return;
 		}
@@ -1815,12 +1836,18 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			return false;
 		D3D11_TEXTURE2D_DESC description{};
 		texture->GetDesc(&description);
+		const uint32_t width = g_slotWidth[kParkSlot].load(
+			std::memory_order_relaxed);
+		const uint32_t height = g_slotHeight[kParkSlot].load(
+			std::memory_order_relaxed);
+		const bool exactSize = description.Width == width &&
+			description.Height == height;
+		const bool scaledSize = width <= UINT32_MAX / 2 &&
+			height <= UINT32_MAX / 2 &&
+			description.Width == width * 2 &&
+			description.Height == height * 2;
 		return description.SampleDesc.Count == 1 &&
-			description.Format == DXGI_FORMAT_R11G11B10_FLOAT &&
-			description.Width == g_slotWidth[kParkSlot].load(
-				std::memory_order_relaxed) &&
-			description.Height == g_slotHeight[kParkSlot].load(
-				std::memory_order_relaxed);
+			(exactSize || scaledSize);
 	}
 
 	void remember_context_target(
@@ -1877,11 +1904,12 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		}
 	}
 
-	void STDMETHODCALLTYPE hooked_om_set_render_targets(
+	void observe_and_forward_render_targets(
 		ID3D11DeviceContext* context,
 		UINT renderTargetViewCount,
 		ID3D11RenderTargetView* const* renderTargetViews,
-		ID3D11DepthStencilView* depthStencilView)
+		ID3D11DepthStencilView* depthStencilView,
+		om_set_render_targets_t original)
 	{
 		remember_context_target(
 			context, renderTargetViewCount, renderTargetViews);
@@ -1914,11 +1942,33 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		}
 		g_renderingMirrorSlot = previousSlot;
 
-		g_originalOmSetRenderTargets(
+		original(
 			context,
 			renderTargetViewCount,
 			renderTargetViews,
 			depthStencilView);
+	}
+
+	void STDMETHODCALLTYPE hooked_om_set_render_targets(
+		ID3D11DeviceContext* context,
+		UINT renderTargetViewCount,
+		ID3D11RenderTargetView* const* renderTargetViews,
+		ID3D11DepthStencilView* depthStencilView)
+	{
+		observe_and_forward_render_targets(
+			context, renderTargetViewCount, renderTargetViews,
+			depthStencilView, g_originalOmSetRenderTargets);
+	}
+
+	void STDMETHODCALLTYPE hooked_game_om_set_render_targets(
+		ID3D11DeviceContext* context,
+		UINT renderTargetViewCount,
+		ID3D11RenderTargetView* const* renderTargetViews,
+		ID3D11DepthStencilView* depthStencilView)
+	{
+		observe_and_forward_render_targets(
+			context, renderTargetViewCount, renderTargetViews,
+			depthStencilView, g_originalGameOmSetRenderTargets);
 	}
 
 	HRESULT STDMETHODCALLTYPE hooked_finish_command_list(
@@ -2387,6 +2437,13 @@ namespace dx11::internal_render_probe
 				g_omSetRenderTargetsAddress);
 			g_omSetRenderTargetsAddress = nullptr;
 		}
+		if (g_gameOmSetRenderTargetsAddress)
+		{
+			MH_DisableHook(g_gameOmSetRenderTargetsAddress);
+			MH_RemoveHook(g_gameOmSetRenderTargetsAddress);
+			g_gameOmSetRenderTargetsAddress = nullptr;
+			g_originalGameOmSetRenderTargets = nullptr;
+		}
 		if (g_finishCommandListAddress)
 		{
 			MH_DisableHook(g_finishCommandListAddress);
@@ -2425,6 +2482,68 @@ namespace dx11::internal_render_probe
 				g_parkTextureMutex);
 			release_park_color_target_locked();
 			release_park_compositor_locked();
+		}
+	}
+
+	void on_game_context_available(ID3D11DeviceContext* context)
+	{
+		if (!context || !g_supportedBuild.load())
+			return;
+
+		void** vtable = *reinterpret_cast<void***>(context);
+		void* address = vtable ? vtable[33] : nullptr;
+		if (!address)
+			return;
+		if (address == g_omSetRenderTargetsAddress)
+		{
+			if (!g_gameContextObserverConfirmed.exchange(true))
+				scs_log(0,
+					"[RTT probe] ETS2's actual D3D11 context uses "
+					"the primary render-target hook.");
+			return;
+		}
+		if (address == g_gameOmSetRenderTargetsAddress)
+		{
+			return;
+		}
+
+		std::lock_guard<std::mutex> lock(g_gameContextHookMutex);
+		if (address == g_omSetRenderTargetsAddress ||
+			address == g_gameOmSetRenderTargetsAddress)
+		{
+			return;
+		}
+		if (g_gameOmSetRenderTargetsAddress)
+		{
+			scs_log(1,
+				"[RTT probe] A second wrapped game context was observed; "
+				"keeping the first game-context target hook.");
+			return;
+		}
+
+		const MH_STATUS createStatus = MH_CreateHook(
+			address,
+			&hooked_game_om_set_render_targets,
+			reinterpret_cast<void**>(
+				&g_originalGameOmSetRenderTargets));
+		if (createStatus == MH_OK &&
+			MH_EnableHook(address) == MH_OK)
+		{
+			g_gameOmSetRenderTargetsAddress = address;
+			g_gameContextObserverConfirmed.store(true);
+			scs_log(0,
+				"[RTT probe] Attached render-target observer to "
+				"ETS2's actual D3D11 context.");
+		}
+		else
+		{
+			if (createStatus == MH_OK)
+				MH_RemoveHook(address);
+			g_originalGameOmSetRenderTargets = nullptr;
+			scs_log(2,
+				"[RTT probe] Could not attach to ETS2's actual "
+				"D3D11 context (MinHook=%d).",
+				static_cast<int>(createStatus));
 		}
 	}
 

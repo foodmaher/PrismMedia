@@ -31,7 +31,9 @@ namespace
 	constexpr uint32_t kExpectedMirrorScheduleRva = 0x00524DB0;
 	constexpr uint32_t kExpectedActiveMaskRva = 0x00524170;
 	constexpr uint32_t kExpectedResourceInitRva = 0x00533400;
+	constexpr uint32_t kExpectedMirrorJobExecuteRva = 0x00722B80;
 	constexpr uint32_t kCameraDescriptorOwnerRva = 0x03550398;
+	constexpr uint32_t kMirrorSlotTokenTableRva = 0x01D1EB30;
 	constexpr uint32_t kMirrorCameraVtableRva = 0x02196F90;
 	constexpr uint32_t kMirrorCameraCloneRva = 0x00846B30;
 	constexpr uint32_t kMirrorSlotCount = 9;
@@ -65,6 +67,11 @@ namespace
 		0x00
 	};
 
+	constexpr std::array<uint8_t, 16> kMirrorJobExecuteSignature = {
+		0x48, 0x8B, 0x91, 0x28, 0x01, 0x00, 0x00, 0x4C,
+		0x8D, 0x41, 0x38, 0x48, 0x81, 0xC1, 0x30, 0x01
+	};
+
 	struct executable_fingerprint_t
 	{
 		uint32_t timeDateStamp{};
@@ -91,6 +98,8 @@ namespace
 			uint32_t state);
 	using resource_init_t =
 		void(__fastcall*)(void* visualInterior);
+	using mirror_job_execute_t =
+		void(__fastcall*)(void* renderJob);
 	using clone_camera_t =
 		void*(__fastcall*)(void* camera);
 	using om_set_render_targets_t =
@@ -104,6 +113,7 @@ namespace
 	std::atomic<bool> g_resourceInitHookInstalled{};
 	std::atomic<bool> g_activeMaskHookInstalled{};
 	std::atomic<bool> g_contextHookInstalled{};
+	std::atomic<bool> g_mirrorJobHookInstalled{};
 	std::atomic<bool> g_mirrorScheduleSeen{};
 	std::atomic<bool> g_tracing{};
 	std::atomic<bool> g_parkActivationRequested{};
@@ -154,10 +164,12 @@ namespace
 	void* g_resourceInitAddress{};
 	void* g_activeMaskAddress{};
 	void* g_omSetRenderTargetsAddress{};
+	void* g_mirrorJobExecuteAddress{};
 	mirror_schedule_t g_originalMirrorSchedule{};
 	resource_init_t g_originalResourceInit{};
 	active_mask_t g_originalActiveMask{};
 	om_set_render_targets_t g_originalOmSetRenderTargets{};
+	mirror_job_execute_t g_originalMirrorJobExecute{};
 	std::atomic<void*> g_parkVisualInterior{};
 	std::atomic<void*> g_parkCamera{};
 	std::array<float, 4> g_parkSourcePosition{};
@@ -168,6 +180,7 @@ namespace
 	std::unordered_map<uintptr_t, candidate_record_t> g_candidates;
 	uint32_t g_nextCandidateId = 1;
 	thread_local uint32_t g_mirrorScheduleDepth{};
+	thread_local int32_t g_renderingMirrorSlot{-1};
 	thread_local bool g_capturingParkResourceInit{};
 
 	std::mutex g_parkTextureMutex;
@@ -645,16 +658,6 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			return;
 		}
 
-		const uint64_t forcedFrame =
-			g_lastParkForcedFrame.load(
-				std::memory_order_relaxed);
-		if (forcedFrame == UINT64_MAX ||
-			currentFrame < forcedFrame ||
-			currentFrame - forcedFrame > 1)
-		{
-			return;
-		}
-
 		const uint32_t width =
 			g_slotWidth[kParkSlot].load(
 				std::memory_order_relaxed);
@@ -714,15 +717,11 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		++candidate.observationCount;
 		candidate.lastObservedFrame = currentFrame;
 
-		const uint32_t variant =
-			g_parkTargetVariant.load(
-				std::memory_order_relaxed);
-		if (variant == 0 ||
-			candidateIndex == variant - 1)
-		{
-			select_park_target_locked(
-				candidateIndex, currentFrame);
-		}
+		// Only the isolated slot-7 job reaches this function. The most
+		// recently bound matching target is the completed slot pass, so
+		// side mirrors and their sky/intermediate buffers cannot replace it.
+		select_park_target_locked(
+			candidateIndex, currentFrame);
 	}
 
 	bool compile_park_shader(
@@ -1584,6 +1583,42 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		return result;
 	}
 
+	int32_t resolve_render_job_slot(void* renderJob)
+	{
+		if (!renderJob || !g_executableBase)
+			return -1;
+
+		__try
+		{
+			auto* slotTokens = reinterpret_cast<uint64_t*>(
+				g_executableBase + kMirrorSlotTokenTableRva);
+			auto* bytes = static_cast<uint8_t*>(renderJob);
+			// The scheduler writes the slot token to command +0x38 and the
+			// queue copies that command to job +0x38, placing it at job +0x70.
+			// This is the exact per-slot identity used by the engine.
+			const uint64_t jobToken =
+				*reinterpret_cast<uint64_t*>(bytes + 0x70);
+			for (uint32_t slot = 0; slot < kMirrorSlotCount; ++slot)
+			{
+				if (jobToken != 0 && jobToken == slotTokens[slot])
+					return static_cast<int32_t>(slot);
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return -1;
+		}
+		return -1;
+	}
+
+	void __fastcall hooked_mirror_job_execute(void* renderJob)
+	{
+		const int32_t previousSlot = g_renderingMirrorSlot;
+		g_renderingMirrorSlot = resolve_render_job_slot(renderJob);
+		g_originalMirrorJobExecute(renderJob);
+		g_renderingMirrorSlot = previousSlot;
+	}
+
 	void record_render_targets(
 		UINT renderTargetViewCount,
 		ID3D11RenderTargetView* const* renderTargetViews,
@@ -1594,13 +1629,9 @@ float4 ps_main(PixelInput input) : SV_TARGET
 
 		const uint64_t currentFrame =
 			g_frameIndex.load(std::memory_order_relaxed);
-		const uint64_t forcedFrame =
-			g_lastParkForcedFrame.load(
-				std::memory_order_relaxed);
 		if (!recordCandidates &&
-			(forcedFrame == UINT64_MAX ||
-				currentFrame < forcedFrame ||
-				currentFrame - forcedFrame > 1))
+			g_renderingMirrorSlot !=
+				static_cast<int32_t>(kParkSlot))
 		{
 			return;
 		}
@@ -1640,10 +1671,14 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				reinterpret_cast<uintptr_t>(texture);
 			D3D11_TEXTURE2D_DESC description{};
 			texture->GetDesc(&description);
-			observe_park_colour_target(
-				texture,
-				description,
-				currentFrame);
+			if (g_renderingMirrorSlot ==
+				static_cast<int32_t>(kParkSlot))
+			{
+				observe_park_colour_target(
+					texture,
+					description,
+					currentFrame);
+			}
 			texture->Release();
 			if (!recordCandidates)
 				continue;
@@ -1988,6 +2023,31 @@ namespace dx11::internal_render_probe
 					g_activeMaskAddress = nullptr;
 				}
 			}
+
+			if (matches_expected_bytes(
+				kExpectedMirrorJobExecuteRva,
+				kMirrorJobExecuteSignature))
+			{
+				g_mirrorJobExecuteAddress =
+					g_executableBase +
+						kExpectedMirrorJobExecuteRva;
+				const MH_STATUS createStatus = MH_CreateHook(
+					g_mirrorJobExecuteAddress,
+					&hooked_mirror_job_execute,
+					reinterpret_cast<void**>(
+						&g_originalMirrorJobExecute));
+				if (createStatus == MH_OK &&
+					MH_EnableHook(
+						g_mirrorJobExecuteAddress) == MH_OK)
+				{
+					g_mirrorJobHookInstalled.store(true);
+				}
+				else
+				{
+					MH_RemoveHook(g_mirrorJobExecuteAddress);
+					g_mirrorJobExecuteAddress = nullptr;
+				}
+			}
 		}
 
 		// Do not add any D3D11 interception on ATS or a different ETS2
@@ -2012,13 +2072,15 @@ namespace dx11::internal_render_probe
 		scs_log(
 			0,
 			"[RTT probe] mirror hook=%s, "
-			"park init hook=%s, park mask hook=%s, "
+			"park init hook=%s, park mask hook=%s, slot job hook=%s, "
 			"D3D11 target hook=%s",
 			g_mirrorHookInstalled.load()
 				? "ready" : "unavailable",
 			g_resourceInitHookInstalled.load()
 				? "ready" : "unavailable",
 			g_activeMaskHookInstalled.load()
+				? "ready" : "unavailable",
+			g_mirrorJobHookInstalled.load()
 				? "ready" : "unavailable",
 			g_contextHookInstalled.load()
 				? "ready" : "unavailable");
@@ -2051,6 +2113,12 @@ namespace dx11::internal_render_probe
 			MH_RemoveHook(g_activeMaskAddress);
 			g_activeMaskAddress = nullptr;
 		}
+		if (g_mirrorJobExecuteAddress)
+		{
+			MH_DisableHook(g_mirrorJobExecuteAddress);
+			MH_RemoveHook(g_mirrorJobExecuteAddress);
+			g_mirrorJobExecuteAddress = nullptr;
+		}
 		if (g_omSetRenderTargetsAddress)
 		{
 			MH_DisableHook(
@@ -2064,6 +2132,7 @@ namespace dx11::internal_render_probe
 		g_resourceInitHookInstalled.store(false);
 		g_activeMaskHookInstalled.store(false);
 		g_contextHookInstalled.store(false);
+		g_mirrorJobHookInstalled.store(false);
 		g_parkCameraInstalled.store(false);
 		g_parkResourcePresent.store(false);
 		g_parkMaskForced.store(false);
@@ -2597,6 +2666,8 @@ namespace dx11::internal_render_probe
 			g_mirrorScheduleSeen.load();
 		result.contextHookInstalled =
 			g_contextHookInstalled.load();
+		result.mirrorJobHookInstalled =
+			g_mirrorJobHookInstalled.load();
 		result.tracing = g_tracing.load();
 		result.parkActivationRequested =
 			g_parkActivationRequested.load();

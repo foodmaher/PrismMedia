@@ -33,6 +33,7 @@ namespace dx11::internal_render_probe
 		bool activeMaskHookInstalled{};
 		bool mirrorScheduleSeen{};
 		bool contextHookInstalled{};
+		bool mirrorJobHookInstalled{};
 		bool tracing{};
 		bool parkActivationRequested{};
 		bool parkRenderRequested{};

@@ -2005,6 +2005,12 @@ void on_frame()
 									probeStatus.contextHookInstalled
 										? "ready" : "not available");
 								ImGui::Text(
+									"Comprehensive bind hooks: actual context %s | UAV %s",
+									probeStatus.actualContextObserverReady
+										? "ready" : "waiting",
+									probeStatus.uavTargetHookInstalled
+										? "ready" : "not available");
+								ImGui::Text(
 									"Direct slot-7 texture: %s",
 									probeStatus.parkColorTargetReady
 										? "captured" : "waiting for resource init");
@@ -2076,6 +2082,10 @@ void on_frame()
 									ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
 									"Normal forward driving has no additional park-camera "
 									"render cost.");
+								ImGui::TextWrapped(
+									"One-run diagnostic: start the trace, then Preview/reverse, "
+									"show left and right mirrors, switch camera 2 and return, "
+									"and rotate the interior view before the timer ends.");
 
 								const bool canTrace =
 									probeStatus.supportedBuild &&
@@ -2091,10 +2101,10 @@ void on_frame()
 								if (!probeStatus.tracing)
 								{
 									if (ImGui::Button(
-										"Start 10-second RTT trace"))
+										"Start 20-second comprehensive RTT trace"))
 									{
 										dx11::internal_render_probe::
-											begin_trace(10);
+											begin_trace(20);
 									}
 								}
 								else
@@ -2141,8 +2151,9 @@ void on_frame()
 											candidates[index];
 										ImGui::Text(
 											"#%u  %ux%u  %s  "
-											"slot 0x%03X  binds %llu  "
-											"inside/near %llu/%llu",
+											"slot 0x%03X binds %llu "
+											"OM/UAV %llu/%llu "
+											"slot7 during/after %llu/%llu",
 											candidate.id,
 											candidate.width,
 											candidate.height,
@@ -2156,12 +2167,14 @@ void on_frame()
 													candidate.bindCount),
 											static_cast<
 												unsigned long long>(
-													candidate.
-														duringMirrorScheduleBindCount),
+													candidate.omSetRenderTargetsBindCount),
 											static_cast<
 												unsigned long long>(
-													candidate.
-														nearMirrorBindCount));
+													candidate.omSetRenderTargetsUavBindCount),
+											static_cast<unsigned long long>(
+												candidate.duringSlot7BindCount),
+											static_cast<unsigned long long>(
+												candidate.afterSlot7BindCount));
 									}
 									ImGui::TextWrapped(
 										"Full results were written to game.log.txt. "

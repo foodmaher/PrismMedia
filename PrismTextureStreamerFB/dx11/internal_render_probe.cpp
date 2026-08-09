@@ -108,6 +108,15 @@ namespace
 			UINT renderTargetViewCount,
 			ID3D11RenderTargetView* const* renderTargetViews,
 			ID3D11DepthStencilView* depthStencilView);
+	using om_set_render_targets_uav_t =
+		void(STDMETHODCALLTYPE*)(ID3D11DeviceContext* context,
+			UINT renderTargetViewCount,
+			ID3D11RenderTargetView* const* renderTargetViews,
+			ID3D11DepthStencilView* depthStencilView,
+			UINT unorderedAccessViewStartSlot,
+			UINT unorderedAccessViewCount,
+			ID3D11UnorderedAccessView* const* unorderedAccessViews,
+			const UINT* initialCounts);
 	using finish_command_list_t =
 		HRESULT(STDMETHODCALLTYPE*)(ID3D11DeviceContext* context,
 			BOOL restoreDeferredContextState,
@@ -125,6 +134,7 @@ namespace
 	std::atomic<bool> g_mirrorJobHookInstalled{};
 	std::atomic<bool> g_commandListHooksInstalled{};
 	std::atomic<bool> g_gameContextObserverConfirmed{};
+	std::atomic<bool> g_uavTargetHookInstalled{};
 	std::atomic<bool> g_mirrorScheduleSeen{};
 	std::atomic<bool> g_tracing{};
 	std::atomic<bool> g_parkActivationRequested{};
@@ -144,6 +154,7 @@ namespace
 	std::atomic<uint64_t> g_parkReadbackBusySkips{};
 	std::atomic<uint64_t> g_slot7DispatchCount{};
 	std::atomic<uint32_t> g_slot7RenderDepth{};
+	std::atomic<uint64_t> g_lastSlot7DispatchEndTick{};
 	std::atomic<uint64_t> g_commandListTagCount{};
 	std::atomic<uint64_t> g_commandListExecuteCount{};
 	std::atomic<uint64_t> g_lastParkScheduleTick{};
@@ -179,7 +190,9 @@ namespace
 	void* g_resourceInitAddress{};
 	void* g_activeMaskAddress{};
 	void* g_omSetRenderTargetsAddress{};
+	void* g_omSetRenderTargetsUavAddress{};
 	void* g_gameOmSetRenderTargetsAddress{};
+	void* g_gameOmSetRenderTargetsUavAddress{};
 	void* g_finishCommandListAddress{};
 	void* g_executeCommandListAddress{};
 	void* g_mirrorRenderDispatchAddress{};
@@ -187,7 +200,9 @@ namespace
 	resource_init_t g_originalResourceInit{};
 	active_mask_t g_originalActiveMask{};
 	om_set_render_targets_t g_originalOmSetRenderTargets{};
+	om_set_render_targets_uav_t g_originalOmSetRenderTargetsUav{};
 	om_set_render_targets_t g_originalGameOmSetRenderTargets{};
+	om_set_render_targets_uav_t g_originalGameOmSetRenderTargetsUav{};
 	finish_command_list_t g_originalFinishCommandList{};
 	execute_command_list_t g_originalExecuteCommandList{};
 	mirror_render_dispatch_t g_originalMirrorRenderDispatch{};
@@ -1687,14 +1702,22 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		g_originalMirrorRenderDispatch(
 			renderer, renderContext, renderCommand);
 		if (renderingParkSlot)
+		{
+			g_lastSlot7DispatchEndTick.store(
+				GetTickCount64(), std::memory_order_release);
 			g_slot7RenderDepth.fetch_sub(1, std::memory_order_release);
+		}
 		g_renderingMirrorSlot = previousSlot;
 	}
 
 	void record_render_targets(
 		UINT renderTargetViewCount,
 		ID3D11RenderTargetView* const* renderTargetViews,
-		bool recordCandidates)
+		bool recordCandidates,
+		uint32_t apiPath,
+		bool duringSlot7,
+		bool afterSlot7,
+		bool allowParkSelection)
 	{
 		if (!renderTargetViews || renderTargetViewCount == 0)
 			return;
@@ -1743,7 +1766,7 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				reinterpret_cast<uintptr_t>(texture);
 			D3D11_TEXTURE2D_DESC description{};
 			texture->GetDesc(&description);
-			if (g_renderingMirrorSlot ==
+			if (allowParkSelection && g_renderingMirrorSlot ==
 				static_cast<int32_t>(kParkSlot))
 			{
 				observe_park_colour_target(
@@ -1814,6 +1837,7 @@ float4 ps_main(PixelInput input) : SV_TARGET
 					matchingSlotMask;
 				record.value.firstFrame = currentFrame;
 				record.value.lastFrame = currentFrame;
+				record.value.firstThreadId = GetCurrentThreadId();
 				existing = g_candidates.emplace(
 					identity, record).first;
 			}
@@ -1822,7 +1846,16 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			candidate.matchingCameraSlotMask |=
 				matchingSlotMask;
 			++candidate.bindCount;
+			if ((apiPath & 1U) != 0)
+				++candidate.omSetRenderTargetsBindCount;
+			if ((apiPath & 2U) != 0)
+				++candidate.omSetRenderTargetsUavBindCount;
+			if (duringSlot7)
+				++candidate.duringSlot7BindCount;
+			if (afterSlot7)
+				++candidate.afterSlot7BindCount;
 			candidate.lastFrame = currentFrame;
+			candidate.lastThreadId = GetCurrentThreadId();
 			if (duringMirrorSchedule)
 				++candidate.duringMirrorScheduleBindCount;
 			if (nearMirrorSchedule)
@@ -1909,15 +1942,31 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		UINT renderTargetViewCount,
 		ID3D11RenderTargetView* const* renderTargetViews,
 		ID3D11DepthStencilView* depthStencilView,
-		om_set_render_targets_t original)
+		om_set_render_targets_t original,
+		uint32_t apiPath = 1U)
 	{
 		remember_context_target(
 			context, renderTargetViewCount, renderTargetViews);
 
+		const bool duringSlot7 =
+			g_slot7RenderDepth.load(std::memory_order_acquire) != 0;
+		const uint64_t lastSlot7End =
+			g_lastSlot7DispatchEndTick.load(std::memory_order_acquire);
+		const uint64_t now = GetTickCount64();
+		const bool afterSlot7 = !duringSlot7 && lastSlot7End != 0 &&
+			now >= lastSlot7End && now - lastSlot7End <= 100;
+		const bool exactSlot7 =
+			g_renderingMirrorSlot == static_cast<int32_t>(kParkSlot);
 		int32_t effectiveSlot = g_renderingMirrorSlot;
-		if (effectiveSlot < 0 &&
-			g_slot7RenderDepth.load(std::memory_order_acquire) != 0)
+		if (effectiveSlot < 0 && duringSlot7)
 		{
+			effectiveSlot = static_cast<int32_t>(kParkSlot);
+		}
+		else if (effectiveSlot < 0 && afterSlot7 &&
+			g_tracing.load(std::memory_order_relaxed))
+		{
+			// Correlate late worker binds for diagnostics only. These binds
+			// are never eligible to become the live park-camera target.
 			effectiveSlot = static_cast<int32_t>(kParkSlot);
 		}
 		if (effectiveSlot < 0)
@@ -1935,10 +1984,14 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			g_parkRenderRequested.load(
 				std::memory_order_relaxed))
 		{
-				record_render_targets(
+			record_render_targets(
 				renderTargetViewCount,
 				renderTargetViews,
-				tracing);
+				tracing,
+				apiPath,
+				duringSlot7 || exactSlot7,
+				afterSlot7,
+				duringSlot7 || exactSlot7);
 		}
 		g_renderingMirrorSlot = previousSlot;
 
@@ -1947,6 +2000,50 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			renderTargetViewCount,
 			renderTargetViews,
 			depthStencilView);
+	}
+
+	void observe_and_forward_render_targets_uav(
+		ID3D11DeviceContext* context,
+		UINT renderTargetViewCount,
+		ID3D11RenderTargetView* const* renderTargetViews,
+		ID3D11DepthStencilView* depthStencilView,
+		UINT unorderedAccessViewStartSlot,
+		UINT unorderedAccessViewCount,
+		ID3D11UnorderedAccessView* const* unorderedAccessViews,
+		const UINT* initialCounts,
+		om_set_render_targets_uav_t original)
+	{
+		// Reuse the complete correlation path without forwarding through the
+		// standard OM method, then invoke the actual UAV-capable entry point.
+		remember_context_target(
+			context, renderTargetViewCount, renderTargetViews);
+		const bool duringSlot7 =
+			g_slot7RenderDepth.load(std::memory_order_acquire) != 0;
+		const uint64_t lastSlot7End =
+			g_lastSlot7DispatchEndTick.load(std::memory_order_acquire);
+		const uint64_t now = GetTickCount64();
+		const bool afterSlot7 = !duringSlot7 && lastSlot7End != 0 &&
+			now >= lastSlot7End && now - lastSlot7End <= 100;
+		const bool exactSlot7 =
+			g_renderingMirrorSlot == static_cast<int32_t>(kParkSlot);
+		const int32_t previousSlot = g_renderingMirrorSlot;
+		if (g_renderingMirrorSlot < 0 &&
+			(duringSlot7 || (afterSlot7 && g_tracing.load())))
+		{
+			g_renderingMirrorSlot = static_cast<int32_t>(kParkSlot);
+		}
+		const bool tracing = g_tracing.load(std::memory_order_relaxed);
+		if (tracing || g_parkRenderRequested.load(std::memory_order_relaxed))
+		{
+			record_render_targets(
+				renderTargetViewCount, renderTargetViews, tracing, 2U,
+				duringSlot7 || exactSlot7, afterSlot7,
+				duringSlot7 || exactSlot7);
+		}
+		g_renderingMirrorSlot = previousSlot;
+		original(context, renderTargetViewCount, renderTargetViews,
+			depthStencilView, unorderedAccessViewStartSlot,
+			unorderedAccessViewCount, unorderedAccessViews, initialCounts);
 	}
 
 	void STDMETHODCALLTYPE hooked_om_set_render_targets(
@@ -1969,6 +2066,36 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		observe_and_forward_render_targets(
 			context, renderTargetViewCount, renderTargetViews,
 			depthStencilView, g_originalGameOmSetRenderTargets);
+	}
+
+	void STDMETHODCALLTYPE hooked_om_set_render_targets_uav(
+		ID3D11DeviceContext* context, UINT renderTargetViewCount,
+		ID3D11RenderTargetView* const* renderTargetViews,
+		ID3D11DepthStencilView* depthStencilView,
+		UINT unorderedAccessViewStartSlot, UINT unorderedAccessViewCount,
+		ID3D11UnorderedAccessView* const* unorderedAccessViews,
+		const UINT* initialCounts)
+	{
+		observe_and_forward_render_targets_uav(
+			context, renderTargetViewCount, renderTargetViews,
+			depthStencilView, unorderedAccessViewStartSlot,
+			unorderedAccessViewCount, unorderedAccessViews, initialCounts,
+			g_originalOmSetRenderTargetsUav);
+	}
+
+	void STDMETHODCALLTYPE hooked_game_om_set_render_targets_uav(
+		ID3D11DeviceContext* context, UINT renderTargetViewCount,
+		ID3D11RenderTargetView* const* renderTargetViews,
+		ID3D11DepthStencilView* depthStencilView,
+		UINT unorderedAccessViewStartSlot, UINT unorderedAccessViewCount,
+		ID3D11UnorderedAccessView* const* unorderedAccessViews,
+		const UINT* initialCounts)
+	{
+		observe_and_forward_render_targets_uav(
+			context, renderTargetViewCount, renderTargetViews,
+			depthStencilView, unorderedAccessViewStartSlot,
+			unorderedAccessViewCount, unorderedAccessViews, initialCounts,
+			g_originalGameOmSetRenderTargetsUav);
 	}
 
 	HRESULT STDMETHODCALLTYPE hooked_finish_command_list(
@@ -2088,6 +2215,7 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		void** vtable =
 			*reinterpret_cast<void***>(context);
 		g_omSetRenderTargetsAddress = vtable[33];
+		g_omSetRenderTargetsUavAddress = vtable[34];
 		g_executeCommandListAddress = vtable[58];
 		g_finishCommandListAddress = vtable[114];
 
@@ -2117,6 +2245,24 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			g_executeCommandListAddress = nullptr;
 			g_finishCommandListAddress = nullptr;
 			return false;
+		}
+
+		const MH_STATUS uavCreateStatus = MH_CreateHook(
+			g_omSetRenderTargetsUavAddress,
+			&hooked_om_set_render_targets_uav,
+			reinterpret_cast<void**>(
+				&g_originalOmSetRenderTargetsUav));
+		if (uavCreateStatus != MH_OK ||
+			MH_EnableHook(g_omSetRenderTargetsUavAddress) != MH_OK)
+		{
+			if (uavCreateStatus == MH_OK)
+				MH_RemoveHook(g_omSetRenderTargetsUavAddress);
+			g_omSetRenderTargetsUavAddress = nullptr;
+			g_originalOmSetRenderTargetsUav = nullptr;
+		}
+		else
+		{
+			g_uavTargetHookInstalled.store(true);
 		}
 
 		const MH_STATUS finishCreate = MH_CreateHook(
@@ -2207,9 +2353,10 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				0,
 				"[RTT probe] target #%u: %ux%u "
 				"format=%s(%u) samples=%u binds=%llu "
+				"api-om/uav=%llu/%llu slot7-during/after=%llu/%llu "
 				"slot-match=0x%03X "
 				"during-scheduler=%llu near-scheduler=%llu "
-				"frames=%llu-%llu",
+				"frames=%llu-%llu threads=%u-%u",
 				candidate.id,
 				candidate.width,
 				candidate.height,
@@ -2219,6 +2366,14 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				candidate.sampleCount,
 				static_cast<unsigned long long>(
 					candidate.bindCount),
+				static_cast<unsigned long long>(
+					candidate.omSetRenderTargetsBindCount),
+				static_cast<unsigned long long>(
+					candidate.omSetRenderTargetsUavBindCount),
+				static_cast<unsigned long long>(
+					candidate.duringSlot7BindCount),
+				static_cast<unsigned long long>(
+					candidate.afterSlot7BindCount),
 				candidate.matchingCameraSlotMask,
 				static_cast<unsigned long long>(
 					candidate.duringMirrorScheduleBindCount),
@@ -2227,7 +2382,9 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				static_cast<unsigned long long>(
 					candidate.firstFrame),
 				static_cast<unsigned long long>(
-					candidate.lastFrame));
+					candidate.lastFrame),
+				candidate.firstThreadId,
+				candidate.lastThreadId);
 		}
 	}
 }
@@ -2437,12 +2594,26 @@ namespace dx11::internal_render_probe
 				g_omSetRenderTargetsAddress);
 			g_omSetRenderTargetsAddress = nullptr;
 		}
+		if (g_omSetRenderTargetsUavAddress)
+		{
+			MH_DisableHook(g_omSetRenderTargetsUavAddress);
+			MH_RemoveHook(g_omSetRenderTargetsUavAddress);
+			g_omSetRenderTargetsUavAddress = nullptr;
+			g_originalOmSetRenderTargetsUav = nullptr;
+		}
 		if (g_gameOmSetRenderTargetsAddress)
 		{
 			MH_DisableHook(g_gameOmSetRenderTargetsAddress);
 			MH_RemoveHook(g_gameOmSetRenderTargetsAddress);
 			g_gameOmSetRenderTargetsAddress = nullptr;
 			g_originalGameOmSetRenderTargets = nullptr;
+		}
+		if (g_gameOmSetRenderTargetsUavAddress)
+		{
+			MH_DisableHook(g_gameOmSetRenderTargetsUavAddress);
+			MH_RemoveHook(g_gameOmSetRenderTargetsUavAddress);
+			g_gameOmSetRenderTargetsUavAddress = nullptr;
+			g_originalGameOmSetRenderTargetsUav = nullptr;
 		}
 		if (g_finishCommandListAddress)
 		{
@@ -2463,6 +2634,8 @@ namespace dx11::internal_render_probe
 		g_contextHookInstalled.store(false);
 		g_mirrorJobHookInstalled.store(false);
 		g_commandListHooksInstalled.store(false);
+		g_uavTargetHookInstalled.store(false);
+		g_gameContextObserverConfirmed.store(false);
 		g_parkCameraInstalled.store(false);
 		g_parkResourcePresent.store(false);
 		g_parkMaskForced.store(false);
@@ -2492,58 +2665,68 @@ namespace dx11::internal_render_probe
 
 		void** vtable = *reinterpret_cast<void***>(context);
 		void* address = vtable ? vtable[33] : nullptr;
-		if (!address)
+		void* uavAddress = vtable ? vtable[34] : nullptr;
+		if (!address || !uavAddress)
 			return;
-		if (address == g_omSetRenderTargetsAddress)
-		{
-			if (!g_gameContextObserverConfirmed.exchange(true))
-				scs_log(0,
-					"[RTT probe] ETS2's actual D3D11 context uses "
-					"the primary render-target hook.");
-			return;
-		}
-		if (address == g_gameOmSetRenderTargetsAddress)
-		{
-			return;
-		}
 
 		std::lock_guard<std::mutex> lock(g_gameContextHookMutex);
-		if (address == g_omSetRenderTargetsAddress ||
-			address == g_gameOmSetRenderTargetsAddress)
+		bool standardReady =
+			address == g_omSetRenderTargetsAddress ||
+			address == g_gameOmSetRenderTargetsAddress;
+		if (!standardReady && !g_gameOmSetRenderTargetsAddress)
 		{
-			return;
-		}
-		if (g_gameOmSetRenderTargetsAddress)
-		{
-			scs_log(1,
-				"[RTT probe] A second wrapped game context was observed; "
-				"keeping the first game-context target hook.");
-			return;
+			const MH_STATUS createStatus = MH_CreateHook(
+				address, &hooked_game_om_set_render_targets,
+				reinterpret_cast<void**>(
+					&g_originalGameOmSetRenderTargets));
+			standardReady = createStatus == MH_OK &&
+				MH_EnableHook(address) == MH_OK;
+			if (standardReady)
+				g_gameOmSetRenderTargetsAddress = address;
+			else
+			{
+				if (createStatus == MH_OK)
+					MH_RemoveHook(address);
+				g_originalGameOmSetRenderTargets = nullptr;
+			}
 		}
 
-		const MH_STATUS createStatus = MH_CreateHook(
-			address,
-			&hooked_game_om_set_render_targets,
-			reinterpret_cast<void**>(
-				&g_originalGameOmSetRenderTargets));
-		if (createStatus == MH_OK &&
-			MH_EnableHook(address) == MH_OK)
+		bool uavReady =
+			uavAddress == g_omSetRenderTargetsUavAddress ||
+			uavAddress == g_gameOmSetRenderTargetsUavAddress;
+		if (!uavReady && !g_gameOmSetRenderTargetsUavAddress)
 		{
-			g_gameOmSetRenderTargetsAddress = address;
-			g_gameContextObserverConfirmed.store(true);
-			scs_log(0,
-				"[RTT probe] Attached render-target observer to "
-				"ETS2's actual D3D11 context.");
+			const MH_STATUS createStatus = MH_CreateHook(
+				uavAddress, &hooked_game_om_set_render_targets_uav,
+				reinterpret_cast<void**>(
+					&g_originalGameOmSetRenderTargetsUav));
+			uavReady = createStatus == MH_OK &&
+				MH_EnableHook(uavAddress) == MH_OK;
+			if (uavReady)
+				g_gameOmSetRenderTargetsUavAddress = uavAddress;
+			else
+			{
+				if (createStatus == MH_OK)
+					MH_RemoveHook(uavAddress);
+				g_originalGameOmSetRenderTargetsUav = nullptr;
+			}
+		}
+
+		if (standardReady && uavReady)
+		{
+			g_uavTargetHookInstalled.store(true);
+			if (!g_gameContextObserverConfirmed.exchange(true))
+				scs_log(0,
+					"[RTT probe] ETS2 actual-context diagnostics ready: "
+					"OMSetRenderTargets + OMSetRenderTargetsAndUAV.");
 		}
 		else
 		{
-			if (createStatus == MH_OK)
-				MH_RemoveHook(address);
-			g_originalGameOmSetRenderTargets = nullptr;
 			scs_log(2,
-				"[RTT probe] Could not attach to ETS2's actual "
-				"D3D11 context (MinHook=%d).",
-				static_cast<int>(createStatus));
+				"[RTT probe] ETS2 actual-context diagnostics incomplete: "
+				"standard=%s uav=%s.",
+				standardReady ? "ready" : "failed",
+				uavReady ? "ready" : "failed");
 		}
 	}
 
@@ -2685,6 +2868,7 @@ namespace dx11::internal_render_probe
 
 		const uint64_t now = GetTickCount64();
 		g_traceStartedTick.store(now);
+		g_lastSlot7DispatchEndTick.store(0, std::memory_order_relaxed);
 		g_traceStartedMirrorScheduleCount.store(
 			g_mirrorScheduleCount.load());
 		g_parkScheduleCount.store(
@@ -3070,6 +3254,10 @@ namespace dx11::internal_render_probe
 			g_mirrorScheduleSeen.load();
 		result.contextHookInstalled =
 			g_contextHookInstalled.load();
+		result.actualContextObserverReady =
+			g_gameContextObserverConfirmed.load();
+		result.uavTargetHookInstalled =
+			g_uavTargetHookInstalled.load();
 		result.mirrorJobHookInstalled =
 			g_mirrorJobHookInstalled.load();
 		result.commandListHooksInstalled =
@@ -3170,6 +3358,18 @@ namespace dx11::internal_render_probe
 			[](const candidate_t& left,
 				const candidate_t& right)
 			{
+				if (left.duringSlot7BindCount !=
+					right.duringSlot7BindCount)
+				{
+					return left.duringSlot7BindCount >
+						right.duringSlot7BindCount;
+				}
+				if (left.afterSlot7BindCount !=
+					right.afterSlot7BindCount)
+				{
+					return left.afterSlot7BindCount >
+						right.afterSlot7BindCount;
+				}
 				const uint32_t leftParkMatch =
 					left.matchingCameraSlotMask &
 					((1U << 7) | (1U << 8));

@@ -19,10 +19,16 @@ namespace dx11::internal_render_probe
 		uint32_t sampleCount{};
 		uint32_t matchingCameraSlotMask{};
 		uint64_t bindCount{};
+		uint64_t omSetRenderTargetsBindCount{};
+		uint64_t omSetRenderTargetsUavBindCount{};
+		uint64_t duringSlot7BindCount{};
+		uint64_t afterSlot7BindCount{};
 		uint64_t duringMirrorScheduleBindCount{};
 		uint64_t nearMirrorBindCount{};
 		uint64_t firstFrame{};
 		uint64_t lastFrame{};
+		uint32_t firstThreadId{};
+		uint32_t lastThreadId{};
 	};
 
 	struct status_t
@@ -33,6 +39,8 @@ namespace dx11::internal_render_probe
 		bool activeMaskHookInstalled{};
 		bool mirrorScheduleSeen{};
 		bool contextHookInstalled{};
+		bool actualContextObserverReady{};
+		bool uavTargetHookInstalled{};
 		bool mirrorJobHookInstalled{};
 		bool commandListHooksInstalled{};
 		bool tracing{};

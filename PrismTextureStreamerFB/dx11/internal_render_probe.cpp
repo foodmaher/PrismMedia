@@ -142,6 +142,7 @@ namespace
 	std::atomic<uint64_t> g_parkOutputFrames{};
 	std::atomic<uint64_t> g_parkReadbackBusySkips{};
 	std::atomic<uint64_t> g_slot7DispatchCount{};
+	std::atomic<uint32_t> g_slot7RenderDepth{};
 	std::atomic<uint64_t> g_commandListTagCount{};
 	std::atomic<uint64_t> g_commandListExecuteCount{};
 	std::atomic<uint64_t> g_lastParkScheduleTick{};
@@ -1652,10 +1653,20 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		const int32_t previousSlot = g_renderingMirrorSlot;
 		g_renderingMirrorSlot =
 			resolve_render_command_slot(renderCommand);
-		if (g_renderingMirrorSlot == static_cast<int32_t>(kParkSlot))
+		const bool renderingParkSlot =
+			g_renderingMirrorSlot == static_cast<int32_t>(kParkSlot);
+		if (renderingParkSlot)
+		{
 			g_slot7DispatchCount.fetch_add(1, std::memory_order_relaxed);
+			// The engine can bind the target from its D3D worker rather than
+			// this dispatch thread. Publish a narrowly scoped cross-thread
+			// marker for the duration of the confirmed slot-7 render call.
+			g_slot7RenderDepth.fetch_add(1, std::memory_order_release);
+		}
 		g_originalMirrorRenderDispatch(
 			renderer, renderContext, renderCommand);
+		if (renderingParkSlot)
+			g_slot7RenderDepth.fetch_sub(1, std::memory_order_release);
 		g_renderingMirrorSlot = previousSlot;
 	}
 
@@ -1876,6 +1887,11 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			context, renderTargetViewCount, renderTargetViews);
 
 		int32_t effectiveSlot = g_renderingMirrorSlot;
+		if (effectiveSlot < 0 &&
+			g_slot7RenderDepth.load(std::memory_order_acquire) != 0)
+		{
+			effectiveSlot = static_cast<int32_t>(kParkSlot);
+		}
 		if (effectiveSlot < 0)
 		{
 			std::lock_guard<std::mutex> lock(g_commandListMutex);

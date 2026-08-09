@@ -831,11 +831,14 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		++candidate.observationCount;
 		candidate.lastObservedFrame = currentFrame;
 
-		// Only the isolated slot-7 job reaches this function. The most
-		// recently bound matching target is the completed slot pass, so
-		// side mirrors and their sky/intermediate buffers cannot replace it.
-		select_park_target_locked(
-			candidateIndex, currentFrame);
+		const uint32_t requestedVariant =
+			g_parkTargetVariant.load(std::memory_order_relaxed);
+		if ((requestedVariant == 0 &&
+			g_parkSelectedCandidate == kNoParkTargetCandidate) ||
+			requestedVariant == candidateIndex + 1)
+		{
+			select_park_target_locked(candidateIndex, currentFrame);
+		}
 	}
 
 	bool compile_park_shader(
@@ -2235,6 +2238,36 @@ float4 ps_main(PixelInput input) : SV_TARGET
 	{
 		record_resource_lineage(source, destination, 2U);
 		g_originalGameCopyResource(context, destination, source);
+
+		if (!g_parkRenderRequested.load(std::memory_order_relaxed) ||
+			!destination)
+		{
+			return;
+		}
+		ID3D11Texture2D* texture{};
+		if (FAILED(destination->QueryInterface(
+			__uuidof(ID3D11Texture2D),
+			reinterpret_cast<void**>(&texture))) || !texture)
+		{
+			return;
+		}
+		D3D11_TEXTURE2D_DESC description{};
+		texture->GetDesc(&description);
+		const uint32_t parkWidth = g_slotWidth[kParkSlot].load();
+		const uint32_t parkHeight = g_slotHeight[kParkSlot].load();
+		const bool stableFinalDestination =
+			texture != g_parkSampleTexture &&
+			description.Usage == D3D11_USAGE_DEFAULT &&
+			description.Width == parkWidth &&
+			description.Height == parkHeight &&
+			description.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+		if (stableFinalDestination)
+		{
+			observe_park_colour_target(
+				texture, description,
+				g_frameIndex.load(std::memory_order_relaxed));
+		}
+		texture->Release();
 	}
 
 	void STDMETHODCALLTYPE hooked_game_resolve_subresource(

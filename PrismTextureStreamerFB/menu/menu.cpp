@@ -2264,6 +2264,29 @@ void on_frame()
 											? "ready" : "waiting",
 										parkStatus.parkReadbackReady
 											? "ready" : "waiting");
+									static const char* targetChoices[] = {
+										"Auto", "Candidate A", "Candidate B",
+										"Candidate C", "Candidate D"
+									};
+									int targetChoice = static_cast<int>(
+										screen.reverseInternalTargetVariant);
+									if (ImGui::Combo(
+										"Copied camera target",
+										&targetChoice, targetChoices,
+										static_cast<int>(std::size(targetChoices))))
+									{
+										screen.reverseInternalTargetVariant =
+											static_cast<uint8_t>(targetChoice);
+										saveConfiguration = true;
+									}
+									ImGui::Text(
+										"Copy destinations found: %u | selected: %s",
+										parkStatus.parkTargetCandidateCount,
+										parkStatus.parkSelectedCandidate == 0
+											? "none/auto"
+											: targetChoices[(std::min)(
+												static_cast<int>(
+													parkStatus.parkSelectedCandidate), 4)]);
 									if (!parkStatus.parkCameraInstalled)
 									{
 										ImGui::TextWrapped(

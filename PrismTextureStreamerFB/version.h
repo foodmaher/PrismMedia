@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.11.9-copy-destination-selector";
+inline const char* g_version = "3.11.10-rgba16f-readback";

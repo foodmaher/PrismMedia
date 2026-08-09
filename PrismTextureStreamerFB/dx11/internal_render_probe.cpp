@@ -594,6 +594,23 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				255.0f));
 	}
 
+	float decode_half_float(uint16_t bits)
+	{
+		const uint32_t sign = (bits >> 15) & 1U;
+		const uint32_t exponent = (bits >> 10) & 0x1FU;
+		const uint32_t mantissa = bits & 0x3FFU;
+		float value{};
+		if (exponent == 0)
+			value = std::ldexp(static_cast<float>(mantissa), -24);
+		else if (exponent == 0x1FU)
+			value = mantissa == 0 ? 65504.0f : 0.0f;
+		else
+			value = std::ldexp(
+				1.0f + static_cast<float>(mantissa) / 1024.0f,
+				static_cast<int>(exponent) - 15);
+		return sign ? -value : value;
+	}
+
 	void ensure_park_tone_map_lut()
 	{
 		if (g_parkToneMapLutReady)
@@ -620,8 +637,8 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		const D3D11_TEXTURE2D_DESC& description)
 	{
 		if (!mapped.pData ||
-			description.Format !=
-				DXGI_FORMAT_R11G11B10_FLOAT)
+			(description.Format != DXGI_FORMAT_R11G11B10_FLOAT &&
+				description.Format != DXGI_FORMAT_R16G16B16A16_FLOAT))
 		{
 			return false;
 		}
@@ -629,18 +646,16 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		const size_t pixelCount =
 			static_cast<size_t>(description.Width) *
 			description.Height;
-		ensure_park_tone_map_lut();
+		if (description.Format == DXGI_FORMAT_R11G11B10_FLOAT)
+			ensure_park_tone_map_lut();
 		g_parkReadbackPixels.resize(pixelCount * 4);
 		const auto* sourceBase =
 			static_cast<const uint8_t*>(mapped.pData);
 		for (uint32_t y = 0;
 			y < description.Height; ++y)
 		{
-			const auto* sourceRow =
-				reinterpret_cast<const uint32_t*>(
-					sourceBase +
-					static_cast<size_t>(y) *
-						mapped.RowPitch);
+			const uint8_t* sourceRow = sourceBase +
+				static_cast<size_t>(y) * mapped.RowPitch;
 			uint8_t* destinationRow =
 				g_parkReadbackPixels.data() +
 				static_cast<size_t>(y) *
@@ -648,16 +663,28 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			for (uint32_t x = 0;
 				x < description.Width; ++x)
 			{
-				const uint32_t packed = sourceRow[x];
-				destinationRow[x * 4 + 0] =
-					g_parkFloat10Lut[
-						(packed >> 22) & 0x3FFU];
-				destinationRow[x * 4 + 1] =
-					g_parkFloat11Lut[
-						(packed >> 11) & 0x7FFU];
-				destinationRow[x * 4 + 2] =
-					g_parkFloat11Lut[
-						packed & 0x7FFU];
+				if (description.Format == DXGI_FORMAT_R11G11B10_FLOAT)
+				{
+					const uint32_t packed =
+						reinterpret_cast<const uint32_t*>(sourceRow)[x];
+					destinationRow[x * 4 + 0] =
+						g_parkFloat10Lut[(packed >> 22) & 0x3FFU];
+					destinationRow[x * 4 + 1] =
+						g_parkFloat11Lut[(packed >> 11) & 0x7FFU];
+					destinationRow[x * 4 + 2] =
+						g_parkFloat11Lut[packed & 0x7FFU];
+				}
+				else
+				{
+					const auto* rgba =
+						reinterpret_cast<const uint16_t*>(sourceRow) + x * 4;
+					destinationRow[x * 4 + 0] =
+						tone_map_channel(decode_half_float(rgba[2]));
+					destinationRow[x * 4 + 1] =
+						tone_map_channel(decode_half_float(rgba[1]));
+					destinationRow[x * 4 + 2] =
+						tone_map_channel(decode_half_float(rgba[0]));
+				}
 				destinationRow[x * 4 + 3] = 255;
 			}
 		}
@@ -677,8 +704,8 @@ float4 ps_main(PixelInput input) : SV_TARGET
 	{
 		if (!device ||
 			sourceDescription.SampleDesc.Count != 1 ||
-			sourceDescription.Format !=
-				DXGI_FORMAT_R11G11B10_FLOAT)
+			(sourceDescription.Format != DXGI_FORMAT_R11G11B10_FLOAT &&
+				sourceDescription.Format != DXGI_FORMAT_R16G16B16A16_FLOAT))
 		{
 			return false;
 		}

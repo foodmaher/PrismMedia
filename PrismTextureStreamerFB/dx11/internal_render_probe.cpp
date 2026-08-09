@@ -31,7 +31,7 @@ namespace
 	constexpr uint32_t kExpectedMirrorScheduleRva = 0x00524DB0;
 	constexpr uint32_t kExpectedActiveMaskRva = 0x00524170;
 	constexpr uint32_t kExpectedResourceInitRva = 0x00533400;
-	constexpr uint32_t kExpectedMirrorJobExecuteRva = 0x00722B80;
+	constexpr uint32_t kExpectedMirrorRenderDispatchRva = 0x00722020;
 	constexpr uint32_t kCameraDescriptorOwnerRva = 0x03550398;
 	constexpr uint32_t kMirrorSlotTokenTableRva = 0x01D1EB30;
 	constexpr uint32_t kMirrorCameraVtableRva = 0x02196F90;
@@ -67,9 +67,9 @@ namespace
 		0x00
 	};
 
-	constexpr std::array<uint8_t, 16> kMirrorJobExecuteSignature = {
-		0x48, 0x8B, 0x91, 0x28, 0x01, 0x00, 0x00, 0x4C,
-		0x8D, 0x41, 0x38, 0x48, 0x81, 0xC1, 0x30, 0x01
+	constexpr std::array<uint8_t, 16> kMirrorRenderDispatchSignature = {
+		0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74,
+		0x24, 0x18, 0x55, 0x57, 0x41, 0x56, 0x48, 0x8D
 	};
 
 	struct executable_fingerprint_t
@@ -98,8 +98,9 @@ namespace
 			uint32_t state);
 	using resource_init_t =
 		void(__fastcall*)(void* visualInterior);
-	using mirror_job_execute_t =
-		void(__fastcall*)(void* renderJob);
+	using mirror_render_dispatch_t =
+		void(__fastcall*)(void* renderer, void* renderContext,
+			void* renderCommand);
 	using clone_camera_t =
 		void*(__fastcall*)(void* camera);
 	using om_set_render_targets_t =
@@ -164,12 +165,12 @@ namespace
 	void* g_resourceInitAddress{};
 	void* g_activeMaskAddress{};
 	void* g_omSetRenderTargetsAddress{};
-	void* g_mirrorJobExecuteAddress{};
+	void* g_mirrorRenderDispatchAddress{};
 	mirror_schedule_t g_originalMirrorSchedule{};
 	resource_init_t g_originalResourceInit{};
 	active_mask_t g_originalActiveMask{};
 	om_set_render_targets_t g_originalOmSetRenderTargets{};
-	mirror_job_execute_t g_originalMirrorJobExecute{};
+	mirror_render_dispatch_t g_originalMirrorRenderDispatch{};
 	std::atomic<void*> g_parkVisualInterior{};
 	std::atomic<void*> g_parkCamera{};
 	std::array<float, 4> g_parkSourcePosition{};
@@ -1583,21 +1584,21 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		return result;
 	}
 
-	int32_t resolve_render_job_slot(void* renderJob)
+	int32_t resolve_render_command_slot(void* renderCommand)
 	{
-		if (!renderJob || !g_executableBase)
+		if (!renderCommand || !g_executableBase)
 			return -1;
 
 		__try
 		{
 			auto* slotTokens = reinterpret_cast<uint64_t*>(
 				g_executableBase + kMirrorSlotTokenTableRva);
-			auto* bytes = static_cast<uint8_t*>(renderJob);
-			// The scheduler writes the slot token to command +0x38 and the
-			// queue copies that command to job +0x38, placing it at job +0x70.
-			// This is the exact per-slot identity used by the engine.
+			auto* bytes = static_cast<uint8_t*>(renderCommand);
+			// The scheduler writes the exact slot token to command +0x38.
+			// Hooking the common render dispatch receives that command directly,
+			// including paths which bypass the queued-job wrapper.
 			const uint64_t jobToken =
-				*reinterpret_cast<uint64_t*>(bytes + 0x70);
+				*reinterpret_cast<uint64_t*>(bytes + 0x38);
 			for (uint32_t slot = 0; slot < kMirrorSlotCount; ++slot)
 			{
 				if (jobToken != 0 && jobToken == slotTokens[slot])
@@ -1611,11 +1612,16 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		return -1;
 	}
 
-	void __fastcall hooked_mirror_job_execute(void* renderJob)
+	void __fastcall hooked_mirror_render_dispatch(
+		void* renderer,
+		void* renderContext,
+		void* renderCommand)
 	{
 		const int32_t previousSlot = g_renderingMirrorSlot;
-		g_renderingMirrorSlot = resolve_render_job_slot(renderJob);
-		g_originalMirrorJobExecute(renderJob);
+		g_renderingMirrorSlot =
+			resolve_render_command_slot(renderCommand);
+		g_originalMirrorRenderDispatch(
+			renderer, renderContext, renderCommand);
 		g_renderingMirrorSlot = previousSlot;
 	}
 
@@ -2025,27 +2031,27 @@ namespace dx11::internal_render_probe
 			}
 
 			if (matches_expected_bytes(
-				kExpectedMirrorJobExecuteRva,
-				kMirrorJobExecuteSignature))
+				kExpectedMirrorRenderDispatchRva,
+				kMirrorRenderDispatchSignature))
 			{
-				g_mirrorJobExecuteAddress =
+				g_mirrorRenderDispatchAddress =
 					g_executableBase +
-						kExpectedMirrorJobExecuteRva;
+						kExpectedMirrorRenderDispatchRva;
 				const MH_STATUS createStatus = MH_CreateHook(
-					g_mirrorJobExecuteAddress,
-					&hooked_mirror_job_execute,
+					g_mirrorRenderDispatchAddress,
+					&hooked_mirror_render_dispatch,
 					reinterpret_cast<void**>(
-						&g_originalMirrorJobExecute));
+						&g_originalMirrorRenderDispatch));
 				if (createStatus == MH_OK &&
 					MH_EnableHook(
-						g_mirrorJobExecuteAddress) == MH_OK)
+						g_mirrorRenderDispatchAddress) == MH_OK)
 				{
 					g_mirrorJobHookInstalled.store(true);
 				}
 				else
 				{
-					MH_RemoveHook(g_mirrorJobExecuteAddress);
-					g_mirrorJobExecuteAddress = nullptr;
+					MH_RemoveHook(g_mirrorRenderDispatchAddress);
+					g_mirrorRenderDispatchAddress = nullptr;
 				}
 			}
 		}
@@ -2113,11 +2119,11 @@ namespace dx11::internal_render_probe
 			MH_RemoveHook(g_activeMaskAddress);
 			g_activeMaskAddress = nullptr;
 		}
-		if (g_mirrorJobExecuteAddress)
+		if (g_mirrorRenderDispatchAddress)
 		{
-			MH_DisableHook(g_mirrorJobExecuteAddress);
-			MH_RemoveHook(g_mirrorJobExecuteAddress);
-			g_mirrorJobExecuteAddress = nullptr;
+			MH_DisableHook(g_mirrorRenderDispatchAddress);
+			MH_RemoveHook(g_mirrorRenderDispatchAddress);
+			g_mirrorRenderDispatchAddress = nullptr;
 		}
 		if (g_omSetRenderTargetsAddress)
 		{

@@ -91,8 +91,9 @@ static void set_menu_visibility(bool visible)
 
 	if (ImGui::GetCurrentContext())
 	{
-		// Draw ImGui's GUI cursor while the plugin menu is open.
-		ImGui::GetIO().MouseDrawCursor = true;
+		// Match the proven 3.9.4 behaviour: draw ImGui's cursor only while
+		// the plugin menu is visible, and disable it immediately on close.
+		ImGui::GetIO().MouseDrawCursor = visible;
 	}
 }
 

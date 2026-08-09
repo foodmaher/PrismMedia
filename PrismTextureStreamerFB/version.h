@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.11.7-rear-camera-diagnostic-suite";
+inline const char* g_version = "3.11.8-rear-camera-lineage-trace";

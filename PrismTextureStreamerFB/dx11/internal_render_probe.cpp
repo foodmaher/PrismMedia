@@ -125,6 +125,14 @@ namespace
 		void(STDMETHODCALLTYPE*)(ID3D11DeviceContext* context,
 			ID3D11CommandList* commandList,
 			BOOL restoreContextState);
+	using copy_subresource_region_t = void(STDMETHODCALLTYPE*)(
+		ID3D11DeviceContext*, ID3D11Resource*, UINT, UINT, UINT, UINT,
+		ID3D11Resource*, UINT, const D3D11_BOX*);
+	using copy_resource_t = void(STDMETHODCALLTYPE*)(
+		ID3D11DeviceContext*, ID3D11Resource*, ID3D11Resource*);
+	using resolve_subresource_t = void(STDMETHODCALLTYPE*)(
+		ID3D11DeviceContext*, ID3D11Resource*, UINT,
+		ID3D11Resource*, UINT, DXGI_FORMAT);
 
 	std::atomic<bool> g_supportedBuild{};
 	std::atomic<bool> g_mirrorHookInstalled{};
@@ -193,6 +201,9 @@ namespace
 	void* g_omSetRenderTargetsUavAddress{};
 	void* g_gameOmSetRenderTargetsAddress{};
 	void* g_gameOmSetRenderTargetsUavAddress{};
+	void* g_gameCopySubresourceRegionAddress{};
+	void* g_gameCopyResourceAddress{};
+	void* g_gameResolveSubresourceAddress{};
 	void* g_finishCommandListAddress{};
 	void* g_executeCommandListAddress{};
 	void* g_mirrorRenderDispatchAddress{};
@@ -203,6 +214,9 @@ namespace
 	om_set_render_targets_uav_t g_originalOmSetRenderTargetsUav{};
 	om_set_render_targets_t g_originalGameOmSetRenderTargets{};
 	om_set_render_targets_uav_t g_originalGameOmSetRenderTargetsUav{};
+	copy_subresource_region_t g_originalGameCopySubresourceRegion{};
+	copy_resource_t g_originalGameCopyResource{};
+	resolve_subresource_t g_originalGameResolveSubresource{};
 	finish_command_list_t g_originalFinishCommandList{};
 	execute_command_list_t g_originalExecuteCommandList{};
 	mirror_render_dispatch_t g_originalMirrorRenderDispatch{};
@@ -215,6 +229,36 @@ namespace
 	std::mutex g_candidateMutex;
 	std::mutex g_gameContextHookMutex;
 	std::unordered_map<uintptr_t, candidate_record_t> g_candidates;
+	struct lineage_key_t
+	{
+		uintptr_t source{};
+		uintptr_t destination{};
+		bool operator==(const lineage_key_t& other) const
+		{
+			return source == other.source && destination == other.destination;
+		}
+	};
+	struct lineage_key_hash_t
+	{
+		size_t operator()(const lineage_key_t& key) const
+		{
+			return std::hash<uintptr_t>{}(key.source) ^
+				(std::hash<uintptr_t>{}(key.destination) << 1);
+		}
+	};
+	struct lineage_record_t
+	{
+		D3D11_TEXTURE2D_DESC source{};
+		D3D11_TEXTURE2D_DESC destination{};
+		uint64_t copyRegionCount{};
+		uint64_t copyResourceCount{};
+		uint64_t resolveCount{};
+		uint64_t firstFrame{};
+		uint64_t lastFrame{};
+		uint32_t threadId{};
+	};
+	std::unordered_map<lineage_key_t, lineage_record_t,
+		lineage_key_hash_t> g_lineage;
 	uint32_t g_nextCandidateId = 1;
 	thread_local uint32_t g_mirrorScheduleDepth{};
 	thread_local int32_t g_renderingMirrorSlot{-1};
@@ -1558,8 +1602,6 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		bool forcePark{};
 		if (parkEligible)
 		{
-			const bool tracing =
-				g_tracing.load(std::memory_order_relaxed);
 			const uint64_t now = GetTickCount64();
 			const uint32_t targetFramerate =
 				(std::clamp)(
@@ -1573,7 +1615,6 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				g_lastParkScheduleTick.load(
 					std::memory_order_relaxed);
 			forcePark =
-				tracing ||
 				previous == 0 ||
 				now < previous ||
 				now - previous >= interval;
@@ -2098,6 +2139,115 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			g_originalGameOmSetRenderTargetsUav);
 	}
 
+	bool get_texture_description(
+		ID3D11Resource* resource, D3D11_TEXTURE2D_DESC& description,
+		uintptr_t& identity)
+	{
+		if (!resource)
+			return false;
+		ID3D11Texture2D* texture{};
+		const HRESULT result = resource->QueryInterface(
+			__uuidof(ID3D11Texture2D),
+			reinterpret_cast<void**>(&texture));
+		if (FAILED(result) || !texture)
+			return false;
+		texture->GetDesc(&description);
+		identity = reinterpret_cast<uintptr_t>(texture);
+		texture->Release();
+		return true;
+	}
+
+	bool matches_camera_dimensions(const D3D11_TEXTURE2D_DESC& description)
+	{
+		for (uint32_t slot = 0; slot < kMirrorSlotCount; ++slot)
+		{
+			const uint32_t width = g_slotWidth[slot].load();
+			const uint32_t height = g_slotHeight[slot].load();
+			if (width == 0 || height == 0)
+				continue;
+			if ((description.Width == width &&
+				description.Height == height) ||
+				(width <= UINT32_MAX / 2 && height <= UINT32_MAX / 2 &&
+					description.Width == width * 2 &&
+					description.Height == height * 2))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void record_resource_lineage(
+		ID3D11Resource* source, ID3D11Resource* destination,
+		uint32_t operation)
+	{
+		if (!g_tracing.load(std::memory_order_relaxed))
+			return;
+		D3D11_TEXTURE2D_DESC sourceDescription{};
+		D3D11_TEXTURE2D_DESC destinationDescription{};
+		uintptr_t sourceIdentity{};
+		uintptr_t destinationIdentity{};
+		if (!get_texture_description(source, sourceDescription, sourceIdentity) ||
+			!get_texture_description(destination, destinationDescription,
+				destinationIdentity) ||
+			(!matches_camera_dimensions(sourceDescription) &&
+				!matches_camera_dimensions(destinationDescription)))
+		{
+			return;
+		}
+
+		std::lock_guard<std::mutex> lock(g_candidateMutex);
+		lineage_key_t key{ sourceIdentity, destinationIdentity };
+		auto found = g_lineage.find(key);
+		if (found == g_lineage.end())
+		{
+			if (g_lineage.size() >= 512)
+				return;
+			lineage_record_t record{};
+			record.source = sourceDescription;
+			record.destination = destinationDescription;
+			record.firstFrame = g_frameIndex.load();
+			found = g_lineage.emplace(key, record).first;
+		}
+		auto& record = found->second;
+		if (operation == 1U) ++record.copyRegionCount;
+		if (operation == 2U) ++record.copyResourceCount;
+		if (operation == 3U) ++record.resolveCount;
+		record.lastFrame = g_frameIndex.load();
+		record.threadId = GetCurrentThreadId();
+	}
+
+	void STDMETHODCALLTYPE hooked_game_copy_subresource_region(
+		ID3D11DeviceContext* context, ID3D11Resource* destination,
+		UINT destinationSubresource, UINT destinationX, UINT destinationY,
+		UINT destinationZ, ID3D11Resource* source, UINT sourceSubresource,
+		const D3D11_BOX* sourceBox)
+	{
+		record_resource_lineage(source, destination, 1U);
+		g_originalGameCopySubresourceRegion(
+			context, destination, destinationSubresource, destinationX,
+			destinationY, destinationZ, source, sourceSubresource, sourceBox);
+	}
+
+	void STDMETHODCALLTYPE hooked_game_copy_resource(
+		ID3D11DeviceContext* context, ID3D11Resource* destination,
+		ID3D11Resource* source)
+	{
+		record_resource_lineage(source, destination, 2U);
+		g_originalGameCopyResource(context, destination, source);
+	}
+
+	void STDMETHODCALLTYPE hooked_game_resolve_subresource(
+		ID3D11DeviceContext* context, ID3D11Resource* destination,
+		UINT destinationSubresource, ID3D11Resource* source,
+		UINT sourceSubresource, DXGI_FORMAT format)
+	{
+		record_resource_lineage(source, destination, 3U);
+		g_originalGameResolveSubresource(
+			context, destination, destinationSubresource,
+			source, sourceSubresource, format);
+	}
+
 	HRESULT STDMETHODCALLTYPE hooked_finish_command_list(
 		ID3D11DeviceContext* context,
 		BOOL restoreDeferredContextState,
@@ -2386,6 +2536,55 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				candidate.firstThreadId,
 				candidate.lastThreadId);
 		}
+
+		std::vector<std::pair<lineage_key_t, lineage_record_t>> lineage;
+		{
+			std::lock_guard<std::mutex> lock(g_candidateMutex);
+			lineage.reserve(g_lineage.size());
+			for (const auto& item : g_lineage)
+				lineage.push_back(item);
+		}
+		std::sort(lineage.begin(), lineage.end(),
+			[](const auto& left, const auto& right)
+			{
+				const uint64_t leftCount = left.second.copyRegionCount +
+					left.second.copyResourceCount + left.second.resolveCount;
+				const uint64_t rightCount = right.second.copyRegionCount +
+					right.second.copyResourceCount + right.second.resolveCount;
+				return leftCount > rightCount;
+			});
+		scs_log(0,
+			"[RTT lineage] Resource-copy paths=%zu "
+			"(source -> destination).",
+			lineage.size());
+		const size_t lineageLogCount = (std::min)(
+			lineage.size(), static_cast<size_t>(80));
+		for (size_t index = 0; index < lineageLogCount; ++index)
+		{
+			const auto& key = lineage[index].first;
+			const auto& record = lineage[index].second;
+			scs_log(0,
+				"[RTT lineage] #%zu %p %ux%u %s(%u) -> "
+				"%p %ux%u %s(%u) region/copy/resolve=%llu/%llu/%llu "
+				"frames=%llu-%llu thread=%u",
+				index + 1,
+				reinterpret_cast<void*>(key.source),
+				record.source.Width, record.source.Height,
+				dx11::internal_render_probe::format_name(
+					static_cast<uint32_t>(record.source.Format)),
+				static_cast<uint32_t>(record.source.Format),
+				reinterpret_cast<void*>(key.destination),
+				record.destination.Width, record.destination.Height,
+				dx11::internal_render_probe::format_name(
+					static_cast<uint32_t>(record.destination.Format)),
+				static_cast<uint32_t>(record.destination.Format),
+				static_cast<unsigned long long>(record.copyRegionCount),
+				static_cast<unsigned long long>(record.copyResourceCount),
+				static_cast<unsigned long long>(record.resolveCount),
+				static_cast<unsigned long long>(record.firstFrame),
+				static_cast<unsigned long long>(record.lastFrame),
+				record.threadId);
+		}
 	}
 }
 
@@ -2615,6 +2814,27 @@ namespace dx11::internal_render_probe
 			g_gameOmSetRenderTargetsUavAddress = nullptr;
 			g_originalGameOmSetRenderTargetsUav = nullptr;
 		}
+		if (g_gameCopySubresourceRegionAddress)
+		{
+			MH_DisableHook(g_gameCopySubresourceRegionAddress);
+			MH_RemoveHook(g_gameCopySubresourceRegionAddress);
+			g_gameCopySubresourceRegionAddress = nullptr;
+			g_originalGameCopySubresourceRegion = nullptr;
+		}
+		if (g_gameCopyResourceAddress)
+		{
+			MH_DisableHook(g_gameCopyResourceAddress);
+			MH_RemoveHook(g_gameCopyResourceAddress);
+			g_gameCopyResourceAddress = nullptr;
+			g_originalGameCopyResource = nullptr;
+		}
+		if (g_gameResolveSubresourceAddress)
+		{
+			MH_DisableHook(g_gameResolveSubresourceAddress);
+			MH_RemoveHook(g_gameResolveSubresourceAddress);
+			g_gameResolveSubresourceAddress = nullptr;
+			g_originalGameResolveSubresource = nullptr;
+		}
 		if (g_finishCommandListAddress)
 		{
 			MH_DisableHook(g_finishCommandListAddress);
@@ -2666,7 +2886,11 @@ namespace dx11::internal_render_probe
 		void** vtable = *reinterpret_cast<void***>(context);
 		void* address = vtable ? vtable[33] : nullptr;
 		void* uavAddress = vtable ? vtable[34] : nullptr;
-		if (!address || !uavAddress)
+		void* copyRegionAddress = vtable ? vtable[46] : nullptr;
+		void* copyResourceAddress = vtable ? vtable[47] : nullptr;
+		void* resolveAddress = vtable ? vtable[57] : nullptr;
+		if (!address || !uavAddress || !copyRegionAddress ||
+			!copyResourceAddress || !resolveAddress)
 			return;
 
 		std::lock_guard<std::mutex> lock(g_gameContextHookMutex);
@@ -2712,21 +2936,70 @@ namespace dx11::internal_render_probe
 			}
 		}
 
-		if (standardReady && uavReady)
+		bool copyRegionReady =
+			copyRegionAddress == g_gameCopySubresourceRegionAddress;
+		if (!copyRegionReady && !g_gameCopySubresourceRegionAddress)
+		{
+			const MH_STATUS status = MH_CreateHook(
+				copyRegionAddress, &hooked_game_copy_subresource_region,
+				reinterpret_cast<void**>(
+					&g_originalGameCopySubresourceRegion));
+			copyRegionReady = status == MH_OK &&
+				MH_EnableHook(copyRegionAddress) == MH_OK;
+			if (copyRegionReady)
+				g_gameCopySubresourceRegionAddress = copyRegionAddress;
+			else if (status == MH_OK)
+				MH_RemoveHook(copyRegionAddress);
+		}
+
+		bool copyResourceReady =
+			copyResourceAddress == g_gameCopyResourceAddress;
+		if (!copyResourceReady && !g_gameCopyResourceAddress)
+		{
+			const MH_STATUS status = MH_CreateHook(
+				copyResourceAddress, &hooked_game_copy_resource,
+				reinterpret_cast<void**>(&g_originalGameCopyResource));
+			copyResourceReady = status == MH_OK &&
+				MH_EnableHook(copyResourceAddress) == MH_OK;
+			if (copyResourceReady)
+				g_gameCopyResourceAddress = copyResourceAddress;
+			else if (status == MH_OK)
+				MH_RemoveHook(copyResourceAddress);
+		}
+
+		bool resolveReady = resolveAddress == g_gameResolveSubresourceAddress;
+		if (!resolveReady && !g_gameResolveSubresourceAddress)
+		{
+			const MH_STATUS status = MH_CreateHook(
+				resolveAddress, &hooked_game_resolve_subresource,
+				reinterpret_cast<void**>(&g_originalGameResolveSubresource));
+			resolveReady = status == MH_OK &&
+				MH_EnableHook(resolveAddress) == MH_OK;
+			if (resolveReady)
+				g_gameResolveSubresourceAddress = resolveAddress;
+			else if (status == MH_OK)
+				MH_RemoveHook(resolveAddress);
+		}
+
+		if (standardReady && uavReady && copyRegionReady &&
+			copyResourceReady && resolveReady)
 		{
 			g_uavTargetHookInstalled.store(true);
 			if (!g_gameContextObserverConfirmed.exchange(true))
 				scs_log(0,
 					"[RTT probe] ETS2 actual-context diagnostics ready: "
-					"OMSetRenderTargets + OMSetRenderTargetsAndUAV.");
+					"OM/UAV + CopyRegion/CopyResource/Resolve.");
 		}
 		else
 		{
 			scs_log(2,
 				"[RTT probe] ETS2 actual-context diagnostics incomplete: "
-				"standard=%s uav=%s.",
+				"standard=%s uav=%s copy-region=%s copy=%s resolve=%s.",
 				standardReady ? "ready" : "failed",
-				uavReady ? "ready" : "failed");
+				uavReady ? "ready" : "failed",
+				copyRegionReady ? "ready" : "failed",
+				copyResourceReady ? "ready" : "failed",
+				resolveReady ? "ready" : "failed");
 		}
 	}
 
@@ -2863,6 +3136,7 @@ namespace dx11::internal_render_probe
 			std::lock_guard<std::mutex> lock(
 				g_candidateMutex);
 			g_candidates.clear();
+			g_lineage.clear();
 			g_nextCandidateId = 1;
 		}
 
@@ -2881,8 +3155,8 @@ namespace dx11::internal_render_probe
 			scs_log(
 				0,
 				"[RTT probe] Starting %u-second "
-				"render-target trace; park scheduling is "
-				"temporarily unthrottled",
+				"render-target and resource-lineage trace; "
+				"park scheduling remains at its configured rate",
 				seconds);
 	}
 

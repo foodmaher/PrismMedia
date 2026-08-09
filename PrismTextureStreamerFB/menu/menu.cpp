@@ -2005,7 +2005,7 @@ void on_frame()
 									probeStatus.contextHookInstalled
 										? "ready" : "not available");
 								ImGui::Text(
-									"Comprehensive bind hooks: actual context %s | UAV %s",
+									"Comprehensive hooks: actual context/copy lineage %s | UAV %s",
 									probeStatus.actualContextObserverReady
 										? "ready" : "waiting",
 									probeStatus.uavTargetHookInstalled

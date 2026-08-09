@@ -1,8 +1,9 @@
 # Rear-camera one-run diagnostic
 
-This build observes both D3D11 output-merger target-binding paths on ETS2's
-actual device context. Broad candidate recording is enabled only while the
-20-second trace is running.
+This build observes both D3D11 output-merger target-binding paths plus
+`CopySubresourceRegion`, `CopyResource`, and `ResolveSubresource` on ETS2's
+actual device context. Broad recording is enabled only during the trace, and
+slot 7 remains at its configured frame rate.
 
 ## Test sequence
 
@@ -22,6 +23,8 @@ actual device context. Broad candidate recording is enabled only while the
   following 100 ms correlation window.
 - `threads`: first and last Windows thread IDs that bound the resource.
 - `slot-match`: descriptor-size matches for the engine camera slots.
+- `[RTT lineage]`: camera-sized resource movement shown as source to
+  destination, with separate region/copy/resolve counters.
 
 The 100 ms post-job window is diagnostic-only. A target seen only in that
 window cannot become the live reverse-camera source.

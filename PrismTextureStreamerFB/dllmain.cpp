@@ -504,6 +504,7 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
     {
         std::lock_guard<std::mutex> lock(g_screens_mutex);
         bool autoBrightnessRequested = false;
+        uint32_t autoBrightnessSampleHz = 1;
         for (auto& screen : g_screens)
         {
             if (!screen.source && !screen.reverseSource &&
@@ -534,11 +535,12 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
 
             if (!trafficRadioConfig.enabled &&
                 screen.trafficRadioEnabled &&
-                !screen.trafficRadioSources.empty())
+                screen.contentMode ==
+                    content_mode_t::INTEGRATED_MEDIA &&
+                !screen.mediaUrl.empty())
             {
                 trafficRadioConfig.enabled = true;
-                trafficRadioConfig.sources =
-                    screen.trafficRadioSources;
+                trafficRadioConfig.playlistUrl = screen.mediaUrl;
                 trafficRadioConfig.vehicleDensity =
                     screen.trafficRadioVehicleDensity;
                 trafficRadioConfig.maximumVolume =
@@ -567,6 +569,14 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                 !g_telemetry_driving.load() || g_engine_enabled.load();
             autoBrightnessRequested = autoBrightnessRequested ||
                 (screen.autoBrightnessEnabled && screenPowered);
+            if (screen.autoBrightnessEnabled && screenPowered &&
+                screen.type == screen_type_t::GPS)
+            {
+                autoBrightnessSampleHz = (std::max)(
+                    autoBrightnessSampleHz,
+                    (std::max)(1U,
+                        static_cast<uint32_t>(screen.framerate) / 2U));
+            }
             const float effectiveBrightness =
                 calculate_effective_brightness(screen);
             if (std::fabs(
@@ -586,6 +596,7 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
             }
         }
         g_auto_brightness_requested = autoBrightnessRequested;
+        g_auto_brightness_sample_hz = autoBrightnessSampleHz;
 
         if (spatialAudioTarget && spatialAudioScreen)
         {

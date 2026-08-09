@@ -135,5 +135,8 @@ inline std::atomic<float> g_adaptive_audio_lowpass_hz{ 20000.0f };
 // plugin UI is drawn. Sampling remains dormant until at least one screen has
 // automatic brightness enabled.
 inline std::atomic<bool> g_auto_brightness_requested{};
+// User-selected GPS refresh divided by two. The display itself keeps its
+// configured rate; only the tiny backbuffer lighting sampler is throttled.
+inline std::atomic<uint32_t> g_auto_brightness_sample_hz{ 15 };
 inline std::atomic<bool> g_game_lighting_valid{};
 inline std::atomic<float> g_game_lighting_luminance{ 0.50f };

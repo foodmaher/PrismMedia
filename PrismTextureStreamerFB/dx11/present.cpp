@@ -33,7 +33,6 @@ namespace
         L"PrismTextureStreamerDX11Probe";
 
     constexpr UINT kLightingGridSize = 4;
-    constexpr uint64_t kLightingSampleIntervalMs = 250;
 
     struct lighting_sample_slot_t
     {
@@ -193,9 +192,13 @@ namespace
         consume_lighting_samples();
 
         const uint64_t now = GetTickCount64();
+        const uint32_t sampleHz = (std::clamp)(
+            g_auto_brightness_sample_hz.load(), 1U, 60U);
+        const uint64_t sampleIntervalMs = (std::max)(
+            1ULL, 1000ULL / static_cast<uint64_t>(sampleHz));
         if (lastLightingSampleTick != 0 &&
             now >= lastLightingSampleTick &&
-            now - lastLightingSampleTick < kLightingSampleIntervalMs)
+            now - lastLightingSampleTick < sampleIntervalMs)
             return;
 
         size_t targetIndex = lightingSlots.size();

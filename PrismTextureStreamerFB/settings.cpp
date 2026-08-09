@@ -429,6 +429,16 @@ namespace settings {
                     static_cast<UINT>(media_service_t::YOUTUBE),
                     path.c_str()),
                 0U, static_cast<UINT>(media_service_t::SPOTIFY)));
+            screen.spotifyPlaybackMode =
+                static_cast<spotify_playback_mode_t>((std::clamp)(
+                    GetPrivateProfileIntA(
+                        section.c_str(), "SpotifyPlaybackMode",
+                        static_cast<UINT>(
+                            spotify_playback_mode_t::EMBED),
+                        path.c_str()),
+                    0U,
+                    static_cast<UINT>(
+                        spotify_playback_mode_t::FULL_WEB_PLAYER)));
             screen.youtubeUrls =
                 read_url_list(path, section, "YouTubeUrl");
             screen.spotifyUrls =
@@ -548,22 +558,6 @@ namespace settings {
             screen.trafficRadioEnabled = GetPrivateProfileIntA(
                 section.c_str(), "TrafficRadioEnabled", 0,
                 path.c_str()) != 0;
-            screen.trafficRadioSources =
-                read_url_list(path, section, "TrafficRadioSource");
-            screen.selectedTrafficRadioSource = (std::min)(
-                GetPrivateProfileIntA(
-                    section.c_str(), "SelectedTrafficRadioSource", 0,
-                    path.c_str()),
-                screen.trafficRadioSources.empty()
-                    ? 0U
-                    : static_cast<UINT>(
-                        screen.trafficRadioSources.size() - 1));
-            if (!screen.trafficRadioSources.empty())
-            {
-                screen.trafficRadioSourceDraft =
-                    screen.trafficRadioSources[
-                        screen.selectedTrafficRadioSource];
-            }
             screen.trafficRadioVehicleDensity = (std::clamp)(
                 read_float(
                     path, section.c_str(),
@@ -619,11 +613,17 @@ namespace settings {
             screen.reverseCameraKitInstalled =
                 GetPrivateProfileIntA(
                     section.c_str(), "ReverseCameraKitInstalled",
-                    0, path.c_str()) != 0;
+                    1, path.c_str()) != 0;
             screen.reverseTrailerAwareMount =
                 GetPrivateProfileIntA(
                     section.c_str(), "ReverseTrailerAwareMount",
-                    1, path.c_str()) != 0;
+                    0, path.c_str()) != 0;
+            screen.reverseFlipHorizontal = GetPrivateProfileIntA(
+                section.c_str(), "ReverseFlipHorizontal",
+                0, path.c_str()) != 0;
+            screen.reverseFlipVertical = GetPrivateProfileIntA(
+                section.c_str(), "ReverseFlipVertical",
+                0, path.c_str()) != 0;
             screen.reverseMountLateral = (std::clamp)(
                 read_float(path, section.c_str(),
                     "ReverseMountLateral", 0.0f),
@@ -690,7 +690,10 @@ namespace settings {
                 screen.source = sources::CreateMediaClientSource(
                     screen.mediaUrl, screen.framerate,
                     screen.targetLiveTextureWidth,
-                    screen.targetLiveTextureHeight);
+                    screen.targetLiveTextureHeight,
+                    screen.mediaService == media_service_t::SPOTIFY &&
+                        screen.spotifyPlaybackMode ==
+                            spotify_playback_mode_t::FULL_WEB_PLAYER);
                 g_screen_source_creation_in_progress = false;
             }
             else if (screen.contentMode == content_mode_t::NATIVE_DIRECT_MEDIA &&
@@ -888,13 +891,6 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "AdaptiveAudioExternalLowPassEnabled", screen.adaptiveAudioExternalLowPassEnabled ? 1 : 0);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalMinimumCutoff", screen.adaptiveAudioExternalMinimumCutoff);
             write_number(temporaryPath, section.c_str(), "TrafficRadioEnabled", screen.trafficRadioEnabled ? 1 : 0);
-            write_number(
-                temporaryPath, section.c_str(),
-                "SelectedTrafficRadioSource",
-                screen.selectedTrafficRadioSource);
-            write_url_list(
-                temporaryPath, section, "TrafficRadioSource",
-                screen.trafficRadioSources);
             write_float(temporaryPath, section.c_str(), "TrafficRadioVehicleDensity", screen.trafficRadioVehicleDensity);
             write_float(temporaryPath, section.c_str(), "TrafficRadioMaximumVolume", screen.trafficRadioMaximumVolume);
             write_float(temporaryPath, section.c_str(), "TrafficRadioFullVolumeDistance", screen.trafficRadioFullVolumeDistance);
@@ -917,6 +913,12 @@ namespace settings {
             write_number(temporaryPath, section.c_str(),
                 "ReverseTrailerAwareMount",
                 screen.reverseTrailerAwareMount ? 1 : 0);
+            write_number(temporaryPath, section.c_str(),
+                "ReverseFlipHorizontal",
+                screen.reverseFlipHorizontal ? 1 : 0);
+            write_number(temporaryPath, section.c_str(),
+                "ReverseFlipVertical",
+                screen.reverseFlipVertical ? 1 : 0);
             write_float(temporaryPath, section.c_str(),
                 "ReverseMountLateral", screen.reverseMountLateral);
             write_float(temporaryPath, section.c_str(),
@@ -947,6 +949,9 @@ namespace settings {
             write_number(
                 temporaryPath, section.c_str(), "MediaService",
                 static_cast<uint32_t>(screen.mediaService));
+            write_number(
+                temporaryPath, section.c_str(), "SpotifyPlaybackMode",
+                static_cast<uint32_t>(screen.spotifyPlaybackMode));
             write_number(
                 temporaryPath, section.c_str(), "SelectedYouTubeUrl",
                 screen.selectedYoutubeUrl);

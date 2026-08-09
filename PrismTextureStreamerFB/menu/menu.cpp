@@ -2,9 +2,7 @@
 #include <d3d11.h>
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <cmath>
-#include <iterator>
 #include <map>
 #include <vector>
 
@@ -42,18 +40,6 @@ static std::atomic<bool> menu_visible{};
 static int hotkey_binding_index = -1;
 static bool configuration_save_pending = false;
 static uint64_t configuration_last_change_tick = 0;
-
-static bool is_traffic_streaming_web_page(const std::string& value)
-{
-	std::string lower;
-	lower.reserve(value.size());
-	for (const unsigned char character : value)
-		lower.push_back(static_cast<char>(std::tolower(character)));
-	return lower.rfind("spotify:", 0) == 0 ||
-		lower.find("spotify.com") != std::string::npos ||
-		lower.find("youtube.com") != std::string::npos ||
-		lower.find("youtu.be") != std::string::npos;
-}
 
 static float calculate_effective_brightness(const screen_t& screen)
 {
@@ -105,11 +91,8 @@ static void set_menu_visibility(bool visible)
 
 	if (ImGui::GetCurrentContext())
 	{
-		// Use ImGui's software cursor while the plugin menu is open. The
-		// cursor is rendered from the exact same io.MousePos coordinates
-		// ImGui uses for hovering/clicking, so the visible pointer cannot
-		// drift above/left of the control that is actually selected.
-		ImGui::GetIO().MouseDrawCursor = visible;
+		// Draw ImGui's GUI cursor while the plugin menu is open.
+		ImGui::GetIO().MouseDrawCursor = true;
 	}
 }
 
@@ -166,7 +149,10 @@ static bool rebuild_source(screen_t& screen)
 			screen.source = sources::CreateMediaClientSource(
 				screen.mediaUrl, screen.framerate,
 				screen.targetLiveTextureWidth,
-				screen.targetLiveTextureHeight);
+				screen.targetLiveTextureHeight,
+				screen.mediaService == media_service_t::SPOTIFY &&
+					screen.spotifyPlaybackMode ==
+						spotify_playback_mode_t::FULL_WEB_PLAYER);
 		break;
 	case content_mode_t::NATIVE_DIRECT_MEDIA:
 		if (!screen.mediaUrl.empty())
@@ -889,26 +875,14 @@ void on_frame()
 							"game upload all use resources.");
 						break;
 					case content_mode_t::INTEGRATED_MEDIA:
-						if (screen.mediaService == media_service_t::SPOTIFY)
-						{
-							ImGui::TextColored(
-								ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-								"Expected impact: Medium / High");
-							ImGui::TextWrapped(
-								"Spotify always uses its Full Web Player for persistent "
-								"login and complete controls. The old Embed path is removed.");
-						}
-						else
-						{
-							ImGui::TextColored(
-								ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
-								"Expected impact: Low / Medium");
-							ImGui::TextWrapped(
-								"YouTube uses its official player in a clean, "
-								"hardware-accelerated helper without browser tabs or "
-								"extensions. One optimized Windows capture transfer is "
-								"still required.");
-						}
+						ImGui::TextColored(
+							ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
+							"Expected impact: Low / Medium");
+						ImGui::TextWrapped(
+							"Recommended for YouTube and Spotify playlists. Uses the "
+							"official embedded players in a clean hardware-accelerated "
+							"helper, avoiding a full browser, tabs and extensions. "
+							"One optimized Windows capture transfer is still required.");
 						if (!sources::IsMediaClientInstalled())
 							ImGui::TextColored(
 								ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
@@ -1026,13 +1000,20 @@ void on_frame()
 						ImGui::BeginTooltip();
 						ImGui::TextWrapped(
 							"Samples a 4 x 4 grid from the game before the plugin "
-							"UI is drawn, at most four times per second. GPU work "
+							"UI is drawn. The sampler runs at half the selected "
+							"GPS display refresh rate while the display keeps its "
+							"full configured rate. GPU work "
 							"is read asynchronously and remains off when this "
 							"option is disabled on every screen.");
 						ImGui::EndTooltip();
 					}
 					if (screen.autoBrightnessEnabled)
 					{
+						ImGui::TextDisabled(
+							"Lighting update: %u Hz (display: %u Hz)",
+							(std::max)(1U,
+								static_cast<uint32_t>(screen.framerate) / 2U),
+							static_cast<unsigned>(screen.framerate));
 						float darkPercent =
 							screen.autoBrightnessDarkMultiplier * 100.0f;
 						if (ImGui::SliderFloat(
@@ -1193,6 +1174,13 @@ void on_frame()
 								{
 									screen.mediaUrl.clear();
 								}
+								if (screen.source)
+									screen.source->SetFullSpotifyWeb(
+										screen.mediaService ==
+											media_service_t::SPOTIFY &&
+										screen.spotifyPlaybackMode ==
+											spotify_playback_mode_t::
+												FULL_WEB_PLAYER);
 								if (screen.source &&
 									!screen.mediaUrl.empty())
 								{
@@ -1205,23 +1193,62 @@ void on_frame()
 							if (screen.mediaService ==
 								media_service_t::SPOTIFY)
 							{
-								ImGui::TextColored(
-									ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-									"Spotify uses Full Web Player");
-								ImGui::TextWrapped(
-									"The normal Spotify website provides persistent "
-									"login and native track controls. All Spotify "
-									"playback now follows this single implementation.");
-								if (screen.source && ImGui::Button(
-									"Open Spotify login / controls"))
-									screen.source->ShowInteractivePlayer(true);
-								ImGui::SameLine();
-								if (screen.source && ImGui::Button(
-									"Return helper to silent mode"))
-									screen.source->ShowInteractivePlayer(false);
-								if (screen.source && ImGui::Button(
-									"Clear Spotify login/session"))
-									screen.source->ClearBrowserSession();
+								const char* spotifyModes[] = {
+									"Embed (low impact)",
+									"Full Web Player (experimental)"
+								};
+								int spotifyMode = static_cast<int>(
+									screen.spotifyPlaybackMode);
+								if (ImGui::Combo(
+									"Spotify Experience", &spotifyMode,
+									spotifyModes,
+									IM_ARRAYSIZE(spotifyModes)))
+								{
+									screen.spotifyPlaybackMode =
+										static_cast<spotify_playback_mode_t>(
+											spotifyMode);
+									if (screen.source)
+									{
+										screen.source->SetFullSpotifyWeb(
+											screen.spotifyPlaybackMode ==
+												spotify_playback_mode_t::
+													FULL_WEB_PLAYER);
+										if (!screen.mediaUrl.empty())
+											screen.source->LoadMedia(
+												screen.mediaUrl);
+									}
+									saveConfiguration = true;
+								}
+
+								if (screen.spotifyPlaybackMode ==
+									spotify_playback_mode_t::EMBED)
+								{
+									ImGui::TextWrapped(
+										"Lowest overhead and no login. Spotify "
+										"limits Next/Previous inside embeds, so "
+										"those commands cycle your saved links.");
+								}
+								else
+								{
+									ImGui::TextColored(
+										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+										"Expected impact: Medium / High");
+									ImGui::TextWrapped(
+										"Runs the normal Spotify website with a "
+										"persistent login. It supports native "
+										"track controls but uses more CPU/GPU and "
+										"may expose DRM/compositor capture limits.");
+									if (screen.source && ImGui::Button(
+										"Open Spotify login / controls"))
+										screen.source->ShowInteractivePlayer(true);
+									ImGui::SameLine();
+									if (screen.source && ImGui::Button(
+										"Return helper to silent mode"))
+										screen.source->ShowInteractivePlayer(false);
+									if (screen.source && ImGui::Button(
+										"Clear Spotify login/session"))
+										screen.source->ClearBrowserSession();
+								}
 							}
 
 							auto& mediaUrls =
@@ -1441,6 +1468,18 @@ void on_frame()
 								dispatch_media_command(
 									screen,
 									media_command_t::VOLUME_UP);
+							if (screen.contentMode ==
+								content_mode_t::INTEGRATED_MEDIA &&
+								screen.mediaService ==
+									media_service_t::SPOTIFY &&
+								screen.spotifyPlaybackMode ==
+									spotify_playback_mode_t::EMBED)
+							{
+								ImGui::TextDisabled(
+									"Spotify Next/Previous cycles saved Spotify "
+									"links; Spotify Embed cannot skip tracks.");
+							}
+
 						bool isHotkeyTarget = screen.hotkeyTarget;
 						if (ImGui::Checkbox(
 							"Use this screen for media hotkeys",
@@ -1789,122 +1828,21 @@ void on_frame()
 
 						if (ImGui::TreeNode("AI Traffic Radios (SPF)"))
 						{
-							ImGui::TextWrapped(
-								"Uses independent local audio files or direct audio URLs. "
-								"It never opens Spotify or YouTube, so the dashboard "
-								"player keeps its playback session. One nearest audible "
-								"AI vehicle is decoded at a time.");
-
-							if (!screen.trafficRadioSources.empty())
-							{
-								screen.selectedTrafficRadioSource = (std::min)(
-									screen.selectedTrafficRadioSource,
-									static_cast<uint32_t>(
-										screen.trafficRadioSources.size() - 1));
-								const std::string& preview = screen.trafficRadioSources[
-									screen.selectedTrafficRadioSource];
-								if (ImGui::BeginCombo(
-									"Traffic audio sources", preview.c_str()))
-								{
-									for (uint32_t index = 0;
-										index < screen.trafficRadioSources.size(); ++index)
-									{
-										const bool selected =
-											index == screen.selectedTrafficRadioSource;
-										if (ImGui::Selectable(
-											screen.trafficRadioSources[index].c_str(), selected))
-										{
-											screen.selectedTrafficRadioSource = index;
-											screen.trafficRadioSourceDraft =
-												screen.trafficRadioSources[index];
-											saveConfiguration = true;
-										}
-										if (selected)
-											ImGui::SetItemDefaultFocus();
-									}
-									ImGui::EndCombo();
-								}
-							}
-							ImGui::InputTextWithHint(
-								"##traffic_audio_source",
-								"C:\\Music\\song.mp3 or https://host/audio.mp3",
-								&screen.trafficRadioSourceDraft);
-							const bool invalidPage = is_traffic_streaming_web_page(
-								screen.trafficRadioSourceDraft);
-							if (invalidPage)
-							{
-								ImGui::TextColored(
-									ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-									"Spotify/YouTube page links cannot be traffic sources. "
-									"Use a local audio file or a direct media/stream URL.");
-							}
-							const bool sourceReady =
-								!screen.trafficRadioSourceDraft.empty() && !invalidPage;
-							ImGui::BeginDisabled(!sourceReady);
-							if (ImGui::Button("Add traffic source"))
-							{
-								const auto existing = std::find(
-									screen.trafficRadioSources.begin(),
-									screen.trafficRadioSources.end(),
-									screen.trafficRadioSourceDraft);
-								if (existing == screen.trafficRadioSources.end())
-									screen.trafficRadioSources.push_back(
-										screen.trafficRadioSourceDraft);
-								screen.selectedTrafficRadioSource =
-									static_cast<uint32_t>(
-										std::distance(
-											screen.trafficRadioSources.begin(),
-											std::find(
-												screen.trafficRadioSources.begin(),
-												screen.trafficRadioSources.end(),
-												screen.trafficRadioSourceDraft)));
-								saveConfiguration = true;
-							}
-							ImGui::SameLine();
-							ImGui::BeginDisabled(screen.trafficRadioSources.empty());
-							if (ImGui::Button("Update selected"))
-							{
-								screen.trafficRadioSources[
-									screen.selectedTrafficRadioSource] =
-										screen.trafficRadioSourceDraft;
-								saveConfiguration = true;
-							}
-							ImGui::EndDisabled();
-							ImGui::EndDisabled();
-							ImGui::SameLine();
-							ImGui::BeginDisabled(screen.trafficRadioSources.empty());
-							if (ImGui::Button("Remove selected"))
-							{
-								screen.trafficRadioSources.erase(
-									screen.trafficRadioSources.begin() +
-										screen.selectedTrafficRadioSource);
-								if (screen.trafficRadioSources.empty())
-								{
-									screen.selectedTrafficRadioSource = 0;
-									screen.trafficRadioSourceDraft.clear();
-									screen.trafficRadioEnabled = false;
-								}
-								else
-								{
-									screen.selectedTrafficRadioSource = (std::min)(
-										screen.selectedTrafficRadioSource,
-										static_cast<uint32_t>(
-											screen.trafficRadioSources.size() - 1));
-									screen.trafficRadioSourceDraft =
-										screen.trafficRadioSources[
-											screen.selectedTrafficRadioSource];
-								}
-								saveConfiguration = true;
-							}
-							ImGui::EndDisabled();
-
 							const bool supported =
-								!screen.trafficRadioSources.empty() &&
+								screen.contentMode ==
+									content_mode_t::INTEGRATED_MEDIA &&
+								!screen.mediaUrl.empty() &&
 								sources::IsMediaClientInstalled();
-							if (!sources::IsMediaClientInstalled())
+							if (!supported)
+							{
 								ImGui::TextColored(
 									ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-									"PrismMediaClient.exe is required.");
+									"Select Integrated Media and load a playlist first.");
+							}
+							ImGui::TextWrapped(
+								"Uses this screen's playlist for nearby AI vehicles. "
+								"Vehicle IDs are selected consistently, and only the "
+								"nearest audible radio is decoded to keep WebView cost low.");
 
 							ImGui::BeginDisabled(!supported);
 							if (ImGui::Checkbox(
@@ -1982,9 +1920,6 @@ void on_frame()
 										radioStatus.gain * 100.0f,
 										radioStatus.pan,
 										radioStatus.cutoffHz);
-									ImGui::TextWrapped(
-										"Source: %s",
-										radioStatus.currentSource.c_str());
 								}
 								else
 								{
@@ -2386,6 +2321,85 @@ void on_frame()
 										"build. If the picture is flat or grey, try "
 										"B, then C/D. Selection is saved and does "
 										"not change the readback performance cost.");
+
+									ImGui::SeparatorText("Park camera alignment");
+									if (ImGui::Checkbox(
+										"Enable manual camera alignment",
+										&screen.reverseCameraKitInstalled))
+										saveConfiguration = true;
+									ImGui::TextWrapped(
+										"Enable Preview above while adjusting. The default "
+										"anchor moves with the truck and does not require SPF.");
+									if (screen.reverseCameraKitInstalled)
+									{
+										if (ImGui::Checkbox(
+											"Follow final connected trailer (SPF)",
+											&screen.reverseTrailerAwareMount))
+											saveConfiguration = true;
+
+										bool mountChanged = false;
+										mountChanged |= ImGui::SliderFloat(
+											"Camera left / right (m)",
+											&screen.reverseMountLateral,
+											-5.0f, 5.0f, "%.2f");
+										mountChanged |= ImGui::SliderFloat(
+											"Camera height (m)",
+											&screen.reverseMountHeight,
+											-2.0f, 8.0f, "%.2f");
+										mountChanged |= ImGui::SliderFloat(
+											"Camera forward / rear (m)",
+											&screen.reverseMountLongitudinal,
+											-8.0f, 8.0f, "%.2f");
+										mountChanged |= ImGui::SliderFloat(
+											"Camera yaw (degrees)",
+											&screen.reverseMountYaw,
+											-360.0f, 360.0f, "%.1f");
+										mountChanged |= ImGui::SliderFloat(
+											"Camera pitch (degrees)",
+											&screen.reverseMountPitch,
+											-89.0f, 89.0f, "%.1f");
+										if (mountChanged)
+											saveConfiguration = true;
+
+										if (ImGui::Button("Reset truck-rear position"))
+										{
+											screen.reverseTrailerAwareMount = false;
+											screen.reverseMountLateral = 0.0f;
+											screen.reverseMountHeight = 2.6f;
+											screen.reverseMountLongitudinal = -0.35f;
+											screen.reverseMountYaw = 180.0f;
+											screen.reverseMountPitch = -8.0f;
+											saveConfiguration = true;
+										}
+										ImGui::SameLine();
+										if (ImGui::Button("Turn camera 180 degrees"))
+										{
+											screen.reverseMountYaw += 180.0f;
+											if (screen.reverseMountYaw > 360.0f)
+												screen.reverseMountYaw -= 360.0f;
+											saveConfiguration = true;
+										}
+									}
+
+									if (ImGui::Button(
+										screen.reverseFlipHorizontal
+											? "Undo camera left/right flip"
+											: "Flip camera left/right"))
+									{
+										screen.reverseFlipHorizontal =
+											!screen.reverseFlipHorizontal;
+										saveConfiguration = true;
+									}
+									ImGui::SameLine();
+									if (ImGui::Button(
+										screen.reverseFlipVertical
+											? "Undo camera up/down flip"
+											: "Flip camera up/down"))
+									{
+										screen.reverseFlipVertical =
+											!screen.reverseFlipVertical;
+										saveConfiguration = true;
+									}
 
 									static const char*
 										internalReverseProfileNames[] = {

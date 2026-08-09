@@ -225,6 +225,14 @@ void new_frame()
     bool internalParkRenderRequested{};
     uint32_t internalParkTargetFramerate = 1;
     uint32_t internalParkTargetVariant = 1;
+    bool internalParkMountConfigured{};
+    bool internalParkManualAlignment{};
+    bool internalParkTrailerAware{};
+    float internalParkLateral{};
+    float internalParkHeight{ 2.6f };
+    float internalParkLongitudinal{ -0.35f };
+    float internalParkYaw{ 180.0f };
+    float internalParkPitch{ -8.0f };
     std::lock_guard<std::mutex> lock(g_screens_mutex);
 	    for (auto& screen : g_screens)
 	    {
@@ -253,6 +261,20 @@ void new_frame()
                         screen.reverseFramerate));
                 internalParkTargetVariant =
                     screen.reverseInternalTargetVariant;
+                if (!internalParkMountConfigured)
+                {
+                    internalParkMountConfigured = true;
+                    internalParkManualAlignment =
+                        screen.reverseCameraKitInstalled;
+                    internalParkTrailerAware =
+                        screen.reverseTrailerAwareMount;
+                    internalParkLateral = screen.reverseMountLateral;
+                    internalParkHeight = screen.reverseMountHeight;
+                    internalParkLongitudinal =
+                        screen.reverseMountLongitudinal;
+                    internalParkYaw = screen.reverseMountYaw;
+                    internalParkPitch = screen.reverseMountPitch;
+                }
             }
             const bool windowReverseRequested =
                 reverseRequested && !internalParkMethod;
@@ -614,7 +636,10 @@ void new_frame()
             const UINT sampledSourceY = srcY + static_cast<UINT>(
                 static_cast<uint64_t>(y) * srcSpanHeight / renderHeight);
             const UINT logicalDestinationY = dstY + y;
-            const UINT destinationRow = screen.flipVertical
+            const bool flipParkVertical = usingInternalParkFrame &&
+                screen.reverseFlipVertical;
+            const UINT destinationRow =
+                (screen.flipVertical != flipParkVertical)
                 ? (dstHeight - 1 - logicalDestinationY)
                 : logicalDestinationY;
             const uint8_t* srcRow =
@@ -625,7 +650,10 @@ void new_frame()
 
             const bool directHorizontalCopy =
                 srcX == 0 && srcSpanWidth == renderWidth;
-            if (directHorizontalCopy && !adjustBrightness) {
+            const bool flipParkHorizontal = usingInternalParkFrame &&
+                screen.reverseFlipHorizontal;
+            if (directHorizontalCopy && !adjustBrightness &&
+                !flipParkHorizontal) {
                 memcpy(dstRowPtr, srcRow, static_cast<size_t>(renderWidth) * 4);
                 continue;
             }
@@ -633,8 +661,14 @@ void new_frame()
             const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(srcRow);
             uint32_t* dstPixels = reinterpret_cast<uint32_t*>(dstRowPtr);
             for (UINT x = 0; x < renderWidth; ++x) {
-                const uint32_t pixel = srcPixels[
-                    directHorizontalCopy ? x : screen.scaleX[x]];
+                UINT sourcePixelX =
+                    directHorizontalCopy ? x : screen.scaleX[x];
+                if (flipParkHorizontal)
+                {
+                    sourcePixelX = srcX + srcSpanWidth - 1 -
+                        (sourcePixelX - srcX);
+                }
+                const uint32_t pixel = srcPixels[sourcePixelX];
                 if (!adjustBrightness)
                 {
                     dstPixels[x] = pixel;
@@ -740,6 +774,14 @@ void new_frame()
         internalParkTargetFramerate);
     dx11::internal_render_probe::set_park_target_variant(
         internalParkTargetVariant);
+    dx11::internal_render_probe::set_park_camera_mount(
+        internalParkMountConfigured && internalParkManualAlignment,
+        internalParkTrailerAware,
+        internalParkLateral,
+        internalParkHeight,
+        internalParkLongitudinal,
+        internalParkYaw,
+        internalParkPitch);
 }
 
 

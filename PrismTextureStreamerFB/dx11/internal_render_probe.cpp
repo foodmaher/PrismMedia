@@ -161,6 +161,7 @@ namespace
 	std::atomic<void*> g_parkVisualInterior{};
 	std::atomic<void*> g_parkCamera{};
 	std::array<float, 4> g_parkSourcePosition{};
+	std::array<float, 4> g_parkSourceOrientation{};
 	bool g_parkSourcePositionValid{};
 
 	std::mutex g_candidateMutex;
@@ -1174,6 +1175,11 @@ float4 ps_main(PixelInput input) : SV_TARGET
 					static_cast<uint8_t*>(
 						cameraSlots[kParkSlot]) + 0x4A0,
 					sizeof(g_parkSourcePosition));
+				std::memcpy(
+					g_parkSourceOrientation.data(),
+					static_cast<uint8_t*>(
+						cameraSlots[kParkSlot]) + 0x4B0,
+					sizeof(g_parkSourceOrientation));
 				g_parkSourcePositionValid = true;
 				installed = true;
 			}
@@ -1228,6 +1234,11 @@ float4 ps_main(PixelInput input) : SV_TARGET
 								static_cast<uint8_t*>(
 									parkCamera) + 0x4A0,
 								sizeof(g_parkSourcePosition));
+							std::memcpy(
+								g_parkSourceOrientation.data(),
+								static_cast<uint8_t*>(
+									parkCamera) + 0x4B0,
+								sizeof(g_parkSourceOrientation));
 							g_parkSourcePositionValid = true;
 							installed = true;
 						}
@@ -1274,14 +1285,30 @@ float4 ps_main(PixelInput input) : SV_TARGET
 
 	void apply_park_camera_mount()
 	{
-		if (!g_parkCameraKitInstalled.load(
-				std::memory_order_relaxed))
-			return;
-
 		auto* camera = static_cast<uint8_t*>(
 			g_parkCamera.load(std::memory_order_relaxed));
 		if (!camera)
 			return;
+		if (!g_parkCameraKitInstalled.load(
+				std::memory_order_relaxed))
+		{
+			if (g_parkSourcePositionValid)
+			{
+				__try
+				{
+					std::memcpy(camera + 0x4A0,
+						g_parkSourcePosition.data(),
+						sizeof(g_parkSourcePosition));
+					std::memcpy(camera + 0x4B0,
+						g_parkSourceOrientation.data(),
+						sizeof(g_parkSourceOrientation));
+				}
+				__except (EXCEPTION_EXECUTE_HANDLER)
+				{
+				}
+			}
+			return;
+		}
 
 		const float lateral = g_parkMountLateral.load();
 		const float height = g_parkMountHeight.load();

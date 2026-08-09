@@ -206,9 +206,7 @@
         if (source.startsWith("blob:") || source.startsWith("data:"))
             return true;
         try {
-            const url = new URL(source, location.href);
-            return url.origin === location.origin ||
-                url.hostname === "traffic.prism.local";
+            return new URL(source, location.href).origin === location.origin;
         } catch (_) {
             return false;
         }

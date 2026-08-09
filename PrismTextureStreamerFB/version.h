@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.11.10-rgba16f-readback";
+inline const char* g_version = "3.11.11-source-path-capture";

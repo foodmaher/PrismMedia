@@ -286,8 +286,10 @@ namespace
 	struct park_target_candidate_t
 	{
 		ID3D11Texture2D* texture{};
+		uintptr_t sourceIdentity{};
 		uint64_t observationCount{};
 		uint64_t lastObservedFrame{UINT64_MAX};
+		uint64_t lastObservedTick{};
 	};
 	std::array<
 		park_target_candidate_t,
@@ -485,8 +487,10 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		for (auto& candidate : g_parkTargetCandidates)
 		{
 			release_com_object(candidate.texture);
+			candidate.sourceIdentity = 0;
 			candidate.observationCount = 0;
 			candidate.lastObservedFrame = UINT64_MAX;
+			candidate.lastObservedTick = 0;
 		}
 		g_parkTargetCandidateCount = 0;
 		g_parkSelectedCandidate = kNoParkTargetCandidate;
@@ -767,17 +771,19 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		return true;
 	}
 
-	void observe_park_colour_target(
+	bool observe_park_colour_target(
 		ID3D11Texture2D* texture,
 		const D3D11_TEXTURE2D_DESC& description,
-		uint64_t currentFrame)
+		uint64_t currentFrame,
+		uintptr_t sourceIdentity = 0)
 	{
 		if (!texture ||
+			sourceIdentity == 0 ||
 			!g_parkRenderRequested.load(
 				std::memory_order_relaxed) ||
 			description.SampleDesc.Count != 1)
 		{
-			return;
+			return false;
 		}
 		switch (description.Format)
 		{
@@ -790,7 +796,7 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
 			break;
 		default:
-			return;
+			return false;
 		}
 
 		const uint32_t width =
@@ -809,9 +815,11 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		if (width == 0 || height == 0 ||
 			(!exactSize && !scaledSize))
 		{
-			return;
+			return false;
 		}
 
+		const uint64_t now = GetTickCount64();
+		const uint64_t staleAfterMs = 1000;
 		std::lock_guard<std::mutex> lock(
 			g_parkTextureMutex);
 		uint32_t candidateIndex =
@@ -819,8 +827,9 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		for (uint32_t index = 0;
 			index < g_parkTargetCandidateCount; ++index)
 		{
-			if (g_parkTargetCandidates[index].texture ==
-				texture)
+			if (g_parkTargetCandidates[index].texture == texture &&
+				g_parkTargetCandidates[index].sourceIdentity ==
+					sourceIdentity)
 			{
 				candidateIndex = index;
 				break;
@@ -832,20 +841,60 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			if (g_parkTargetCandidateCount >=
 				kMaximumParkTargetCandidates)
 			{
-				return;
+				uint32_t oldestIndex = 0;
+				uint64_t oldestTick = UINT64_MAX;
+				for (uint32_t index = 0;
+					index < g_parkTargetCandidateCount; ++index)
+				{
+					if (g_parkTargetCandidates[index].lastObservedTick <
+						oldestTick)
+					{
+						oldestTick =
+							g_parkTargetCandidates[index].lastObservedTick;
+						oldestIndex = index;
+					}
+				}
+				if (oldestTick != 0 &&
+					now - oldestTick < staleAfterMs)
+					return false;
+
+				candidateIndex = oldestIndex;
+				auto& stale =
+					g_parkTargetCandidates[candidateIndex];
+				if (g_parkSelectedCandidate == candidateIndex)
+				{
+					release_com_object(g_parkColorTexture);
+					g_parkSelectedCandidate =
+						kNoParkTargetCandidate;
+					g_parkColorTargetReady.store(
+						false, std::memory_order_relaxed);
+				}
+				release_com_object(stale.texture);
+				stale = {};
+				scs_log(
+					0,
+					"[RTT park] Recycled stale copy path %c.",
+					static_cast<char>('A' + candidateIndex));
 			}
-			candidateIndex = g_parkTargetCandidateCount++;
+			else
+			{
+				candidateIndex = g_parkTargetCandidateCount++;
+			}
 			auto& candidate =
 				g_parkTargetCandidates[candidateIndex];
 			candidate.texture = texture;
 			candidate.texture->AddRef();
+			candidate.sourceIdentity = sourceIdentity;
 			candidate.observationCount = 0;
 			candidate.lastObservedFrame = currentFrame;
+			candidate.lastObservedTick = now;
 			scs_log(
 				0,
-				"[RTT park] Discovered target candidate %c: "
-				"%ux%u %s.",
+				"[RTT park] Discovered copy path %c: source=%p, "
+				"destination=%p, %ux%u %s.",
 				static_cast<char>('A' + candidateIndex),
+				reinterpret_cast<void*>(sourceIdentity),
+				texture,
 				description.Width,
 				description.Height,
 				dx11::internal_render_probe::format_name(
@@ -857,6 +906,7 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			g_parkTargetCandidates[candidateIndex];
 		++candidate.observationCount;
 		candidate.lastObservedFrame = currentFrame;
+		candidate.lastObservedTick = now;
 
 		const uint32_t requestedVariant =
 			g_parkTargetVariant.load(std::memory_order_relaxed);
@@ -865,6 +915,53 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			requestedVariant == candidateIndex + 1)
 		{
 			select_park_target_locked(candidateIndex, currentFrame);
+		}
+		return g_parkSelectedCandidate == candidateIndex;
+	}
+
+	void capture_selected_park_copy(
+		ID3D11DeviceContext* context,
+		ID3D11Texture2D* texture,
+		const D3D11_TEXTURE2D_DESC& description,
+		uint64_t currentFrame,
+		uintptr_t sourceIdentity)
+	{
+		if (!observe_park_colour_target(
+			texture, description, currentFrame, sourceIdentity))
+			return;
+
+		std::lock_guard<std::mutex> lock(g_parkTextureMutex);
+		ID3D11Device* device{};
+		texture->GetDevice(&device);
+		if (!device || !ensure_park_staging_locked(device, description))
+		{
+			release_com_object(device);
+			return;
+		}
+		release_com_object(device);
+
+		for (uint32_t offset = 0;
+			offset < g_parkStaging.size(); ++offset)
+		{
+			const uint32_t index =
+				(g_nextParkStaging + offset) %
+				static_cast<uint32_t>(g_parkStaging.size());
+			auto& slot = g_parkStaging[index];
+			if (slot.pending || !slot.texture)
+				continue;
+
+			// Snapshot this exact source path now. The engine may write a
+			// left/right mirror or player view into the destination later.
+			g_originalGameCopyResource(
+				context, slot.texture, texture);
+			slot.pending = true;
+			slot.submissionOrder = ++g_parkNextSubmissionOrder;
+			g_nextParkStaging =
+				(index + 1) %
+				static_cast<uint32_t>(g_parkStaging.size());
+			g_parkObservedFrame = currentFrame;
+			g_parkSubmittedFrame = currentFrame;
+			break;
 		}
 	}
 
@@ -2290,9 +2387,20 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			description.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
 		if (stableFinalDestination)
 		{
-			observe_park_colour_target(
-				texture, description,
-				g_frameIndex.load(std::memory_order_relaxed));
+			ID3D11Texture2D* sourceTexture{};
+			if (source && SUCCEEDED(source->QueryInterface(
+				__uuidof(ID3D11Texture2D),
+				reinterpret_cast<void**>(&sourceTexture))) &&
+				sourceTexture)
+			{
+				capture_selected_park_copy(
+					context,
+					texture,
+					description,
+					g_frameIndex.load(std::memory_order_relaxed),
+					reinterpret_cast<uintptr_t>(sourceTexture));
+				sourceTexture->Release();
+			}
 		}
 		texture->Release();
 	}

@@ -2265,13 +2265,13 @@ void on_frame()
 										parkStatus.parkReadbackReady
 											? "ready" : "waiting");
 									static const char* targetChoices[] = {
-										"Auto", "Candidate A", "Candidate B",
-										"Candidate C", "Candidate D"
+										"Auto copy path", "Copy path A", "Copy path B",
+										"Copy path C", "Copy path D"
 									};
 									int targetChoice = static_cast<int>(
 										screen.reverseInternalTargetVariant);
 									if (ImGui::Combo(
-										"Copied camera target",
+										"Park source copy path",
 										&targetChoice, targetChoices,
 										static_cast<int>(std::size(targetChoices))))
 									{
@@ -2280,13 +2280,17 @@ void on_frame()
 										saveConfiguration = true;
 									}
 									ImGui::Text(
-										"Copy destinations found: %u | selected: %s",
+										"Source paths found: %u | selected: %s",
 										parkStatus.parkTargetCandidateCount,
 										parkStatus.parkSelectedCandidate == 0
 											? "none/auto"
 											: targetChoices[(std::min)(
 												static_cast<int>(
-													parkStatus.parkSelectedCandidate), 4)]);
+															parkStatus.parkSelectedCandidate), 4)]);
+									ImGui::TextWrapped(
+										"Each letter is one source-to-destination write. The "
+										"selected write is captured immediately, before an "
+										"enlarged mirror can overwrite the shared texture.");
 									if (!parkStatus.parkCameraInstalled)
 									{
 										ImGui::TextWrapped(

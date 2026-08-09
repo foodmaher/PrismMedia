@@ -34,6 +34,7 @@ namespace dx11::internal_render_probe
 		bool mirrorScheduleSeen{};
 		bool contextHookInstalled{};
 		bool mirrorJobHookInstalled{};
+		bool commandListHooksInstalled{};
 		bool tracing{};
 		bool parkActivationRequested{};
 		bool parkRenderRequested{};
@@ -53,6 +54,9 @@ namespace dx11::internal_render_probe
 		uint64_t parkScheduleCount{};
 		uint64_t parkOutputFrames{};
 		uint64_t parkReadbackBusySkips{};
+		uint64_t slot7DispatchCount{};
+		uint64_t commandListTagCount{};
+		uint64_t commandListExecuteCount{};
 		uint64_t traceStartedTick{};
 		uint64_t traceEndTick{};
 		uint64_t frameIndex{};

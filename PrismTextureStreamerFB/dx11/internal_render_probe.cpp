@@ -108,6 +108,14 @@ namespace
 			UINT renderTargetViewCount,
 			ID3D11RenderTargetView* const* renderTargetViews,
 			ID3D11DepthStencilView* depthStencilView);
+	using finish_command_list_t =
+		HRESULT(STDMETHODCALLTYPE*)(ID3D11DeviceContext* context,
+			BOOL restoreDeferredContextState,
+			ID3D11CommandList** commandList);
+	using execute_command_list_t =
+		void(STDMETHODCALLTYPE*)(ID3D11DeviceContext* context,
+			ID3D11CommandList* commandList,
+			BOOL restoreContextState);
 
 	std::atomic<bool> g_supportedBuild{};
 	std::atomic<bool> g_mirrorHookInstalled{};
@@ -115,6 +123,7 @@ namespace
 	std::atomic<bool> g_activeMaskHookInstalled{};
 	std::atomic<bool> g_contextHookInstalled{};
 	std::atomic<bool> g_mirrorJobHookInstalled{};
+	std::atomic<bool> g_commandListHooksInstalled{};
 	std::atomic<bool> g_mirrorScheduleSeen{};
 	std::atomic<bool> g_tracing{};
 	std::atomic<bool> g_parkActivationRequested{};
@@ -132,6 +141,9 @@ namespace
 	std::atomic<uint64_t> g_parkScheduleCount{};
 	std::atomic<uint64_t> g_parkOutputFrames{};
 	std::atomic<uint64_t> g_parkReadbackBusySkips{};
+	std::atomic<uint64_t> g_slot7DispatchCount{};
+	std::atomic<uint64_t> g_commandListTagCount{};
+	std::atomic<uint64_t> g_commandListExecuteCount{};
 	std::atomic<uint64_t> g_lastParkScheduleTick{};
 	std::atomic<uint64_t> g_lastParkForcedFrame{UINT64_MAX};
 	std::atomic<uint32_t> g_parkTargetFramerate{15};
@@ -165,11 +177,15 @@ namespace
 	void* g_resourceInitAddress{};
 	void* g_activeMaskAddress{};
 	void* g_omSetRenderTargetsAddress{};
+	void* g_finishCommandListAddress{};
+	void* g_executeCommandListAddress{};
 	void* g_mirrorRenderDispatchAddress{};
 	mirror_schedule_t g_originalMirrorSchedule{};
 	resource_init_t g_originalResourceInit{};
 	active_mask_t g_originalActiveMask{};
 	om_set_render_targets_t g_originalOmSetRenderTargets{};
+	finish_command_list_t g_originalFinishCommandList{};
+	execute_command_list_t g_originalExecuteCommandList{};
 	mirror_render_dispatch_t g_originalMirrorRenderDispatch{};
 	std::atomic<void*> g_parkVisualInterior{};
 	std::atomic<void*> g_parkCamera{};
@@ -183,6 +199,22 @@ namespace
 	thread_local uint32_t g_mirrorScheduleDepth{};
 	thread_local int32_t g_renderingMirrorSlot{-1};
 	thread_local bool g_capturingParkResourceInit{};
+
+	struct deferred_context_record_t
+	{
+		int32_t slot{-1};
+		ID3D11Texture2D* lastParkSizedTarget{};
+	};
+	struct command_list_record_t
+	{
+		int32_t slot{-1};
+		ID3D11Texture2D* lastParkSizedTarget{};
+	};
+	std::mutex g_commandListMutex;
+	std::unordered_map<ID3D11DeviceContext*, deferred_context_record_t>
+		g_deferredContexts;
+	std::unordered_map<ID3D11CommandList*, command_list_record_t>
+		g_commandLists;
 
 	std::mutex g_parkTextureMutex;
 	ID3D11Texture2D* g_parkColorTexture{};
@@ -1620,6 +1652,8 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		const int32_t previousSlot = g_renderingMirrorSlot;
 		g_renderingMirrorSlot =
 			resolve_render_command_slot(renderCommand);
+		if (g_renderingMirrorSlot == static_cast<int32_t>(kParkSlot))
+			g_slot7DispatchCount.fetch_add(1, std::memory_order_relaxed);
 		g_originalMirrorRenderDispatch(
 			renderer, renderContext, renderCommand);
 		g_renderingMirrorSlot = previousSlot;
@@ -1764,29 +1798,184 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		}
 	}
 
+	bool is_park_sized_hdr_target(ID3D11Texture2D* texture)
+	{
+		if (!texture)
+			return false;
+		D3D11_TEXTURE2D_DESC description{};
+		texture->GetDesc(&description);
+		return description.SampleDesc.Count == 1 &&
+			description.Format == DXGI_FORMAT_R11G11B10_FLOAT &&
+			description.Width == g_slotWidth[kParkSlot].load(
+				std::memory_order_relaxed) &&
+			description.Height == g_slotHeight[kParkSlot].load(
+				std::memory_order_relaxed);
+	}
+
+	void remember_context_target(
+		ID3D11DeviceContext* context,
+		UINT renderTargetViewCount,
+		ID3D11RenderTargetView* const* renderTargetViews)
+	{
+		if (!context || !renderTargetViews ||
+			!g_parkRenderRequested.load(std::memory_order_relaxed))
+			return;
+
+		ID3D11Texture2D* selected{};
+		for (UINT index = 0; index < renderTargetViewCount; ++index)
+		{
+			ID3D11RenderTargetView* view = renderTargetViews[index];
+			if (!view)
+				continue;
+			ID3D11Resource* resource{};
+			view->GetResource(&resource);
+			if (!resource)
+				continue;
+			ID3D11Texture2D* texture{};
+			const HRESULT result = resource->QueryInterface(
+				__uuidof(ID3D11Texture2D),
+				reinterpret_cast<void**>(&texture));
+			resource->Release();
+			if (SUCCEEDED(result) && texture)
+			{
+				if (is_park_sized_hdr_target(texture))
+				{
+					if (selected)
+						selected->Release();
+					selected = texture;
+				}
+				else
+				{
+					texture->Release();
+				}
+			}
+		}
+
+		std::lock_guard<std::mutex> lock(g_commandListMutex);
+		auto& record = g_deferredContexts[context];
+		if (g_renderingMirrorSlot >= 0)
+		{
+			if (record.slot != g_renderingMirrorSlot)
+				release_com_object(record.lastParkSizedTarget);
+			record.slot = g_renderingMirrorSlot;
+		}
+		if (selected)
+		{
+			release_com_object(record.lastParkSizedTarget);
+			record.lastParkSizedTarget = selected;
+		}
+	}
+
 	void STDMETHODCALLTYPE hooked_om_set_render_targets(
 		ID3D11DeviceContext* context,
 		UINT renderTargetViewCount,
 		ID3D11RenderTargetView* const* renderTargetViews,
 		ID3D11DepthStencilView* depthStencilView)
 	{
+		remember_context_target(
+			context, renderTargetViewCount, renderTargetViews);
+
+		int32_t effectiveSlot = g_renderingMirrorSlot;
+		if (effectiveSlot < 0)
+		{
+			std::lock_guard<std::mutex> lock(g_commandListMutex);
+			const auto found = g_deferredContexts.find(context);
+			if (found != g_deferredContexts.end())
+				effectiveSlot = found->second.slot;
+		}
+		const int32_t previousSlot = g_renderingMirrorSlot;
+		g_renderingMirrorSlot = effectiveSlot;
 		const bool tracing =
 			g_tracing.load(std::memory_order_relaxed);
 		if (tracing ||
 			g_parkRenderRequested.load(
 				std::memory_order_relaxed))
 		{
-			record_render_targets(
+				record_render_targets(
 				renderTargetViewCount,
 				renderTargetViews,
 				tracing);
 		}
+		g_renderingMirrorSlot = previousSlot;
 
 		g_originalOmSetRenderTargets(
 			context,
 			renderTargetViewCount,
 			renderTargetViews,
 			depthStencilView);
+	}
+
+	HRESULT STDMETHODCALLTYPE hooked_finish_command_list(
+		ID3D11DeviceContext* context,
+		BOOL restoreDeferredContextState,
+		ID3D11CommandList** commandList)
+	{
+		const HRESULT result = g_originalFinishCommandList(
+			context, restoreDeferredContextState, commandList);
+
+		deferred_context_record_t deferred{};
+		{
+			std::lock_guard<std::mutex> lock(g_commandListMutex);
+			const auto found = g_deferredContexts.find(context);
+			if (found != g_deferredContexts.end())
+			{
+				deferred = found->second;
+				g_deferredContexts.erase(found);
+			}
+		}
+		if (deferred.slot < 0)
+			deferred.slot = g_renderingMirrorSlot;
+
+		if (SUCCEEDED(result) && commandList && *commandList &&
+			deferred.slot >= 0)
+		{
+			std::lock_guard<std::mutex> lock(g_commandListMutex);
+			auto& record = g_commandLists[*commandList];
+			release_com_object(record.lastParkSizedTarget);
+			record.slot = deferred.slot;
+			record.lastParkSizedTarget = deferred.lastParkSizedTarget;
+			deferred.lastParkSizedTarget = nullptr;
+			g_commandListTagCount.fetch_add(1, std::memory_order_relaxed);
+		}
+		release_com_object(deferred.lastParkSizedTarget);
+		return result;
+	}
+
+	void STDMETHODCALLTYPE hooked_execute_command_list(
+		ID3D11DeviceContext* context,
+		ID3D11CommandList* commandList,
+		BOOL restoreContextState)
+	{
+		command_list_record_t record{};
+		{
+			std::lock_guard<std::mutex> lock(g_commandListMutex);
+			const auto found = g_commandLists.find(commandList);
+			if (found != g_commandLists.end())
+			{
+				record = found->second;
+				g_commandLists.erase(found);
+			}
+		}
+
+		const int32_t previousSlot = g_renderingMirrorSlot;
+		g_renderingMirrorSlot = record.slot;
+		if (record.slot == static_cast<int32_t>(kParkSlot))
+		{
+			g_commandListExecuteCount.fetch_add(1, std::memory_order_relaxed);
+			if (record.lastParkSizedTarget)
+			{
+				D3D11_TEXTURE2D_DESC description{};
+				record.lastParkSizedTarget->GetDesc(&description);
+				observe_park_colour_target(
+					record.lastParkSizedTarget,
+					description,
+					g_frameIndex.load(std::memory_order_relaxed));
+			}
+		}
+		g_originalExecuteCommandList(
+			context, commandList, restoreContextState);
+		g_renderingMirrorSlot = previousSlot;
+		release_com_object(record.lastParkSizedTarget);
 	}
 
 	bool install_context_hook()
@@ -1833,6 +2022,8 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		void** vtable =
 			*reinterpret_cast<void***>(context);
 		g_omSetRenderTargetsAddress = vtable[33];
+		g_executeCommandListAddress = vtable[58];
+		g_finishCommandListAddress = vtable[114];
 
 		const MH_STATUS createStatus = MH_CreateHook(
 			g_omSetRenderTargetsAddress,
@@ -1855,7 +2046,45 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		context->Release();
 		device->Release();
 		if (!installed)
+		{
 			g_omSetRenderTargetsAddress = nullptr;
+			g_executeCommandListAddress = nullptr;
+			g_finishCommandListAddress = nullptr;
+			return false;
+		}
+
+		const MH_STATUS finishCreate = MH_CreateHook(
+			g_finishCommandListAddress,
+			&hooked_finish_command_list,
+			reinterpret_cast<void**>(&g_originalFinishCommandList));
+		const bool finishInstalled =
+			finishCreate == MH_OK &&
+			MH_EnableHook(g_finishCommandListAddress) == MH_OK;
+		const MH_STATUS executeCreate = MH_CreateHook(
+			g_executeCommandListAddress,
+			&hooked_execute_command_list,
+			reinterpret_cast<void**>(&g_originalExecuteCommandList));
+		const bool executeInstalled =
+			executeCreate == MH_OK &&
+			MH_EnableHook(g_executeCommandListAddress) == MH_OK;
+
+		if (!finishInstalled || !executeInstalled)
+		{
+			if (finishCreate == MH_OK)
+			{
+				MH_DisableHook(g_finishCommandListAddress);
+				MH_RemoveHook(g_finishCommandListAddress);
+			}
+			if (executeCreate == MH_OK)
+			{
+				MH_DisableHook(g_executeCommandListAddress);
+				MH_RemoveHook(g_executeCommandListAddress);
+			}
+			g_finishCommandListAddress = nullptr;
+			g_executeCommandListAddress = nullptr;
+		}
+		g_commandListHooksInstalled.store(
+			finishInstalled && executeInstalled);
 		return installed;
 	}
 
@@ -1869,14 +2098,21 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			"[RTT probe] Trace finished. "
 			"mirror calls=%llu, slot mask=0x%03X, "
 			"park schedules=%llu, "
-			"render-target candidates=%zu",
+			"render-target candidates=%zu, slot7 dispatches=%llu, "
+			"command lists tagged=%llu executed=%llu",
 			static_cast<unsigned long long>(
 				g_mirrorScheduleCount.load() -
 				g_traceStartedMirrorScheduleCount.load()),
 			g_mirrorSlotMask.load(),
 			static_cast<unsigned long long>(
 				g_parkScheduleCount.load()),
-			results.size());
+			results.size(),
+			static_cast<unsigned long long>(
+				g_slot7DispatchCount.load()),
+			static_cast<unsigned long long>(
+				g_commandListTagCount.load()),
+			static_cast<unsigned long long>(
+				g_commandListExecuteCount.load()));
 
 		for (uint32_t slot = 0;
 			slot < kMirrorSlotCount; ++slot)
@@ -2078,8 +2314,8 @@ namespace dx11::internal_render_probe
 		scs_log(
 			0,
 			"[RTT probe] mirror hook=%s, "
-			"park init hook=%s, park mask hook=%s, slot job hook=%s, "
-			"D3D11 target hook=%s",
+			"park init hook=%s, park mask hook=%s, slot dispatch hook=%s, "
+			"D3D11 target hook=%s, command-list hooks=%s",
 			g_mirrorHookInstalled.load()
 				? "ready" : "unavailable",
 			g_resourceInitHookInstalled.load()
@@ -2089,6 +2325,8 @@ namespace dx11::internal_render_probe
 			g_mirrorJobHookInstalled.load()
 				? "ready" : "unavailable",
 			g_contextHookInstalled.load()
+				? "ready" : "unavailable",
+			g_commandListHooksInstalled.load()
 				? "ready" : "unavailable");
 
 		return
@@ -2133,17 +2371,39 @@ namespace dx11::internal_render_probe
 				g_omSetRenderTargetsAddress);
 			g_omSetRenderTargetsAddress = nullptr;
 		}
+		if (g_finishCommandListAddress)
+		{
+			MH_DisableHook(g_finishCommandListAddress);
+			MH_RemoveHook(g_finishCommandListAddress);
+			g_finishCommandListAddress = nullptr;
+		}
+		if (g_executeCommandListAddress)
+		{
+			MH_DisableHook(g_executeCommandListAddress);
+			MH_RemoveHook(g_executeCommandListAddress);
+			g_executeCommandListAddress = nullptr;
+		}
 
 		g_mirrorHookInstalled.store(false);
 		g_resourceInitHookInstalled.store(false);
 		g_activeMaskHookInstalled.store(false);
 		g_contextHookInstalled.store(false);
 		g_mirrorJobHookInstalled.store(false);
+		g_commandListHooksInstalled.store(false);
 		g_parkCameraInstalled.store(false);
 		g_parkResourcePresent.store(false);
 		g_parkMaskForced.store(false);
 		g_parkVisualInterior.store(nullptr);
 		g_parkCamera.store(nullptr);
+		{
+			std::lock_guard<std::mutex> lock(g_commandListMutex);
+			for (auto& item : g_deferredContexts)
+				release_com_object(item.second.lastParkSizedTarget);
+			g_deferredContexts.clear();
+			for (auto& item : g_commandLists)
+				release_com_object(item.second.lastParkSizedTarget);
+			g_commandLists.clear();
+		}
 		{
 			std::lock_guard<std::mutex> lock(
 				g_parkTextureMutex);
@@ -2674,6 +2934,8 @@ namespace dx11::internal_render_probe
 			g_contextHookInstalled.load();
 		result.mirrorJobHookInstalled =
 			g_mirrorJobHookInstalled.load();
+		result.commandListHooksInstalled =
+			g_commandListHooksInstalled.load();
 		result.tracing = g_tracing.load();
 		result.parkActivationRequested =
 			g_parkActivationRequested.load();
@@ -2718,6 +2980,12 @@ namespace dx11::internal_render_probe
 			g_parkOutputFrames.load();
 		result.parkReadbackBusySkips =
 			g_parkReadbackBusySkips.load();
+		result.slot7DispatchCount =
+			g_slot7DispatchCount.load();
+		result.commandListTagCount =
+			g_commandListTagCount.load();
+		result.commandListExecuteCount =
+			g_commandListExecuteCount.load();
 		result.traceStartedTick =
 			g_traceStartedTick.load();
 		result.traceEndTick = g_traceEndTick.load();

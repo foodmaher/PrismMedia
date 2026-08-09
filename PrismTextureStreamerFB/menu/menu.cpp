@@ -91,9 +91,21 @@ static void set_menu_visibility(bool visible)
 
 	if (ImGui::GetCurrentContext())
 	{
-		// Match the proven 3.9.4 behaviour: draw ImGui's cursor only while
-		// the plugin menu is visible, and disable it immediately on close.
-		ImGui::GetIO().MouseDrawCursor = visible;
+		auto& io = ImGui::GetIO();
+		if (visible)
+		{
+			// The plugin uses ImGui's correctly aligned software cursor.
+			io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+			io.MouseDrawCursor = true;
+		}
+		else
+		{
+			// Without this flag the Win32 backend restores an OS arrow on its
+			// next frame, then ETS2 pins that arrow to the screen centre.
+			io.MouseDrawCursor = false;
+			io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+			::SetCursor(nullptr);
+		}
 	}
 }
 
@@ -335,6 +347,15 @@ static void apply_performance_profile(screen_t& screen)
 
 void on_frame()
 {
+	static bool cursorStateInitialized = false;
+	if (!cursorStateInitialized && ImGui::GetCurrentContext())
+	{
+		// The menu starts closed; initialize cursor ownership only after the
+		// ImGui context exists.
+		set_menu_visibility(false);
+		cursorStateInitialized = true;
+	}
+
 	bool saveConfiguration = false;
 	static bool wasPressed = false;
 
@@ -1985,8 +2006,20 @@ void on_frame()
 										? "ready" : "not available");
 								ImGui::Text(
 									"Per-slot render lock: %s",
-									probeStatus.mirrorJobHookInstalled
+									probeStatus.mirrorJobHookInstalled &&
+										probeStatus.commandListHooksInstalled
 										? "slot 7 isolated" : "not available");
+								ImGui::Text(
+									"Command-list propagation: %s | "
+									"slot7 %llu | tagged %llu | executed %llu",
+									probeStatus.commandListHooksInstalled
+										? "ready" : "not available",
+									static_cast<unsigned long long>(
+										probeStatus.slot7DispatchCount),
+									static_cast<unsigned long long>(
+										probeStatus.commandListTagCount),
+									static_cast<unsigned long long>(
+										probeStatus.commandListExecuteCount));
 								ImGui::Text(
 									"Park-camera hooks: init %s | scheduler %s",
 									probeStatus.resourceInitHookInstalled

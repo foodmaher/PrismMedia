@@ -172,6 +172,8 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 
             HRESULT hr = CreateTexture2D_Original(pDevice, &modifiedDesc, pInitialData, ppTexture2D);
             if (SUCCEEDED(hr) && ppTexture2D && *ppTexture2D)
+                dx11::internal_render_probe::on_texture_created(*ppTexture2D);
+            if (SUCCEEDED(hr) && ppTexture2D && *ppTexture2D)
             {
                 if (screen.liveTexture) screen.liveTexture->Release();
                 if (screen.uploadTexture) screen.uploadTexture->Release();
@@ -214,8 +216,11 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
         }
     }
 
-    return CreateTexture2D_Original(
+    const HRESULT hr = CreateTexture2D_Original(
         pDevice, pDesc, pInitialData, ppTexture2D);
+    if (SUCCEEDED(hr) && ppTexture2D && *ppTexture2D)
+        dx11::internal_render_probe::on_texture_created(*ppTexture2D);
+    return hr;
 }
 
 

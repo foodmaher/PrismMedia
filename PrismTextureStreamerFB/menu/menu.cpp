@@ -2005,21 +2005,9 @@ void on_frame()
 									probeStatus.contextHookInstalled
 										? "ready" : "not available");
 								ImGui::Text(
-									"Per-slot render lock: %s",
-									probeStatus.mirrorJobHookInstalled &&
-										probeStatus.commandListHooksInstalled
-										? "slot 7 isolated" : "not available");
-								ImGui::Text(
-									"Command-list propagation: %s | "
-									"slot7 %llu | tagged %llu | executed %llu",
-									probeStatus.commandListHooksInstalled
-										? "ready" : "not available",
-									static_cast<unsigned long long>(
-										probeStatus.slot7DispatchCount),
-									static_cast<unsigned long long>(
-										probeStatus.commandListTagCount),
-									static_cast<unsigned long long>(
-										probeStatus.commandListExecuteCount));
+									"Direct slot-7 texture: %s",
+									probeStatus.parkColorTargetReady
+										? "captured" : "waiting for resource init");
 								ImGui::Text(
 									"Park-camera hooks: init %s | scheduler %s",
 									probeStatus.resourceInitHookInstalled

@@ -2751,7 +2751,10 @@ namespace dx11::internal_render_probe
 			formatScore + (exactSize ? 100U : 0U);
 		std::lock_guard<std::mutex> lock(
 			g_parkTextureMutex);
-		if (score <= g_parkColorTextureScore)
+		// Resource initialization creates the shared mirror targets before
+		// the dedicated park target. Prefer the latest equally good match so
+		// slot 7 replaces an earlier same-size mirror allocation.
+		if (score < g_parkColorTextureScore)
 			return;
 
 		release_com_object(g_parkColorTexture);

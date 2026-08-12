@@ -4206,8 +4206,28 @@ namespace dx11::internal_render_probe
 
 	void set_park_activation_requested(bool requested)
 	{
-		g_parkActivationRequested.store(
-			requested, std::memory_order_release);
+		const bool previous =
+			g_parkActivationRequested.exchange(
+				requested, std::memory_order_acq_rel);
+		if (!requested && previous)
+		{
+			g_independentExclusiveWindow.store(
+				false, std::memory_order_release);
+			g_independentOutputCapturePending.store(
+				false, std::memory_order_release);
+			g_independentSubmitDueTick.store(
+				0, std::memory_order_relaxed);
+			g_lastParkScheduleTick.store(
+				0, std::memory_order_relaxed);
+			g_lastParkForcedFrame.store(
+				UINT64_MAX, std::memory_order_relaxed);
+			g_parkMaskForced.store(
+				false, std::memory_order_relaxed);
+			release_park_color_target();
+			scs_log(0,
+				"[RTT custom] Internal park camera disabled; released "
+				"the plugin-owned independent snapshot.");
+		}
 	}
 
 	void set_park_render_requested(bool requested)
@@ -4230,7 +4250,21 @@ namespace dx11::internal_render_probe
 			g_parkMaskForced.store(
 				false, std::memory_order_relaxed);
 			if (previous)
-				release_park_color_target();
+			{
+				if (g_independentOutputCaptured.load(
+						std::memory_order_acquire))
+				{
+					scs_log(0,
+						"[RTT custom] Park rendering paused; retained "
+						"the plugin-owned independent snapshot.");
+				}
+				else
+				{
+					scs_log(0,
+						"[RTT custom] Park rendering paused; no "
+						"independent snapshot is available yet.");
+				}
+			}
 		}
 	}
 

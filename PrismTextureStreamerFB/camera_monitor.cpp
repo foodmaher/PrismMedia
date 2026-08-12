@@ -16,6 +16,7 @@ namespace
     HANDLE g_mapping{};
     prism_camera_monitor::SharedState* g_shared{};
     LONG g_consumedRequestSequence{};
+    LONG g_consumedPhaseRequestSequence{};
     std::atomic<uint64_t> g_runId{};
     std::atomic<uint64_t> g_frameSequence{};
     uint64_t g_lastHeartbeatTick{};
@@ -115,6 +116,8 @@ namespace camera_monitor
             g_shared->requestSequence = pendingRequest;
         }
         g_consumedRequestSequence = g_shared->requestSequence;
+        g_consumedPhaseRequestSequence =
+            g_shared->phaseRequestSequence;
         g_shared->magic = prism_camera_monitor::kMagic;
         g_shared->version = prism_camera_monitor::kVersion;
         publish(
@@ -220,12 +223,44 @@ namespace camera_monitor
         return true;
     }
 
+    bool consume_phase_request(uint32_t& phase)
+    {
+        phase = 0;
+        if (!g_shared && !initialize())
+            return false;
+        const LONG requested = g_shared->phaseRequestSequence;
+        if (requested == g_consumedPhaseRequestSequence)
+            return false;
+        g_consumedPhaseRequestSequence = requested;
+        phase = g_shared->requestedPhase;
+        return true;
+    }
+
     void begin_run(const char* detail)
     {
         if (!g_shared && !initialize())
             return;
         g_runId.fetch_add(1, std::memory_order_relaxed);
         g_frameSequence.store(0, std::memory_order_relaxed);
+        begin_write();
+        g_shared->frameSequence = 0;
+        g_shared->width = 0;
+        g_shared->height = 0;
+        g_shared->stride = 0;
+        g_shared->pixelBytes = 0;
+        g_shared->correlationSamples = 0;
+        g_shared->currentPhase = static_cast<uint32_t>(
+            prism_camera_monitor::CorrelationPhase::Idle);
+        g_shared->requestedPhase = 0;
+        g_shared->completedPhaseMask = 0;
+        g_shared->candidateCount = 0;
+        std::memset(
+            g_shared->instructionText, 0,
+            sizeof(g_shared->instructionText));
+        std::memset(
+            g_shared->candidates, 0,
+            sizeof(g_shared->candidates));
+        end_write();
         publish(
             prism_camera_monitor::Stage::DiagnosticStarted,
             prism_camera_monitor::kPluginConnected |
@@ -260,8 +295,19 @@ namespace camera_monitor
         g_shared->rejectedSlot7Jobs = rejectedSlot7Jobs;
         g_shared->taggedTargets = taggedTargets;
         g_shared->readbackFrames = readbackFrames;
+        g_shared->correlationSamples = 0;
+        g_shared->currentPhase = static_cast<uint32_t>(
+            prism_camera_monitor::CorrelationPhase::Idle);
+        g_shared->completedPhaseMask = 0;
+        g_shared->candidateCount = 0;
         copy_text(g_shared->stageText, stageText);
         copy_text(g_shared->detailText, detailText);
+        std::memset(
+            g_shared->instructionText, 0,
+            sizeof(g_shared->instructionText));
+        std::memset(
+            g_shared->candidates, 0,
+            sizeof(g_shared->candidates));
         end_write();
     }
 
@@ -310,6 +356,56 @@ namespace camera_monitor
         ++g_shared->readbackFrames;
         copy_text(g_shared->stageText, "Verified custom-camera frame");
         copy_text(g_shared->detailText, detailText);
+        end_write();
+    }
+
+    void publish_correlation(
+        prism_camera_monitor::Stage stage,
+        uint32_t flags,
+        prism_camera_monitor::CorrelationPhase phase,
+        uint32_t completedPhaseMask,
+        uint64_t correlationSamples,
+        const char* stageText,
+        const char* detailText,
+        const char* instructionText,
+        const prism_camera_monitor::CorrelationCandidate* candidates,
+        uint32_t candidateCount,
+        uint64_t observedRenderJobs,
+        uint64_t rejectedSlot7Jobs)
+    {
+        if (!g_shared)
+            return;
+        candidateCount = (std::min)(
+            candidateCount,
+            prism_camera_monitor::kMaximumCorrelationCandidates);
+        begin_write();
+        g_shared->stage = static_cast<uint32_t>(stage);
+        g_shared->flags = flags;
+        g_shared->errorCode = 0;
+        g_shared->updatedTick = GetTickCount64();
+        g_shared->runId = g_runId.load(std::memory_order_relaxed);
+        g_shared->observedRenderJobs = observedRenderJobs;
+        g_shared->rejectedSlot7Jobs = rejectedSlot7Jobs;
+        g_shared->taggedTargets = 0;
+        g_shared->readbackFrames = 0;
+        g_shared->correlationSamples = correlationSamples;
+        g_shared->currentPhase = static_cast<uint32_t>(phase);
+        g_shared->completedPhaseMask = completedPhaseMask;
+        g_shared->candidateCount = candidateCount;
+        copy_text(g_shared->stageText, stageText);
+        copy_text(g_shared->detailText, detailText);
+        copy_text(g_shared->instructionText, instructionText);
+        std::memset(
+            g_shared->candidates, 0,
+            sizeof(g_shared->candidates));
+        if (candidates && candidateCount != 0)
+        {
+            std::memcpy(
+                g_shared->candidates,
+                candidates,
+                static_cast<size_t>(candidateCount) *
+                    sizeof(prism_camera_monitor::CorrelationCandidate));
+        }
         end_write();
     }
 }

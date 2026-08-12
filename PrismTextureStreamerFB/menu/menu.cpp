@@ -2057,8 +2057,8 @@ void on_frame()
 										ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
 										"The GPS display is not used by this diagnosis.");
 									ImGui::TextWrapped(
-										"Start one diagnosis, then drive, change player cameras, "
-										"and show both mirrors during the 20-second window.");
+										"The companion guides seven captures: centred cabin, left, "
+										"right, exterior, both enlarged mirrors, then cabin again.");
 
 								const bool canTrace =
 										probeStatus.supportedBuild &&
@@ -2072,8 +2072,8 @@ void on_frame()
 									if (ImGui::Button(
 											"Open Camera Lab and start diagnosis"))
 									{
-										dx11::internal_render_probe::
-											begin_trace(20);
+											dx11::internal_render_probe::
+												begin_trace(180);
 									}
 								}
 								else
@@ -2085,8 +2085,8 @@ void on_frame()
 											: 0;
 									ImGui::TextColored(
 										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-										"Tracing: %.1f seconds left | "
-										"%zu targets observed",
+										"Guided diagnosis: %.1f seconds left | "
+										"%zu D3D targets observed",
 										static_cast<double>(
 											millisecondsLeft) / 1000.0,
 										probeStatus.candidateCount);
@@ -2205,20 +2205,19 @@ void on_frame()
 								{
 									ImGui::TextColored(
 										ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
-										"Independent Camera Lab: live status and verified "
-										"frames open in a separate monitor program.");
+										"Independent Camera Lab: guided camera-memory correlation "
+										"and ranked candidates open in a separate program.");
 									const auto parkStatus =
 										dx11::internal_render_probe::status();
 									ImGui::TextWrapped(
 										"Slot 7 and the old A/B/C/D copy paths are hard-disabled. "
-										"The GPS keeps its normal media unless a new camera state "
-										"and uniquely owned render target are both verified.");
+										"This read-only diagnosis never replaces the GPS media.");
 									if (!parkStatus.tracing)
 									{
 										if (ImGui::Button(
-											"Open Camera Lab and start 20-second diagnosis"))
+											"Open Camera Lab and start guided diagnosis"))
 										{
-											dx11::internal_render_probe::begin_trace(20);
+											dx11::internal_render_probe::begin_trace(180);
 										}
 									}
 									else

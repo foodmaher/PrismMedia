@@ -40,7 +40,7 @@ if (-not (Test-Path (Join-Path $MonitorDirectory 'PrismCameraMonitor.exe'))) {
     throw "Build completed but PrismCameraMonitor.exe was not found at: $MonitorDirectory"
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.11.23-independent-camera-lab'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.11.24-camera-memory-correlation'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }
@@ -71,7 +71,7 @@ Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (
     Join-Path $Runtime 'SPF-OPTIONAL')
 
 @"
-PrismTextureStreamerFB 3.11.23 Independent Camera Lab
+PrismTextureStreamerFB 3.11.24 Camera Memory Correlation
 
 Copy PrismTextureStreamerFB.dll and the PrismTextureStreamerFB folder into
 <ETS2 or ATS>\bin\win_x64\plugins. The DLL must stay directly in plugins.

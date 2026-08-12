@@ -571,6 +571,62 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		release_park_readback_resources_locked();
 	}
 
+	void release_legacy_park_sources_locked()
+	{
+		// A visual-interior/mirror resource rebuild invalidates the engine's
+		// A/B/C/D targets, but it does not invalidate our plugin-owned snapshot
+		// on the same D3D device. Drop only engine-owned observations here.
+		release_com_object(g_parkColorTexture);
+		for (auto& candidate : g_parkTargetCandidates)
+		{
+			release_com_object(candidate.texture);
+			candidate = {};
+		}
+		g_parkTargetCandidateCount = 0;
+		g_parkSelectedCandidate = kNoParkTargetCandidate;
+		g_parkColorTextureScore = 0;
+
+		if (g_independentColorTexture &&
+			g_independentOutputCaptured.load(
+				std::memory_order_acquire))
+		{
+			// Keep the compatibility alias and readiness/status fields coherent;
+			// actual display/readback paths use g_independentColorTexture directly.
+			g_parkColorTexture = g_independentColorTexture;
+			g_parkColorTexture->AddRef();
+			D3D11_TEXTURE2D_DESC description{};
+			g_independentColorTexture->GetDesc(&description);
+			g_parkColorTextureScore = UINT32_MAX;
+			g_parkTargetWidth.store(
+				description.Width, std::memory_order_relaxed);
+			g_parkTargetHeight.store(
+				description.Height, std::memory_order_relaxed);
+			g_parkTargetFormat.store(
+				static_cast<uint32_t>(description.Format),
+				std::memory_order_relaxed);
+			g_parkColorTargetReady.store(
+				true, std::memory_order_release);
+			scs_log(0,
+				"[RTT custom] Game mirror resources rebuilt; preserved "
+				"the plugin-owned independent snapshot.");
+			return;
+		}
+
+		g_parkColorTargetReady.store(
+			false, std::memory_order_relaxed);
+		g_parkTargetWidth.store(0, std::memory_order_relaxed);
+		g_parkTargetHeight.store(0, std::memory_order_relaxed);
+		g_parkTargetFormat.store(0, std::memory_order_relaxed);
+		release_park_sample_resources_locked();
+		release_park_readback_resources_locked();
+	}
+
+	void release_legacy_park_sources()
+	{
+		std::lock_guard<std::mutex> lock(g_parkTextureMutex);
+		release_legacy_park_sources_locked();
+	}
+
 	void release_park_color_target()
 	{
 		std::lock_guard<std::mutex> lock(g_parkTextureMutex);
@@ -1753,7 +1809,7 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			// GPU resources. Capture it now so the CreateTexture2D hook can
 			// distinguish slot 7 from the scaled side mirrors.
 			capture_camera_slot_descriptors();
-			release_park_color_target();
+			release_legacy_park_sources();
 		}
 		g_capturingParkResourceInit = parkInstalled;
 		g_originalResourceInit(visualInterior);

@@ -1,6 +1,6 @@
 # Independent Prism3D render submission test
 
-Version: `3.11.18-correlated-independent-snapshot`
+Version: `3.11.19-independent-snapshot-lifetime`
 
 This build validates the engine-owned render-job path discovered in the exact
 ETS2 executable with PE timestamp `0x6A426DE5` and image size `0x0382D000`.
@@ -23,6 +23,11 @@ observe and log changing mirror copy paths, but none can become the GPS image.
 If the independent copy is not proven, the display remains waiting rather than
 silently falling back to slot 7.
 
+The plugin-owned snapshot has a separate lifetime from the game's mirror and
+visual-interior resources. A camera or mirror resource rebuild drops only the
+legacy observations and preserves the owned snapshot. Full plugin shutdown,
+disabling park rendering, or starting a new diagnosis still releases it.
+
 Expected `game.log.txt` messages:
 
 ```text
@@ -31,6 +36,7 @@ Independent Prism3D render task submitted
 Independent Prism3D render task entered the engine renderer
 Independent output isolated into the plugin-owned target
 Independent submit attempted=yes succeeded=yes dispatched=1; isolated-output=yes copies=1 correlated-copies=1 tagged-targets=0
+Game mirror resources rebuilt; preserved the plugin-owned independent snapshot
 ```
 
 This validation still seeds one immutable render command from the custom park

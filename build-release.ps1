@@ -35,8 +35,12 @@ $ClientDirectory = Join-Path $ProjectRoot 'PrismMediaClient\bin\x64\Release\net4
 if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
 }
+$MonitorDirectory = Join-Path $ProjectRoot 'PrismCameraMonitor\bin\x64\Release\net48'
+if (-not (Test-Path (Join-Path $MonitorDirectory 'PrismCameraMonitor.exe'))) {
+    throw "Build completed but PrismCameraMonitor.exe was not found at: $MonitorDirectory"
+}
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.11.22-readback-scheduling-fix'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.11.23-independent-camera-lab'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }
@@ -47,6 +51,7 @@ New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
 New-Item -ItemType Directory -Path $Docs -Force | Out-Null
 Copy-Item $Dll $Package
 Copy-Item (Join-Path $ClientDirectory '*') $Runtime -Recurse
+Copy-Item (Join-Path $MonitorDirectory '*') $Runtime -Recurse
 Get-ChildItem $Runtime -Recurse -File |
     Where-Object { $_.Extension -in '.pdb', '.xml' } |
     Remove-Item -Force
@@ -58,7 +63,6 @@ Copy-Item (Join-Path $ProjectRoot 'V3.8-SPOTIFY-GAMEPAD-DIAGNOSTICS.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'V3.9-SPOTIFY-SESSION-BACKUPS.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'V3.10-VISUAL-AUDIO-INPUT.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'V3.11-SPF-TRAFFIC-RADIO.md') $Docs
-Copy-Item (Join-Path $ProjectRoot 'V3.11.2-MANUAL-PARK-CAMERA.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'INDEPENDENT-RENDER-TEST.md') $Docs
 $SpfBridge = Join-Path $Runtime 'SPF-OPTIONAL\PrismCameraBridge'
 New-Item -ItemType Directory -Path $SpfBridge -Force | Out-Null
@@ -67,11 +71,15 @@ Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (
     Join-Path $Runtime 'SPF-OPTIONAL')
 
 @"
-PrismTextureStreamerFB 3.11.22 Readback Scheduling Fix
+PrismTextureStreamerFB 3.11.23 Independent Camera Lab
 
 Copy PrismTextureStreamerFB.dll and the PrismTextureStreamerFB folder into
 <ETS2 or ATS>\bin\win_x64\plugins. The DLL must stay directly in plugins.
 Open the menu with Ctrl+F8.
+
+The Independent Camera Lab launches PrismCameraMonitor.exe from the plugin
+folder. It never uses slot 7 and never replaces GPS media with an unverified
+frame.
 "@ | Set-Content (Join-Path $Package 'INSTALL.txt')
 
 Write-Host ''

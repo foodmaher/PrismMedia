@@ -1960,16 +1960,13 @@ void on_frame()
 							ImGui::TextColored(
 								ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
 								"Expected impact: none forward; low while reversing");
-								ImGui::TextWrapped(
-									"The current legacy mode captures a calibrated part of the "
-									"game window. The experimental internal mode activates "
-									"ETS2's dormant park-camera slot and reads its 256x256 "
-									"result through a non-blocking three-buffer staging ring. "
-									"The GPS remains the stable CPU-writable texture proven by "
-									"the v2.8.1 loading-crash hotfix.");
+									ImGui::TextWrapped(
+										"Window crop remains the stable reverse view. The separate "
+										"Camera Lab observes the new independent Prism3D path and "
+										"shows live stages or verified frames without using slot 7.");
 
 							if (ImGui::TreeNode(
-								"Internal render-to-texture probe"))
+									"Independent Camera Lab"))
 							{
 								const auto probeStatus =
 									dx11::internal_render_probe::status();
@@ -2010,36 +2007,14 @@ void on_frame()
 										? "ready" : "waiting",
 									probeStatus.uavTargetHookInstalled
 										? "ready" : "not available");
-								ImGui::Text(
-									"Direct slot-7 texture: %s",
-									probeStatus.parkColorTargetReady
-										? "captured" : "waiting for resource init");
-								ImGui::Text(
-									"Park-camera hooks: init %s | scheduler %s",
-									probeStatus.resourceInitHookInstalled
-										? "ready" : "not available",
-									probeStatus.activeMaskHookInstalled
-										? "ready" : "not available");
-								ImGui::Text(
-									"Park activation: requested %s | "
-									"camera %s | resource %s",
-									probeStatus.parkActivationRequested
-										? "yes" : "no",
-									probeStatus.parkCameraInstalled
-										? "installed" : "not installed",
-									probeStatus.parkResourcePresent
-										? "created" : "not created");
-								ImGui::Text(
-									"Park render request: %s | "
-									"render schedules: %llu",
-									probeStatus.parkRenderRequested
-										? "active" : "inactive",
-									static_cast<unsigned long long>(
-										probeStatus.parkScheduleCount));
-								ImGui::Text(
-									"Scheduler calls seen: %llu",
-									static_cast<unsigned long long>(
-										probeStatus.mirrorScheduleCount));
+									ImGui::TextColored(
+										ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
+										"Slot 7: disabled for install, scheduling, capture, "
+										"readback, and display");
+									ImGui::Text(
+										"Native render jobs observed: %llu",
+										static_cast<unsigned long long>(
+											probeStatus.mirrorScheduleCount));
 
 								if (probeStatus.mirrorScheduleSeen)
 								{
@@ -2073,35 +2048,29 @@ void on_frame()
 									}
 								}
 
-								ImGui::Separator();
-								ImGui::TextWrapped(
-									"The internal camera is displayed automatically in reverse "
-									"or Preview after its live colour target is observed. The "
-									"trace remains optional diagnostics.");
-								ImGui::TextColored(
-									ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
-									"Normal forward driving has no additional park-camera "
-									"render cost.");
-								ImGui::TextWrapped(
-									"One-run diagnostic: start the trace, then Preview/reverse, "
-									"show left and right mirrors, switch camera 2 and return, "
-									"and rotate the interior view before the timer ends.");
+									ImGui::Separator();
+									ImGui::TextWrapped(
+										"The companion program shows the current pipeline stage, "
+										"render-job counters, the exact blocker, and a live image "
+										"only after source ownership is proven.");
+									ImGui::TextColored(
+										ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
+										"The GPS display is not used by this diagnosis.");
+									ImGui::TextWrapped(
+										"Start one diagnosis, then drive, change player cameras, "
+										"and show both mirrors during the 20-second window.");
 
 								const bool canTrace =
-									probeStatus.supportedBuild &&
-									probeStatus.mirrorHookInstalled &&
-									probeStatus.activeMaskHookInstalled &&
-									probeStatus.contextHookInstalled &&
-									(!probeStatus.parkActivationRequested ||
-										(probeStatus.parkCameraInstalled &&
-											probeStatus.parkResourcePresent &&
-											probeStatus.parkRenderRequested));
+										probeStatus.supportedBuild &&
+										probeStatus.mirrorHookInstalled &&
+											probeStatus.mirrorJobHookInstalled &&
+											probeStatus.contextHookInstalled;
 								ImGui::BeginDisabled(
 									!canTrace && !probeStatus.tracing);
 								if (!probeStatus.tracing)
 								{
 									if (ImGui::Button(
-										"Start 20-second comprehensive RTT trace"))
+											"Open Camera Lab and start diagnosis"))
 									{
 										dx11::internal_render_probe::
 											begin_trace(20);
@@ -2122,7 +2091,7 @@ void on_frame()
 											millisecondsLeft) / 1000.0,
 										probeStatus.candidateCount);
 									ImGui::SameLine();
-									if (ImGui::Button("Stop RTT trace"))
+										if (ImGui::Button("Stop Camera Lab diagnosis"))
 									{
 										dx11::internal_render_probe::
 											end_trace();
@@ -2150,18 +2119,14 @@ void on_frame()
 										const auto& candidate =
 											candidates[index];
 										ImGui::Text(
-											"#%u  %ux%u  %s  "
-											"slot 0x%03X binds %llu "
-											"OM/UAV %llu/%llu "
-											"slot7 during/after %llu/%llu",
+											"#%u  %ux%u  %s  binds %llu "
+											"OM/UAV %llu/%llu",
 											candidate.id,
 											candidate.width,
 											candidate.height,
 											dx11::internal_render_probe::
 												format_name(
 													candidate.format),
-											candidate.
-												matchingCameraSlotMask,
 											static_cast<
 												unsigned long long>(
 													candidate.bindCount),
@@ -2170,11 +2135,7 @@ void on_frame()
 													candidate.omSetRenderTargetsBindCount),
 											static_cast<
 												unsigned long long>(
-													candidate.omSetRenderTargetsUavBindCount),
-											static_cast<unsigned long long>(
-												candidate.duringSlot7BindCount),
-											static_cast<unsigned long long>(
-												candidate.afterSlot7BindCount));
+													candidate.omSetRenderTargetsUavBindCount));
 									}
 									ImGui::TextWrapped(
 										"Full results were written to game.log.txt. "
@@ -2198,9 +2159,9 @@ void on_frame()
 								ImGui::Text(
 									"Reverse detected: %s",
 									g_reverse_active.load() ? "Yes" : "No");
-								static const char* reverseMethodNames[] = {
-									"Window crop (stable)",
-									"Internal park camera (safe staged test)"
+									static const char* reverseMethodNames[] = {
+										"Window crop (stable)",
+										"Independent Camera Lab (slot 7 disabled)"
 								};
 								int reverseMethod = static_cast<int>(
 									screen.reverseCameraMethod);
@@ -2244,97 +2205,28 @@ void on_frame()
 								{
 									ImGui::TextColored(
 										ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
-										"Safe output: engine target -> non-blocking staging "
-										"ring -> stable dynamic GPS texture.");
+										"Independent Camera Lab: live status and verified "
+										"frames open in a separate monitor program.");
 									const auto parkStatus =
 										dx11::internal_render_probe::status();
-									ImGui::TextColored(
-										parkStatus.parkCameraInstalled &&
-											parkStatus.parkResourcePresent &&
-											parkStatus.parkReadbackReady
-											? ImVec4(
-												0.35f, 0.85f, 0.40f, 1.0f)
-											: ImVec4(
-												1.0f, 0.72f, 0.25f, 1.0f),
-										"Internal slot 7: %s | resource: %s | "
-										"readback: %s",
-										parkStatus.parkCameraInstalled
-											? "installed" : "waiting",
-										parkStatus.parkResourcePresent
-											? "ready" : "waiting",
-										parkStatus.parkReadbackReady
-											? "ready" : "waiting");
-									static const char* targetChoices[] = {
-										"Auto copy path", "Copy path A", "Copy path B",
-										"Copy path C", "Copy path D"
-									};
-									int targetChoice = static_cast<int>(
-										screen.reverseInternalTargetVariant);
-									if (ImGui::Combo(
-										"Park source copy path",
-										&targetChoice, targetChoices,
-										static_cast<int>(std::size(targetChoices))))
-									{
-										screen.reverseInternalTargetVariant =
-											static_cast<uint8_t>(targetChoice);
-										saveConfiguration = true;
-									}
-									ImGui::Text(
-										"Source paths found: %u | selected: %s",
-										parkStatus.parkTargetCandidateCount,
-										parkStatus.parkSelectedCandidate == 0
-											? "none/auto"
-											: targetChoices[(std::min)(
-												static_cast<int>(
-															parkStatus.parkSelectedCandidate), 4)]);
 									ImGui::TextWrapped(
-										"Each letter is one source-to-destination write. The "
-										"selected write is captured immediately, before an "
-										"enlarged mirror can overwrite the shared texture.");
-									if (!parkStatus.parkCameraInstalled)
+										"Slot 7 and the old A/B/C/D copy paths are hard-disabled. "
+										"The GPS keeps its normal media unless a new camera state "
+										"and uniquely owned render target are both verified.");
+									if (!parkStatus.tracing)
 									{
-										ImGui::TextWrapped(
-											"Save this selection, return to the "
-											"profile/truck menu, and load the truck "
-											"again. ETS2 creates mirror resources "
-											"only while the truck interior loads.");
-									}
-									else if (!parkStatus.parkColorTargetReady)
-									{
-										ImGui::TextWrapped(
-											"Put the truck in reverse or enable Preview. "
-											"Normal media remains visible until the live "
-											"park target is observed.");
+										if (ImGui::Button(
+											"Open Camera Lab and start 20-second diagnosis"))
+										{
+											dx11::internal_render_probe::begin_trace(20);
+										}
 									}
 									else
 									{
 										ImGui::TextColored(
-											ImVec4(
-												0.35f, 0.85f, 0.40f, 1.0f),
-											"GPU target: %ux%u %s | staged pixels: %s",
-											parkStatus.parkTargetWidth,
-											parkStatus.parkTargetHeight,
-											dx11::internal_render_probe::
-												format_name(
-													parkStatus.
-														parkTargetFormat),
-											parkStatus.parkReadbackReady
-												? "ready" : "waiting");
-										ImGui::Text(
-											"Target FPS: %u | decoded frames: %llu | "
-											"busy skips: %llu",
-											parkStatus.parkTargetFramerate,
-											static_cast<unsigned long long>(
-												parkStatus.parkOutputFrames),
-											static_cast<unsigned long long>(
-												parkStatus.
-													parkReadbackBusySkips));
+											ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+											"Camera Lab diagnosis is running in the companion window.");
 									}
-
-									ImGui::TextWrapped(
-										"Slot 7 is selected from the engine's queued render "
-										"job. Left/right mirrors and camera visibility no "
-										"longer participate in park-frame selection.");
 
 									ImGui::SeparatorText("Park camera alignment");
 									if (ImGui::Checkbox(
@@ -2342,8 +2234,9 @@ void on_frame()
 										&screen.reverseCameraKitInstalled))
 										saveConfiguration = true;
 									ImGui::TextWrapped(
-										"Enable Preview above while adjusting. The default "
-										"anchor moves with the truck and does not require SPF.");
+										"These values are saved for the future independent "
+										"camera. They are not applied until Camera Lab verifies "
+										"a writable Prism3D camera state.");
 									if (screen.reverseCameraKitInstalled)
 									{
 										if (ImGui::Checkbox(
@@ -2491,11 +2384,9 @@ void on_frame()
 										break;
 									}
 									ImGui::TextWrapped(
-										"Park-camera render cost is zero forward: slot 7 "
-										"is scheduled only in reverse or Preview. Normal "
-										"media returns to the stable direct dynamic-texture "
-										"upload path. Readback maps never wait for the GPU; "
-										"a busy frame is dropped instead.");
+										"Camera Lab never schedules slot 7. The companion "
+										"viewer receives only a verified custom-camera frame; "
+										"otherwise it reports the exact blocked stage in real time.");
 								}
 								else
 								{

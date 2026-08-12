@@ -55,11 +55,17 @@ jobs:
           if (-not (Test-Path $Bridge)) {
               throw "Expected SPF companion was not produced: $Bridge"
           }
+          $Monitor = "PrismCameraMonitor\bin\x64\Release\net48\PrismCameraMonitor.exe"
+          if (-not (Test-Path $Monitor)) {
+              throw "Expected Camera Lab monitor was not produced: $Monitor"
+          }
 
           Get-Item $Dll
           Get-FileHash -Algorithm SHA256 $Dll
           Get-Item $Bridge
           Get-FileHash -Algorithm SHA256 $Bridge
+          Get-Item $Monitor
+          Get-FileHash -Algorithm SHA256 $Monitor
 
       - name: Assemble install package
         shell: pwsh
@@ -68,14 +74,19 @@ jobs:
           $Runtime = "$Package\PrismTextureStreamerFB"
           $Docs = "$Runtime\docs"
           $Client = "PrismMediaClient\bin\x64\Release\net48"
+          $Monitor = "PrismCameraMonitor\bin\x64\Release\net48"
           if (-not (Test-Path "$Client\PrismMediaClient.exe")) {
               throw "PrismMediaClient.exe was not produced in $Client"
+          }
+          if (-not (Test-Path "$Monitor\PrismCameraMonitor.exe")) {
+              throw "PrismCameraMonitor.exe was not produced in $Monitor"
           }
 
           New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
           New-Item -ItemType Directory -Path $Docs -Force | Out-Null
           Copy-Item "x64\Release\PrismTextureStreamerFB.dll" $Package
           Copy-Item "$Client\*" $Runtime -Recurse
+          Copy-Item "$Monitor\*" $Runtime -Recurse
           Get-ChildItem $Runtime -Recurse -File |
               Where-Object { $_.Extension -in '.pdb', '.xml' } |
               Remove-Item -Force
@@ -96,7 +107,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Runtime\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 3.11.22 Readback Scheduling Fix
+          PrismTextureStreamerFB 3.11.23 Independent Camera Lab
 
           Copy PrismTextureStreamerFB.dll AND the PrismTextureStreamerFB
           folder into:
@@ -105,6 +116,9 @@ jobs:
           The DLL must remain directly in plugins so the game can load it.
           All helper files are organized in the folder. Open the menu with
           Ctrl+F8.
+
+          Camera Lab launches PrismCameraMonitor.exe from the helper folder.
+          Slot 7 is disabled and unverified frames never replace GPS media.
 
           Read PrismTextureStreamerFB\SPF-OPTIONAL\SPF-BRIDGE-INSTALL.txt
           only if you want exact external-camera distance audio.
@@ -115,7 +129,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-3.11.22-readback-scheduling-fix
+          name: PrismTextureStreamerFB-3.11.23-independent-camera-lab
           path: package
           if-no-files-found: error
           retention-days: 30

@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.11.22-readback-scheduling-fix";
+inline const char* g_version = "3.11.23-independent-camera-lab";

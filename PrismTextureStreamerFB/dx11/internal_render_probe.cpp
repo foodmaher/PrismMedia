@@ -22,6 +22,7 @@
 
 #include "../scs_logging.h"
 #include "../telemetry_state.h"
+#include "../camera_monitor.h"
 
 using namespace scs_logging;
 
@@ -49,6 +50,14 @@ namespace
 	constexpr uint32_t kMaximumParkTargetCandidates = 4;
 	constexpr uint32_t kNoParkTargetCandidate = UINT32_MAX;
 	constexpr uint32_t kMaximumIndependentRenderTargets = 32;
+	// The previous experiment proved that slot 7 always supplies the game's
+	// park-camera view. It is now hard-disabled: no camera installation, mask
+	// scheduling, command cloning, timed copy correlation, GPS upload, or
+	// monitor frame may originate from slot 7.
+	constexpr bool kSlot7CameraPathEnabled = false;
+	// Camera Lab is intentionally separated from the in-game GPS. Even a
+	// verified future frame is published only to PrismCameraMonitor.exe.
+	constexpr bool kCameraLabViewerOnly = true;
 	// Never allow the legacy A/B/C/D slot-7 candidates to become the GPS
 	// image in an independent-camera build. They remain observable only so
 	// diagnostics can prove that mirrors are active without displaying them.
@@ -273,6 +282,10 @@ namespace
 	std::atomic<uint64_t> g_independentSubmitDueTick{};
 	std::atomic<bool> g_independentOutputCapturePending{};
 	std::atomic<bool> g_independentOutputCaptured{};
+	std::atomic<bool> g_customCameraStateVerified{};
+	std::atomic<uint64_t> g_cameraLabObservedJobs{};
+	std::atomic<uint64_t> g_cameraLabRejectedSlot7Jobs{};
+	std::atomic<uint64_t> g_cameraLabLastPublishTick{};
 	std::atomic<uint64_t> g_independentOutputArmedTick{};
 	std::atomic<uint32_t> g_independentOutputCopyCount{};
 	std::atomic<uint32_t> g_independentCorrelatedCopyCount{};
@@ -996,6 +1009,17 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			g_parkDiagnosticImageSaved.store(
 				true, std::memory_order_release);
 		}
+		if (g_customCameraStateVerified.load(
+				std::memory_order_acquire))
+		{
+			camera_monitor::publish_frame(
+				g_parkReadbackPixels.data(),
+				g_parkReadbackWidth,
+				g_parkReadbackHeight,
+				g_parkReadbackWidth * 4,
+				"Frame accepted because both the custom camera state and "
+				"plugin-owned render target were uniquely verified.");
+		}
 		g_parkOutputFrames.fetch_add(
 			1, std::memory_order_relaxed);
 		return true;
@@ -1677,6 +1701,15 @@ float4 ps_main(PixelInput input) : SV_TARGET
 
 	bool try_install_park_camera(void* visualInterior)
 	{
+		if (!kSlot7CameraPathEnabled)
+		{
+			g_parkCameraInstalled.store(
+				false, std::memory_order_relaxed);
+			g_parkResourcePresent.store(
+				false, std::memory_order_relaxed);
+			g_parkCamera.store(nullptr, std::memory_order_relaxed);
+			return false;
+		}
 		if (!visualInterior ||
 			!g_parkActivationRequested.load(
 				std::memory_order_relaxed))
@@ -2020,6 +2053,12 @@ float4 ps_main(PixelInput input) : SV_TARGET
 	{
 		uint32_t result =
 			g_originalActiveMask(visualInterior, state);
+		if (!kSlot7CameraPathEnabled)
+		{
+			g_parkMaskForced.store(
+				false, std::memory_order_relaxed);
+			return result;
+		}
 		const bool parkEligible =
 			(state == 2 || state == 12) &&
 			g_parkRenderRequested.load(
@@ -2523,6 +2562,46 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				std::memory_order_acquire));
 		const bool renderingParkSlot =
 			g_renderingMirrorSlot == static_cast<int32_t>(kParkSlot);
+		if (!kSlot7CameraPathEnabled)
+		{
+			const uint64_t observed =
+				g_cameraLabObservedJobs.fetch_add(
+					1, std::memory_order_relaxed) + 1;
+			if (renderingParkSlot)
+				g_cameraLabRejectedSlot7Jobs.fetch_add(
+					1, std::memory_order_relaxed);
+
+			const uint64_t now = GetTickCount64();
+			uint64_t previous = g_cameraLabLastPublishTick.load(
+				std::memory_order_relaxed);
+			if (g_tracing.load(std::memory_order_relaxed) &&
+				(previous == 0 || now < previous || now - previous >= 500) &&
+				g_cameraLabLastPublishTick.compare_exchange_strong(
+					previous, now, std::memory_order_acq_rel))
+			{
+				camera_monitor::publish(
+					prism_camera_monitor::Stage::CameraStateDiscovery,
+					prism_camera_monitor::kPluginConnected |
+						prism_camera_monitor::kSlot7Disabled |
+						prism_camera_monitor::kDiagnosticRunning,
+					"Observing Prism3D camera jobs",
+					"Looking for a camera constructor or matrix block that "
+					"can be owned and changed without any mirror slot. Slot-7 "
+					"jobs are counted and rejected; they are never submitted, "
+					"captured, read back, or displayed.",
+					0,
+					observed,
+					g_cameraLabRejectedSlot7Jobs.load(
+						std::memory_order_relaxed),
+					0,
+					0);
+			}
+
+			g_originalMirrorRenderDispatch(
+				renderer, renderContext, renderCommand);
+			g_renderingMirrorSlot = previousSlot;
+			return;
+		}
 		if (renderingParkSlot)
 		{
 			g_slot7DispatchCount.fetch_add(1, std::memory_order_relaxed);
@@ -3139,9 +3218,13 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		// final park-sized copy after dispatch (16-82 ms in verified runs).
 		// Accept that one narrowly bounded copy, then immediately freeze it in
 		// our owned texture. Legacy A/B/C/D paths remain unable to display.
-		const bool boundedPostDispatchCopy =
-			!taggedSource && elapsed <= 250;
-		if (!taggedSource && !boundedPostDispatchCopy)
+		// Timing correlation was the reason a slot-7 image was accepted. The
+		// new path accepts only a uniquely tagged target from a verified custom
+		// camera state. There is deliberately no shared-texture fallback.
+		const bool boundedPostDispatchCopy = false;
+		if (!taggedSource ||
+			!g_customCameraStateVerified.load(
+				std::memory_order_acquire))
 			return false;
 
 		const uint32_t parkWidth = g_slotWidth[kParkSlot].load(
@@ -3664,6 +3747,7 @@ namespace dx11::internal_render_probe
 {
 	bool init()
 	{
+		camera_monitor::initialize();
 		g_executableBase = reinterpret_cast<uint8_t*>(
 			GetModuleHandleW(nullptr));
 		const executable_fingerprint_t fingerprint =
@@ -3815,6 +3899,14 @@ namespace dx11::internal_render_probe
 				}
 			}
 		}
+		camera_monitor::publish(
+			prism_camera_monitor::Stage::Slot7Blocked,
+			prism_camera_monitor::kPluginConnected |
+				prism_camera_monitor::kSlot7Disabled,
+			"Slot 7 permanently disabled",
+			"The independent camera experiment cannot install, schedule, "
+			"clone, capture, read back, or display slot 7. Start a Camera "
+			"Lab diagnostic to inspect the new path.");
 
 		// Do not add any D3D11 interception on ATS or a different ETS2
 		// executable. The observer is useful only when the exact internal
@@ -3991,6 +4083,7 @@ namespace dx11::internal_render_probe
 			release_park_color_target_locked();
 			release_park_compositor_locked();
 		}
+		camera_monitor::shutdown();
 	}
 
 	void on_game_context_available(ID3D11DeviceContext* context)
@@ -4120,6 +4213,9 @@ namespace dx11::internal_render_probe
 
 	void on_present_frame(ID3D11DeviceContext* context)
 	{
+		camera_monitor::heartbeat();
+		if (camera_monitor::consume_run_request())
+			begin_trace(20);
 		g_frameIndex.fetch_add(
 			1, std::memory_order_relaxed);
 
@@ -4266,18 +4362,54 @@ namespace dx11::internal_render_probe
 
 	void begin_trace(uint32_t seconds)
 	{
+		camera_monitor::launch_viewer();
 		if (!g_supportedBuild.load() ||
 			!g_mirrorHookInstalled.load() ||
-			!g_activeMaskHookInstalled.load() ||
+			!g_mirrorJobHookInstalled.load() ||
 			!g_contextHookInstalled.load())
 		{
+			camera_monitor::begin_run(
+				"Camera Lab could not start because one or more required "
+				"Prism3D/D3D11 observers are unavailable.");
+			camera_monitor::publish(
+				prism_camera_monitor::Stage::Failed,
+				prism_camera_monitor::kPluginConnected |
+					prism_camera_monitor::kSlot7Disabled,
+				"Required observer unavailable",
+				!g_supportedBuild.load()
+					? "This game executable is not the exact supported ETS2 "
+						"build, so no internal addresses were used."
+					: "The Prism3D scheduler, render-job observer, or D3D11 "
+						"context observer failed to install. Check game.log.txt.");
 			return;
 		}
 
 		seconds = (std::clamp)(seconds, 3U, 30U);
-		// A strict independent test must never leave a legacy slot-7 frame on
-		// screen. Clear every previous source; only the independently tagged
-		// copy below is allowed to repopulate the GPS texture.
+		g_customCameraStateVerified.store(
+			false, std::memory_order_release);
+		g_cameraLabObservedJobs.store(
+			0, std::memory_order_relaxed);
+		g_cameraLabRejectedSlot7Jobs.store(
+			0, std::memory_order_relaxed);
+		g_cameraLabLastPublishTick.store(
+			0, std::memory_order_relaxed);
+		g_parkOutputFrames.store(
+			0, std::memory_order_relaxed);
+		camera_monitor::begin_run(
+			"Slot 7 is hard-disabled. The plugin is observing Prism3D "
+			"render jobs for a camera state and target that can be owned "
+			"independently. No unverified image is sent to the GPS.");
+		camera_monitor::publish(
+			prism_camera_monitor::Stage::CameraStateDiscovery,
+			prism_camera_monitor::kPluginConnected |
+				prism_camera_monitor::kSlot7Disabled |
+				prism_camera_monitor::kDiagnosticRunning,
+			"Waiting for independent camera state",
+			"The previous slot-7 command template is no longer captured "
+			"or submitted. Discovery will stop at this stage until a real "
+			"camera constructor or writable matrix block is verified.");
+		// Clear any snapshot left by an older build. This diagnostic never
+		// routes its output through the GPS texture.
 		release_park_color_target();
 		g_parkDiagnosticImageSaved.store(
 			false, std::memory_order_release);
@@ -4355,12 +4487,12 @@ namespace dx11::internal_render_probe
 		g_traceEndTick.store(
 			now + static_cast<uint64_t>(seconds) * 1000);
 		g_tracing.store(true, std::memory_order_release);
-			scs_log(
-				0,
-				"[RTT probe] Starting %u-second "
-				"render-target and resource-lineage trace; "
-				"park scheduling remains at its configured rate",
-				seconds);
+		scs_log(
+			0,
+			"[Camera Lab] Starting %u-second independent-camera "
+			"discovery. Slot 7 is disabled and will only be counted "
+			"as a rejected native job.",
+			seconds);
 	}
 
 	void end_trace()
@@ -4374,35 +4506,84 @@ namespace dx11::internal_render_probe
 		log_trace_results(results);
 		scs_log(
 			0,
-			"[RTT custom] Diagnostic finished with %u time-spaced "
-			"slot-7 command snapshots and %u high-level worker snapshots. "
-			"Independent submit attempted=%s succeeded=%s dispatched=%u; "
-			"isolated-output=%s copies=%u correlated-copies=%u "
-			"tagged-targets=%u.",
-			g_independentCameraSnapshots.load(
-				std::memory_order_relaxed),
-			g_independentWorkerSnapshots.load(
-				std::memory_order_relaxed),
-			g_independentSubmitAttempted.load(
+			"[Camera Lab] Diagnostic finished: observed-jobs=%llu "
+			"rejected-slot7=%llu verified-camera=%s tagged-targets=%u "
+			"readback-frames=%llu.",
+			static_cast<unsigned long long>(
+				g_cameraLabObservedJobs.load(std::memory_order_relaxed)),
+			static_cast<unsigned long long>(
+				g_cameraLabRejectedSlot7Jobs.load(
+					std::memory_order_relaxed)),
+			g_customCameraStateVerified.load(
 				std::memory_order_relaxed) ? "yes" : "no",
-			g_independentSubmitSucceeded.load(
-				std::memory_order_relaxed) ? "yes" : "no",
-			g_independentDispatchCount.load(
-				std::memory_order_relaxed),
-			g_independentOutputCaptured.load(
-				std::memory_order_relaxed) ? "yes" : "no",
-			g_independentOutputCopyCount.load(
-				std::memory_order_relaxed),
-			g_independentCorrelatedCopyCount.load(
-				std::memory_order_relaxed),
 			g_independentTaggedTargetCount.load(
-				std::memory_order_relaxed));
+				std::memory_order_relaxed),
+			static_cast<unsigned long long>(
+				g_parkOutputFrames.load(std::memory_order_relaxed)));
 		g_independentExclusiveWindow.store(
 			false, std::memory_order_release);
 		g_independentOutputCapturePending.store(
 			false, std::memory_order_release);
 		g_parkMaskForced.store(
 			false, std::memory_order_relaxed);
+		if (!g_customCameraStateVerified.load(
+				std::memory_order_acquire))
+		{
+			camera_monitor::publish(
+				prism_camera_monitor::Stage::Blocked,
+				prism_camera_monitor::kPluginConnected |
+					prism_camera_monitor::kSlot7Disabled,
+				"Stopped at custom camera-state discovery",
+				"No safe independent camera constructor or writable camera "
+				"matrix was verified in this run. Slot-7 jobs were rejected, "
+				"so no frame was captured or uploaded. This is the exact "
+				"current blocker—not GPU capture or readback.",
+				0,
+				g_cameraLabObservedJobs.load(
+					std::memory_order_relaxed),
+				g_cameraLabRejectedSlot7Jobs.load(
+					std::memory_order_relaxed),
+				g_independentTaggedTargetCount.load(
+					std::memory_order_relaxed),
+				g_parkOutputFrames.load(
+					std::memory_order_relaxed));
+		}
+		else if (g_independentTaggedTargetCount.load(
+				std::memory_order_acquire) == 0)
+		{
+			camera_monitor::publish(
+				prism_camera_monitor::Stage::Blocked,
+				prism_camera_monitor::kPluginConnected |
+					prism_camera_monitor::kSlot7Disabled |
+					prism_camera_monitor::kCameraStateVerified,
+				"Stopped at plugin-owned render-target discovery",
+				"The independent camera state was verified, but no uniquely "
+				"owned render target was tagged. No shared mirror texture was "
+				"accepted as a fallback.",
+				0,
+				g_cameraLabObservedJobs.load(std::memory_order_relaxed),
+				g_cameraLabRejectedSlot7Jobs.load(
+					std::memory_order_relaxed));
+		}
+		else if (g_parkOutputFrames.load(
+				std::memory_order_acquire) == 0)
+		{
+			camera_monitor::publish(
+				prism_camera_monitor::Stage::Blocked,
+				prism_camera_monitor::kPluginConnected |
+					prism_camera_monitor::kSlot7Disabled |
+					prism_camera_monitor::kCameraStateVerified |
+					prism_camera_monitor::kOwnedTargetVerified,
+				"Stopped at GPU-to-CPU readback",
+				"The independent camera and owned target were verified, but "
+				"no frame completed the non-blocking staging readback.",
+				0,
+				g_cameraLabObservedJobs.load(std::memory_order_relaxed),
+				g_cameraLabRejectedSlot7Jobs.load(
+					std::memory_order_relaxed),
+				g_independentTaggedTargetCount.load(
+					std::memory_order_relaxed));
+		}
 	}
 
 	void set_park_activation_requested(bool requested)
@@ -4662,6 +4843,14 @@ namespace dx11::internal_render_probe
 		uint32_t& height,
 		uint64_t& sequence)
 	{
+		if (kCameraLabViewerOnly)
+			return false;
+		if (!kSlot7CameraPathEnabled &&
+			!g_customCameraStateVerified.load(
+				std::memory_order_acquire))
+		{
+			return false;
+		}
 		std::lock_guard<std::mutex> lock(
 			g_parkTextureMutex);
 		if (!g_parkReadbackReady ||
@@ -4687,6 +4876,8 @@ namespace dx11::internal_render_probe
 		uint32_t scaleMode,
 		uint32_t edgeGuard)
 	{
+		if (kCameraLabViewerOnly)
+			return false;
 		if (!context || !destination || !destinationView)
 			return false;
 

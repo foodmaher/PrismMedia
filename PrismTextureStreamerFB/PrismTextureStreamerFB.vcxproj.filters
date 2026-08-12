@@ -35,6 +35,9 @@
     <ClCompile Include="camera_bridge_client.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="camera_monitor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="diagnostic_log.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -104,6 +107,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="camera_bridge_client.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="camera_monitor.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Shared\PrismCameraMonitorShared.h">
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="engine_standby.h">

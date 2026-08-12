@@ -141,6 +141,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="camera_bridge_client.cpp" />
+    <ClCompile Include="camera_monitor.cpp" />
     <ClCompile Include="diagnostic_log.cpp" />
     <ClCompile Include="dinput8\dinput8.cpp" />
     <ClCompile Include="dllmain.cpp" />
@@ -167,6 +168,8 @@
   <ItemGroup>
     <ClInclude Include="bmem.h" />
     <ClInclude Include="camera_bridge_client.h" />
+    <ClInclude Include="camera_monitor.h" />
+    <ClInclude Include="..\Shared\PrismCameraMonitorShared.h" />
     <ClInclude Include="diagnostic_log.h" />
     <ClInclude Include="engine_standby.h" />
     <ClInclude Include="dinput8\dinput8.h" />

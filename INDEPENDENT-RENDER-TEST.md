@@ -1,63 +1,57 @@
-# Independent Prism3D render submission test
+# Independent Camera Lab
 
-Version: `3.11.22-readback-scheduling-fix`
+Version: `3.11.23-independent-camera-lab`
 
-This build validates the engine-owned render-job path discovered in the exact
-ETS2 executable with PE timestamp `0x6A426DE5` and image size `0x0382D000`.
+This build separates the experimental Prism3D camera work from the GPS display.
+`PrismCameraMonitor.exe` is a companion window that receives pipeline telemetry
+through a versioned local shared-memory channel. It shows the current stage,
+render-job counters, a timeline, the exact failure/blocker text, and a live BGRA
+preview only after both the camera state and the render target are verified as
+independently owned.
 
-The **Run diagnosis** action submits one additional Prism3D render task via RVA
-`0x00722BA0`. The task owns its own `0x28590`-byte renderer state and is
-executed through RVA `0x00722B80` into the scene renderer at RVA `0x00722020`.
-Only one task is submitted per diagnosis run.
+## Slot 7 policy
 
-Normal mirror scheduling is not paused. Prism3D performs the task's D3D work
-asynchronously and reuses a shared engine render resource, so a unique target
-identity is not always exposed while the dispatch hook is active. The plugin
-first accepts a directly tagged task target when available; otherwise it
-accepts only the first final 256x256 RGBA16F copy within 250 ms of the confirmed
-independent dispatch. The verified runs produced that copy after 16-82 ms. The
-result is immediately snapshotted into a plugin-owned shader texture.
+Slot 7 is hard-disabled in the experimental path. The plugin does not install a
+camera into it, force its active-mask bit, clone its render command, schedule it,
+accept its texture, read it back, or send it to the GPS/monitor. Native slot-7
+jobs may still be observed and counted so the monitor can prove they were
+rejected. The old A/B/C/D copy selector is removed from the menu.
 
-The legacy A/B/C/D candidate selector is diagnostic-only in this build. It can
-observe and log changing mirror copy paths, but none can become the GPS image.
-If the independent copy is not proven, the display remains waiting rather than
-silently falling back to slot 7.
+The normal GPS media path remains unchanged. Camera Lab never replaces it with
+an unverified frame.
 
-The plugin-owned snapshot has a separate lifetime from the game's mirror and
-visual-interior resources. A camera or mirror resource rebuild drops only the
-legacy observations and preserves the owned snapshot. Leaving reverse or
-turning Preview off merely pauses new render submission and also preserves the
-snapshot. Full plugin shutdown, disabling the internal park-camera feature, or
-starting a new diagnosis releases it.
+## Running the diagnosis
 
-After the first successful independent GPU readback, the plugin also overwrites
-`Documents\ETS2\PrismParkCapture.bmp` with the decoded frame. This file proves
-what was captured independently of whether the GPS upload path displays it.
-The previous BMP is removed when a new diagnosis begins, so a remaining image
-cannot be mistaken for a successful capture from the current run.
+1. Install both `PrismTextureStreamerFB.dll` and the
+   `PrismTextureStreamerFB` folder.
+2. Open the plugin menu with Ctrl+F8.
+3. Under **Automatic Reverse Camera**, open **Independent Camera Lab** and
+   select **Open Camera Lab and start diagnosis**.
+4. During the 20-second run, drive, switch player cameras, and show both side
+   mirrors.
 
-Expected `game.log.txt` messages:
+The companion can also start another run with **Start new diagnostic**. The
+request is consumed by the plugin on its next Present frame.
 
-```text
-independent submit=ready
-Independent Prism3D render task submitted
-Independent Prism3D render task entered the engine renderer
-Independent output isolated into the plugin-owned target
-Independent submit attempted=yes succeeded=yes dispatched=1; isolated-output=yes copies=1 correlated-copies=1 tagged-targets=0
-Game mirror resources rebuilt; preserved the plugin-owned independent snapshot
-Park rendering paused; retained the plugin-owned independent snapshot
-Saved independent park capture to Documents\ETS2\PrismParkCapture.bmp
-Independent snapshot re-armed after first staging initialization
-Independent snapshot submitted to CPU staging (order=1)
-Independent CPU readback decoded: 256x256 sequence=1
-```
+## Meaning of the stages
 
-This validation still seeds one immutable render command from the custom park
-camera path. After diagnosis, the GPS must display only the plugin-owned
-snapshot and remain stable when left/right mirrors or the player camera change.
-The snapshot is intentionally one frame; continuous independent updates and
-fully synthetic camera-matrix updates come only after strict source ownership
-is visually confirmed.
+- **Plugin ready / Slot 7 blocked**: the IPC channel is active and the legacy
+  source cannot enter this path.
+- **Discovering independent camera state**: Prism3D jobs are visible, but a
+  safe camera constructor or writable matrix block has not been verified.
+- **Independent camera state ready**: a camera object not owned by a mirror slot
+  has been verified.
+- **Plugin-owned render target ready / Job submitted / Renderer entered**:
+  independent submission is progressing.
+- **Unique render target tagged / Readback pending / Verified frame ready**:
+  source ownership is proven and live monitor frames can be published.
+- **Blocked / Failed**: the detail panel states the first missing prerequisite.
+
+For the currently known ETS2 executable, the expected honest result is likely
+**Blocked at custom camera-state discovery**. Earlier testing proved that GPU
+copy and CPU readback work, but that test was seeded from slot 7. This build no
+longer accepts that seed, so it deliberately shows where new reverse-engineering
+work must continue instead of displaying the same slot-7 image again.
 
 The cursor, audio, Spotify/Web Helper, and DirectInput behavior are unchanged
 from the supplied working source.

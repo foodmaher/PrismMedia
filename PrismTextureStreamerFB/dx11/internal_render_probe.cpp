@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <intrin.h>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -1984,7 +1985,44 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			renderer, renderContext, renderCommand,
 			g_workerRenderer, g_workerRenderContext,
 			g_workerCameraInput, g_workerRenderRequest);
+		void* stackFrames[16]{};
+		const USHORT stackCount = RtlCaptureStackBackTrace(
+			0, static_cast<ULONG>(std::size(stackFrames)),
+			stackFrames, nullptr);
+		for (USHORT index = 0; index < stackCount; ++index)
+		{
+			const uintptr_t address =
+				reinterpret_cast<uintptr_t>(stackFrames[index]);
+			const uintptr_t base =
+				reinterpret_cast<uintptr_t>(g_executableBase);
+			const uint32_t imageSize = g_imageSize.load(
+				std::memory_order_relaxed);
+			if (address >= base && address < base + imageSize)
+			{
+				scs_log(0,
+					"[RTT custom stack] snapshot=%u frame=%u "
+					"address=%p exe-rva=0x%08llX",
+					snapshot, index, stackFrames[index],
+					static_cast<unsigned long long>(address - base));
+			}
+			else
+			{
+				scs_log(0,
+					"[RTT custom stack] snapshot=%u frame=%u "
+					"address=%p external",
+					snapshot, index, stackFrames[index]);
+			}
+		}
 		log_diagnostic_block(snapshot, "command", renderCommand, 256);
+		void* commandOwner{};
+		if (safe_copy_diagnostic_bytes(
+			static_cast<uint8_t*>(renderCommand) + 0xF8,
+			reinterpret_cast<uint8_t*>(&commandOwner),
+			sizeof(commandOwner)) && commandOwner)
+		{
+			log_diagnostic_block(
+				snapshot, "command-owner", commandOwner, 256);
+		}
 		log_diagnostic_block(snapshot, "camera", g_workerCameraInput, 128);
 		log_diagnostic_block(snapshot, "request", g_workerRenderRequest, 128);
 		log_diagnostic_block(snapshot, "context", renderContext, 128);

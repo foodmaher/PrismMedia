@@ -96,7 +96,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Runtime\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 3.11.20 Independent Snapshot Retention
+          PrismTextureStreamerFB 3.11.21 Independent Capture Export
 
           Copy PrismTextureStreamerFB.dll AND the PrismTextureStreamerFB
           folder into:
@@ -115,7 +115,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-3.11.20-independent-snapshot-retention
+          name: PrismTextureStreamerFB-3.11.21-independent-capture-export
           path: package
           if-no-files-found: error
           retention-days: 30

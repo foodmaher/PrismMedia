@@ -1,6 +1,6 @@
 # Independent Prism3D render submission test
 
-Version: `3.11.20-independent-snapshot-retention`
+Version: `3.11.21-independent-capture-export`
 
 This build validates the engine-owned render-job path discovered in the exact
 ETS2 executable with PE timestamp `0x6A426DE5` and image size `0x0382D000`.
@@ -30,6 +30,12 @@ turning Preview off merely pauses new render submission and also preserves the
 snapshot. Full plugin shutdown, disabling the internal park-camera feature, or
 starting a new diagnosis releases it.
 
+After the first successful independent GPU readback, the plugin also overwrites
+`Documents\ETS2\PrismParkCapture.bmp` with the decoded frame. This file proves
+what was captured independently of whether the GPS upload path displays it.
+The previous BMP is removed when a new diagnosis begins, so a remaining image
+cannot be mistaken for a successful capture from the current run.
+
 Expected `game.log.txt` messages:
 
 ```text
@@ -40,6 +46,7 @@ Independent output isolated into the plugin-owned target
 Independent submit attempted=yes succeeded=yes dispatched=1; isolated-output=yes copies=1 correlated-copies=1 tagged-targets=0
 Game mirror resources rebuilt; preserved the plugin-owned independent snapshot
 Park rendering paused; retained the plugin-owned independent snapshot
+Saved independent park capture to Documents\ETS2\PrismParkCapture.bmp
 ```
 
 This validation still seeds one immutable render command from the custom park

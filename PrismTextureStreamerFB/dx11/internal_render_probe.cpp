@@ -4,6 +4,7 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <dxgi.h>
+#include <ShlObj.h>
 #include <MinHook/MinHook.h>
 
 #include <algorithm>
@@ -15,6 +16,7 @@
 #include <cstring>
 #include <intrin.h>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -24,6 +26,7 @@
 using namespace scs_logging;
 
 #pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "shell32.lib")
 
 namespace
 {
@@ -385,6 +388,7 @@ namespace
 	uint64_t g_parkNextSubmissionOrder{};
 	uint64_t g_parkLastDecodedSubmissionOrder{};
 	bool g_parkReadbackReady{};
+	std::atomic<bool> g_parkDiagnosticImageSaved{};
 	std::array<uint8_t, 2048> g_parkFloat11Lut{};
 	std::array<uint8_t, 1024> g_parkFloat10Lut{};
 	bool g_parkToneMapLutReady{};
@@ -759,6 +763,161 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		g_parkToneMapLutReady = true;
 	}
 
+	void clear_previous_park_diagnostic_bmp()
+	{
+		PWSTR documentsPath{};
+		if (FAILED(SHGetKnownFolderPath(
+				FOLDERID_Documents,
+				KF_FLAG_DEFAULT,
+				nullptr,
+				&documentsPath)) ||
+			!documentsPath)
+		{
+			if (documentsPath)
+				CoTaskMemFree(documentsPath);
+			return;
+		}
+
+		const std::wstring filePath =
+			std::wstring(documentsPath) +
+			L"\\ETS2\\PrismParkCapture.bmp";
+		CoTaskMemFree(documentsPath);
+		if (!DeleteFileW(filePath.c_str()))
+		{
+			const DWORD error = GetLastError();
+			if (error != ERROR_FILE_NOT_FOUND &&
+				error != ERROR_PATH_NOT_FOUND)
+			{
+				scs_log(2,
+					"[RTT custom] Could not clear the previous park "
+					"capture (Win32 error %lu).",
+					error);
+			}
+		}
+	}
+
+	bool save_park_diagnostic_bmp_locked()
+	{
+		if (g_parkReadbackPixels.empty() ||
+			g_parkReadbackWidth == 0 ||
+			g_parkReadbackHeight == 0)
+		{
+			return false;
+		}
+
+		PWSTR documentsPath{};
+		const HRESULT folderResult = SHGetKnownFolderPath(
+			FOLDERID_Documents,
+			KF_FLAG_DEFAULT,
+			nullptr,
+			&documentsPath);
+		if (FAILED(folderResult) || !documentsPath)
+		{
+			scs_log(2,
+				"[RTT custom] Failed to locate the Documents folder "
+				"for the park capture (HRESULT 0x%08X).",
+				static_cast<unsigned>(folderResult));
+			if (documentsPath)
+				CoTaskMemFree(documentsPath);
+			return false;
+		}
+
+		std::wstring directory(documentsPath);
+		CoTaskMemFree(documentsPath);
+		directory += L"\\ETS2";
+		if (!CreateDirectoryW(directory.c_str(), nullptr) &&
+			GetLastError() != ERROR_ALREADY_EXISTS)
+		{
+			scs_log(2,
+				"[RTT custom] Failed to create Documents\\ETS2 for "
+				"the park capture (Win32 error %lu).",
+				GetLastError());
+			return false;
+		}
+
+		const std::wstring filePath =
+			directory + L"\\PrismParkCapture.bmp";
+		HANDLE file = CreateFileW(
+			filePath.c_str(),
+			GENERIC_WRITE,
+			FILE_SHARE_READ,
+			nullptr,
+			CREATE_ALWAYS,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr);
+		if (file == INVALID_HANDLE_VALUE)
+		{
+			scs_log(2,
+				"[RTT custom] Failed to open the park capture image "
+				"in Documents\\ETS2 (Win32 error %lu).",
+				GetLastError());
+			return false;
+		}
+
+		const uint64_t pixelBytes64 =
+			static_cast<uint64_t>(g_parkReadbackWidth) *
+			g_parkReadbackHeight * 4ULL;
+		if (pixelBytes64 > MAXDWORD)
+		{
+			CloseHandle(file);
+			return false;
+		}
+		const DWORD pixelBytes =
+			static_cast<DWORD>(pixelBytes64);
+		BITMAPFILEHEADER fileHeader{};
+		BITMAPINFOHEADER infoHeader{};
+		fileHeader.bfType = 0x4D42;
+		fileHeader.bfOffBits =
+			sizeof(fileHeader) + sizeof(infoHeader);
+		fileHeader.bfSize = fileHeader.bfOffBits + pixelBytes;
+		infoHeader.biSize = sizeof(infoHeader);
+		infoHeader.biWidth =
+			static_cast<LONG>(g_parkReadbackWidth);
+		// A negative BMP height preserves the D3D top-to-bottom row order.
+		infoHeader.biHeight =
+			-static_cast<LONG>(g_parkReadbackHeight);
+		infoHeader.biPlanes = 1;
+		infoHeader.biBitCount = 32;
+		infoHeader.biCompression = BI_RGB;
+		infoHeader.biSizeImage = pixelBytes;
+
+		DWORD written{};
+		bool saved =
+			WriteFile(file, &fileHeader, sizeof(fileHeader),
+				&written, nullptr) &&
+			written == sizeof(fileHeader);
+		if (saved)
+		{
+			saved = WriteFile(file, &infoHeader, sizeof(infoHeader),
+				&written, nullptr) &&
+				written == sizeof(infoHeader);
+		}
+		if (saved)
+		{
+			saved = WriteFile(file, g_parkReadbackPixels.data(),
+				pixelBytes, &written, nullptr) &&
+				written == pixelBytes;
+		}
+		CloseHandle(file);
+
+		if (saved)
+		{
+			scs_log(0,
+				"[RTT custom] Saved independent park capture to "
+				"Documents\\ETS2\\PrismParkCapture.bmp (%ux%u).",
+				g_parkReadbackWidth,
+				g_parkReadbackHeight);
+		}
+		else
+		{
+			DeleteFileW(filePath.c_str());
+			scs_log(2,
+				"[RTT custom] Failed while writing "
+				"Documents\\ETS2\\PrismParkCapture.bmp.");
+		}
+		return saved;
+	}
+
 	bool decode_park_readback_locked(
 		const D3D11_MAPPED_SUBRESOURCE& mapped,
 		const D3D11_TEXTURE2D_DESC& description)
@@ -820,6 +979,16 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		g_parkReadbackHeight = description.Height;
 		++g_parkReadbackSequence;
 		g_parkReadbackReady = true;
+		if (kIndependentOutputOnly &&
+			g_independentOutputCaptured.load(
+				std::memory_order_acquire) &&
+			!g_parkDiagnosticImageSaved.load(
+				std::memory_order_relaxed) &&
+			save_park_diagnostic_bmp_locked())
+		{
+			g_parkDiagnosticImageSaved.store(
+				true, std::memory_order_release);
+		}
 		g_parkOutputFrames.fetch_add(
 			1, std::memory_order_relaxed);
 		return true;
@@ -4081,6 +4250,9 @@ namespace dx11::internal_render_probe
 		// screen. Clear every previous source; only the independently tagged
 		// copy below is allowed to repopulate the GPS texture.
 		release_park_color_target();
+		g_parkDiagnosticImageSaved.store(
+			false, std::memory_order_release);
+		clear_previous_park_diagnostic_bmp();
 		{
 			std::lock_guard<std::mutex> lock(
 				g_candidateMutex);

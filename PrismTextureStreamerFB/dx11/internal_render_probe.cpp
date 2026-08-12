@@ -32,6 +32,7 @@ namespace
 	constexpr uint32_t kExpectedActiveMaskRva = 0x00524170;
 	constexpr uint32_t kExpectedResourceInitRva = 0x00533400;
 	constexpr uint32_t kExpectedMirrorRenderDispatchRva = 0x00722020;
+	constexpr uint32_t kExpectedMirrorWorkerRva = 0x0046CB80;
 	constexpr uint32_t kCameraDescriptorOwnerRva = 0x03550398;
 	constexpr uint32_t kMirrorSlotTokenTableRva = 0x01D1EB30;
 	constexpr uint32_t kMirrorCameraVtableRva = 0x02196F90;
@@ -71,6 +72,10 @@ namespace
 		0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74,
 		0x24, 0x18, 0x55, 0x57, 0x41, 0x56, 0x48, 0x8D
 	};
+	constexpr std::array<uint8_t, 16> kMirrorWorkerSignature = {
+		0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C,
+		0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57
+	};
 
 	struct executable_fingerprint_t
 	{
@@ -101,6 +106,9 @@ namespace
 	using mirror_render_dispatch_t =
 		void(__fastcall*)(void* renderer, void* renderContext,
 			void* renderCommand);
+	using mirror_worker_t = void(__fastcall*)(
+		void* renderer, void* renderContext,
+		void* cameraInput, void* renderRequest);
 	using clone_camera_t =
 		void*(__fastcall*)(void* camera);
 	using om_set_render_targets_t =
@@ -207,6 +215,7 @@ namespace
 	void* g_finishCommandListAddress{};
 	void* g_executeCommandListAddress{};
 	void* g_mirrorRenderDispatchAddress{};
+	void* g_mirrorWorkerAddress{};
 	mirror_schedule_t g_originalMirrorSchedule{};
 	resource_init_t g_originalResourceInit{};
 	active_mask_t g_originalActiveMask{};
@@ -220,6 +229,15 @@ namespace
 	finish_command_list_t g_originalFinishCommandList{};
 	execute_command_list_t g_originalExecuteCommandList{};
 	mirror_render_dispatch_t g_originalMirrorRenderDispatch{};
+	mirror_worker_t g_originalMirrorWorker{};
+	thread_local void* g_workerRenderer{};
+	thread_local void* g_workerRenderContext{};
+	thread_local void* g_workerCameraInput{};
+	thread_local void* g_workerRenderRequest{};
+	std::atomic<uint32_t> g_independentCameraSnapshots{};
+	std::atomic<uint32_t> g_independentTargetEvents{};
+	std::mutex g_independentCameraDiagnosticMutex;
+	std::array<uint64_t, 16> g_independentCameraSnapshotHashes{};
 	std::atomic<void*> g_parkVisualInterior{};
 	std::atomic<void*> g_parkCamera{};
 	std::array<float, 4> g_parkSourcePosition{};
@@ -1849,6 +1867,142 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		return -1;
 	}
 
+	bool safe_copy_diagnostic_bytes(
+		void* source, uint8_t* destination, size_t size)
+	{
+		if (!source || !destination || size == 0)
+			return false;
+		__try
+		{
+			std::memcpy(destination, source, size);
+			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			std::memset(destination, 0, size);
+			return false;
+		}
+	}
+
+	uint64_t diagnostic_hash(
+		const uint8_t* bytes, size_t size, uint64_t seed)
+	{
+		uint64_t value = seed;
+		for (size_t index = 0; index < size; ++index)
+		{
+			value ^= bytes[index];
+			value *= 1099511628211ULL;
+		}
+		return value;
+	}
+
+	void log_diagnostic_block(
+		uint32_t snapshot, const char* name,
+		void* address, size_t size)
+	{
+		std::array<uint8_t, 256> bytes{};
+		size = (std::min)(size, bytes.size());
+		if (!safe_copy_diagnostic_bytes(
+			address, bytes.data(), size))
+		{
+			scs_log(0,
+				"[RTT custom] snapshot=%u %s=%p unreadable",
+				snapshot, name, address);
+			return;
+		}
+		for (size_t offset = 0; offset < size; offset += 16)
+		{
+			scs_log(0,
+				"[RTT custom] snapshot=%u %s=%p +%03X: "
+				"%02X %02X %02X %02X %02X %02X %02X %02X "
+				"%02X %02X %02X %02X %02X %02X %02X %02X",
+				snapshot, name, address,
+				static_cast<unsigned>(offset),
+				bytes[offset + 0], bytes[offset + 1],
+				bytes[offset + 2], bytes[offset + 3],
+				bytes[offset + 4], bytes[offset + 5],
+				bytes[offset + 6], bytes[offset + 7],
+				bytes[offset + 8], bytes[offset + 9],
+				bytes[offset + 10], bytes[offset + 11],
+				bytes[offset + 12], bytes[offset + 13],
+				bytes[offset + 14], bytes[offset + 15]);
+		}
+	}
+
+	void capture_independent_camera_diagnostic(
+		void* renderer, void* renderContext, void* renderCommand)
+	{
+		if (!g_tracing.load(std::memory_order_relaxed))
+			return;
+
+		std::array<uint8_t, 256> commandBytes{};
+		std::array<uint8_t, 128> cameraBytes{};
+		if (!safe_copy_diagnostic_bytes(
+			renderCommand, commandBytes.data(), commandBytes.size()))
+			return;
+		safe_copy_diagnostic_bytes(
+			g_workerCameraInput, cameraBytes.data(), cameraBytes.size());
+		uint64_t hash = diagnostic_hash(
+			commandBytes.data(), commandBytes.size(),
+			1469598103934665603ULL);
+		hash = diagnostic_hash(
+			cameraBytes.data(), cameraBytes.size(), hash);
+
+		uint32_t snapshot{};
+		{
+			std::lock_guard<std::mutex> lock(
+				g_independentCameraDiagnosticMutex);
+			const uint32_t count =
+				g_independentCameraSnapshots.load(
+					std::memory_order_relaxed);
+			for (uint32_t index = 0;
+				index < (std::min)(count, 16U); ++index)
+			{
+				if (g_independentCameraSnapshotHashes[index] == hash)
+					return;
+			}
+			if (count >= 16)
+				return;
+			snapshot = count + 1;
+			g_independentCameraSnapshotHashes[count] = hash;
+			g_independentCameraSnapshots.store(
+				snapshot, std::memory_order_relaxed);
+		}
+
+		scs_log(0,
+			"[RTT custom] snapshot=%u thread=%u hash=%016llX "
+			"renderer=%p context=%p command=%p worker={%p,%p,%p,%p}",
+			snapshot, GetCurrentThreadId(),
+			static_cast<unsigned long long>(hash),
+			renderer, renderContext, renderCommand,
+			g_workerRenderer, g_workerRenderContext,
+			g_workerCameraInput, g_workerRenderRequest);
+		log_diagnostic_block(snapshot, "command", renderCommand, 256);
+		log_diagnostic_block(snapshot, "camera", g_workerCameraInput, 128);
+		log_diagnostic_block(snapshot, "request", g_workerRenderRequest, 128);
+		log_diagnostic_block(snapshot, "context", renderContext, 128);
+	}
+
+	void __fastcall hooked_mirror_worker(
+		void* renderer, void* renderContext,
+		void* cameraInput, void* renderRequest)
+	{
+		void* previousRenderer = g_workerRenderer;
+		void* previousContext = g_workerRenderContext;
+		void* previousCamera = g_workerCameraInput;
+		void* previousRequest = g_workerRenderRequest;
+		g_workerRenderer = renderer;
+		g_workerRenderContext = renderContext;
+		g_workerCameraInput = cameraInput;
+		g_workerRenderRequest = renderRequest;
+		g_originalMirrorWorker(
+			renderer, renderContext, cameraInput, renderRequest);
+		g_workerRenderer = previousRenderer;
+		g_workerRenderContext = previousContext;
+		g_workerCameraInput = previousCamera;
+		g_workerRenderRequest = previousRequest;
+	}
+
 	void __fastcall hooked_mirror_render_dispatch(
 		void* renderer,
 		void* renderContext,
@@ -1862,6 +2016,8 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		if (renderingParkSlot)
 		{
 			g_slot7DispatchCount.fetch_add(1, std::memory_order_relaxed);
+			capture_independent_camera_diagnostic(
+				renderer, renderContext, renderCommand);
 			// The engine can bind the target from its D3D worker rather than
 			// this dispatch thread. Publish a narrowly scoped cross-thread
 			// marker for the duration of the confirmed slot-7 render call.
@@ -2880,6 +3036,25 @@ namespace dx11::internal_render_probe
 					g_mirrorRenderDispatchAddress = nullptr;
 				}
 			}
+
+			if (matches_expected_bytes(
+				kExpectedMirrorWorkerRva,
+				kMirrorWorkerSignature))
+			{
+				g_mirrorWorkerAddress =
+					g_executableBase + kExpectedMirrorWorkerRva;
+				const MH_STATUS createStatus = MH_CreateHook(
+					g_mirrorWorkerAddress,
+					&hooked_mirror_worker,
+					reinterpret_cast<void**>(
+						&g_originalMirrorWorker));
+				if (createStatus != MH_OK ||
+					MH_EnableHook(g_mirrorWorkerAddress) != MH_OK)
+				{
+					MH_RemoveHook(g_mirrorWorkerAddress);
+					g_mirrorWorkerAddress = nullptr;
+				}
+			}
 		}
 
 		// Do not add any D3D11 interception on ATS or a different ETS2
@@ -2905,6 +3080,7 @@ namespace dx11::internal_render_probe
 			0,
 			"[RTT probe] mirror hook=%s, "
 			"park init hook=%s, park mask hook=%s, slot dispatch hook=%s, "
+			"custom-camera worker=%s, "
 			"D3D11 target hook=%s, command-list hooks=%s",
 			g_mirrorHookInstalled.load()
 				? "ready" : "unavailable",
@@ -2914,6 +3090,8 @@ namespace dx11::internal_render_probe
 				? "ready" : "unavailable",
 			g_mirrorJobHookInstalled.load()
 				? "ready" : "unavailable",
+			g_mirrorWorkerAddress
+				? "diagnostic-ready" : "unavailable",
 			g_contextHookInstalled.load()
 				? "ready" : "unavailable",
 			g_commandListHooksInstalled.load()
@@ -2952,6 +3130,12 @@ namespace dx11::internal_render_probe
 			MH_DisableHook(g_mirrorRenderDispatchAddress);
 			MH_RemoveHook(g_mirrorRenderDispatchAddress);
 			g_mirrorRenderDispatchAddress = nullptr;
+		}
+		if (g_mirrorWorkerAddress)
+		{
+			MH_DisableHook(g_mirrorWorkerAddress);
+			MH_RemoveHook(g_mirrorWorkerAddress);
+			g_mirrorWorkerAddress = nullptr;
 		}
 		if (g_omSetRenderTargetsAddress)
 		{
@@ -3307,6 +3491,15 @@ namespace dx11::internal_render_probe
 			g_lineage.clear();
 			g_nextCandidateId = 1;
 		}
+		{
+			std::lock_guard<std::mutex> lock(
+				g_independentCameraDiagnosticMutex);
+			g_independentCameraSnapshotHashes.fill(0);
+			g_independentCameraSnapshots.store(
+				0, std::memory_order_relaxed);
+			g_independentTargetEvents.store(
+				0, std::memory_order_relaxed);
+		}
 
 		const uint64_t now = GetTickCount64();
 		g_traceStartedTick.store(now);
@@ -3337,6 +3530,12 @@ namespace dx11::internal_render_probe
 		}
 		const auto results = candidates();
 		log_trace_results(results);
+		scs_log(
+			0,
+			"[RTT custom] Diagnostic finished with %u unique "
+			"slot-7 worker snapshots. No independent render was submitted.",
+			g_independentCameraSnapshots.load(
+				std::memory_order_relaxed));
 		g_parkMaskForced.store(
 			false, std::memory_order_relaxed);
 	}

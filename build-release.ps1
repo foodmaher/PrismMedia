@@ -36,7 +36,7 @@ if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.11.16-independent-target-snapshot'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.11.17-strict-independent-source'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }
@@ -67,7 +67,7 @@ Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (
     Join-Path $Runtime 'SPF-OPTIONAL')
 
 @"
-PrismTextureStreamerFB 3.11.16 Independent Target Snapshot
+PrismTextureStreamerFB 3.11.17 Strict Independent Source
 
 Copy PrismTextureStreamerFB.dll and the PrismTextureStreamerFB folder into
 <ETS2 or ATS>\bin\win_x64\plugins. The DLL must stay directly in plugins.

@@ -235,6 +235,9 @@ namespace
 	thread_local void* g_workerCameraInput{};
 	thread_local void* g_workerRenderRequest{};
 	std::atomic<uint32_t> g_independentCameraSnapshots{};
+	std::atomic<uint32_t> g_independentWorkerSnapshots{};
+	std::atomic<uint64_t> g_lastIndependentCommandSnapshotTick{};
+	std::atomic<uint64_t> g_lastIndependentWorkerSnapshotTick{};
 	std::atomic<uint32_t> g_independentTargetEvents{};
 	std::mutex g_independentCameraDiagnosticMutex;
 	std::array<uint64_t, 16> g_independentCameraSnapshotHashes{};
@@ -1934,6 +1937,16 @@ float4 ps_main(PixelInput input) : SV_TARGET
 	{
 		if (!g_tracing.load(std::memory_order_relaxed))
 			return;
+		const uint64_t now = GetTickCount64();
+		uint64_t previousTick =
+			g_lastIndependentCommandSnapshotTick.load(
+				std::memory_order_relaxed);
+		if (previousTick != 0 && now - previousTick < 1000)
+			return;
+		if (!g_lastIndependentCommandSnapshotTick.compare_exchange_strong(
+			previousTick, now,
+			std::memory_order_acq_rel))
+			return;
 
 		std::array<uint8_t, 256> commandBytes{};
 		std::array<uint8_t, 128> cameraBytes{};
@@ -1955,12 +1968,6 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			const uint32_t count =
 				g_independentCameraSnapshots.load(
 					std::memory_order_relaxed);
-			for (uint32_t index = 0;
-				index < (std::min)(count, 16U); ++index)
-			{
-				if (g_independentCameraSnapshotHashes[index] == hash)
-					return;
-			}
 			if (count >= 16)
 				return;
 			snapshot = count + 1;
@@ -1983,6 +1990,38 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		log_diagnostic_block(snapshot, "context", renderContext, 128);
 	}
 
+	void capture_independent_worker_diagnostic(
+		void* renderer, void* renderContext,
+		void* cameraInput, void* renderRequest)
+	{
+		if (!g_tracing.load(std::memory_order_relaxed))
+			return;
+		const uint64_t now = GetTickCount64();
+		uint64_t previous =
+			g_lastIndependentWorkerSnapshotTick.load(
+				std::memory_order_relaxed);
+		if (previous != 0 && now - previous < 2000)
+			return;
+		if (!g_lastIndependentWorkerSnapshotTick.compare_exchange_strong(
+			previous, now, std::memory_order_acq_rel))
+			return;
+		const uint32_t snapshot =
+			g_independentWorkerSnapshots.fetch_add(
+				1, std::memory_order_relaxed) + 1;
+		if (snapshot > 12)
+			return;
+
+		scs_log(0,
+			"[RTT custom worker] snapshot=%u thread=%u "
+			"renderer=%p context=%p camera=%p request=%p",
+			snapshot, GetCurrentThreadId(), renderer,
+			renderContext, cameraInput, renderRequest);
+		log_diagnostic_block(snapshot, "worker-renderer", renderer, 128);
+		log_diagnostic_block(snapshot, "worker-context", renderContext, 128);
+		log_diagnostic_block(snapshot, "worker-camera", cameraInput, 256);
+		log_diagnostic_block(snapshot, "worker-request", renderRequest, 256);
+	}
+
 	void __fastcall hooked_mirror_worker(
 		void* renderer, void* renderContext,
 		void* cameraInput, void* renderRequest)
@@ -1995,6 +2034,8 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		g_workerRenderContext = renderContext;
 		g_workerCameraInput = cameraInput;
 		g_workerRenderRequest = renderRequest;
+		capture_independent_worker_diagnostic(
+			renderer, renderContext, cameraInput, renderRequest);
 		g_originalMirrorWorker(
 			renderer, renderContext, cameraInput, renderRequest);
 		g_workerRenderer = previousRenderer;
@@ -3497,6 +3538,12 @@ namespace dx11::internal_render_probe
 			g_independentCameraSnapshotHashes.fill(0);
 			g_independentCameraSnapshots.store(
 				0, std::memory_order_relaxed);
+			g_independentWorkerSnapshots.store(
+				0, std::memory_order_relaxed);
+			g_lastIndependentCommandSnapshotTick.store(
+				0, std::memory_order_relaxed);
+			g_lastIndependentWorkerSnapshotTick.store(
+				0, std::memory_order_relaxed);
 			g_independentTargetEvents.store(
 				0, std::memory_order_relaxed);
 		}
@@ -3532,9 +3579,12 @@ namespace dx11::internal_render_probe
 		log_trace_results(results);
 		scs_log(
 			0,
-			"[RTT custom] Diagnostic finished with %u unique "
-			"slot-7 worker snapshots. No independent render was submitted.",
+			"[RTT custom] Diagnostic finished with %u time-spaced "
+			"slot-7 command snapshots and %u high-level worker snapshots. "
+			"No independent render was submitted.",
 			g_independentCameraSnapshots.load(
+				std::memory_order_relaxed),
+			g_independentWorkerSnapshots.load(
 				std::memory_order_relaxed));
 		g_parkMaskForced.store(
 			false, std::memory_order_relaxed);

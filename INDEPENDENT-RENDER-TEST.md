@@ -1,6 +1,6 @@
 # Independent Prism3D render submission test
 
-Version: `3.11.21-independent-capture-export`
+Version: `3.11.22-readback-scheduling-fix`
 
 This build validates the engine-owned render-job path discovered in the exact
 ETS2 executable with PE timestamp `0x6A426DE5` and image size `0x0382D000`.
@@ -47,6 +47,9 @@ Independent submit attempted=yes succeeded=yes dispatched=1; isolated-output=yes
 Game mirror resources rebuilt; preserved the plugin-owned independent snapshot
 Park rendering paused; retained the plugin-owned independent snapshot
 Saved independent park capture to Documents\ETS2\PrismParkCapture.bmp
+Independent snapshot re-armed after first staging initialization
+Independent snapshot submitted to CPU staging (order=1)
+Independent CPU readback decoded: 256x256 sequence=1
 ```
 
 This validation still seeds one immutable render command from the custom park

@@ -979,6 +979,13 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		g_parkReadbackHeight = description.Height;
 		++g_parkReadbackSequence;
 		g_parkReadbackReady = true;
+		scs_log(0,
+			"[RTT custom] Independent CPU readback decoded: "
+			"%ux%u sequence=%llu.",
+			g_parkReadbackWidth,
+			g_parkReadbackHeight,
+			static_cast<unsigned long long>(
+				g_parkReadbackSequence));
 		if (kIndependentOutputOnly &&
 			g_independentOutputCaptured.load(
 				std::memory_order_acquire) &&
@@ -4164,6 +4171,23 @@ namespace dx11::internal_render_probe
 		release_com_object(sourceDevice);
 		release_com_object(contextDevice);
 
+		// Creating the staging ring clears its old scheduling markers. If the
+		// independent snapshot was captured before that first initialization,
+		// re-arm the one required GPU-to-staging copy now. Without this, the
+		// owned texture remains valid but no CPU readback is ever submitted.
+		if (kIndependentOutputOnly &&
+			g_independentOutputCaptured.load(
+				std::memory_order_acquire) &&
+			g_parkObservedFrame == UINT64_MAX &&
+			g_parkSubmittedFrame == UINT64_MAX)
+		{
+			g_parkObservedFrame = g_frameIndex.load(
+				std::memory_order_relaxed);
+			scs_log(0,
+				"[RTT custom] Independent snapshot re-armed after "
+				"first staging initialization.");
+		}
+
 		for (auto& slot : g_parkStaging)
 		{
 			if (!slot.pending || !slot.texture)
@@ -4231,6 +4255,11 @@ namespace dx11::internal_render_probe
 					g_parkStaging.size());
 			g_parkSubmittedFrame =
 				g_parkObservedFrame;
+			scs_log(0,
+				"[RTT custom] Independent snapshot submitted to CPU "
+				"staging (order=%llu).",
+				static_cast<unsigned long long>(
+					slot.submissionOrder));
 			break;
 		}
 	}

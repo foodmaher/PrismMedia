@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.11.14-custom-camera-call-chain";
+inline const char* g_version = "3.11.15-independent-render-submit";

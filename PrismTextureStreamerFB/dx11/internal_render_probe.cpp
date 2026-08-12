@@ -34,6 +34,7 @@ namespace
 	constexpr uint32_t kExpectedResourceInitRva = 0x00533400;
 	constexpr uint32_t kExpectedMirrorRenderDispatchRva = 0x00722020;
 	constexpr uint32_t kExpectedMirrorWorkerRva = 0x0046CB80;
+	constexpr uint32_t kExpectedRenderTaskSubmitRva = 0x00722BA0;
 	constexpr uint32_t kCameraDescriptorOwnerRva = 0x03550398;
 	constexpr uint32_t kMirrorSlotTokenTableRva = 0x01D1EB30;
 	constexpr uint32_t kMirrorCameraVtableRva = 0x02196F90;
@@ -77,6 +78,10 @@ namespace
 		0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C,
 		0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57
 	};
+	constexpr std::array<uint8_t, 16> kRenderTaskSubmitSignature = {
+		0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C,
+		0x24, 0x18, 0x48, 0x89, 0x4C, 0x24, 0x08, 0x56
+	};
 
 	struct executable_fingerprint_t
 	{
@@ -110,6 +115,11 @@ namespace
 	using mirror_worker_t = void(__fastcall*)(
 		void* renderer, void* renderContext,
 		void* cameraInput, void* renderRequest);
+	using render_task_submit_t = void(__fastcall*)(
+		void* unused,
+		void** taskOutput,
+		void* renderContext,
+		const void* renderCommand);
 	using clone_camera_t =
 		void*(__fastcall*)(void* camera);
 	using om_set_render_targets_t =
@@ -217,6 +227,7 @@ namespace
 	void* g_executeCommandListAddress{};
 	void* g_mirrorRenderDispatchAddress{};
 	void* g_mirrorWorkerAddress{};
+	void* g_renderTaskSubmitAddress{};
 	mirror_schedule_t g_originalMirrorSchedule{};
 	resource_init_t g_originalResourceInit{};
 	active_mask_t g_originalActiveMask{};
@@ -231,6 +242,7 @@ namespace
 	execute_command_list_t g_originalExecuteCommandList{};
 	mirror_render_dispatch_t g_originalMirrorRenderDispatch{};
 	mirror_worker_t g_originalMirrorWorker{};
+	render_task_submit_t g_renderTaskSubmit{};
 	thread_local void* g_workerRenderer{};
 	thread_local void* g_workerRenderContext{};
 	thread_local void* g_workerCameraInput{};
@@ -240,6 +252,11 @@ namespace
 	std::atomic<uint64_t> g_lastIndependentCommandSnapshotTick{};
 	std::atomic<uint64_t> g_lastIndependentWorkerSnapshotTick{};
 	std::atomic<uint32_t> g_independentTargetEvents{};
+	std::atomic<bool> g_independentSubmitAttempted{};
+	std::atomic<bool> g_independentSubmitInProgress{};
+	std::atomic<bool> g_independentSubmitSucceeded{};
+	std::atomic<uint32_t> g_independentDispatchCount{};
+	std::atomic<void*> g_independentRenderTask{};
 	std::mutex g_independentCameraDiagnosticMutex;
 	std::array<uint64_t, 16> g_independentCameraSnapshotHashes{};
 	std::atomic<void*> g_parkVisualInterior{};
@@ -2082,6 +2099,71 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		g_workerRenderRequest = previousRequest;
 	}
 
+	void submit_independent_render_validation(
+		void* renderContext, void* renderCommand)
+	{
+		if (!g_tracing.load(std::memory_order_acquire) ||
+			!g_renderTaskSubmit || !renderContext || !renderCommand)
+		{
+			return;
+		}
+
+		bool expected = false;
+		if (!g_independentSubmitAttempted.compare_exchange_strong(
+			expected, true, std::memory_order_acq_rel))
+		{
+			return;
+		}
+
+		// The engine constructor at 0x722BA0 copies exactly the first 0xF0
+		// bytes into a new 0x28590-byte render task, initializes that task's
+		// private renderer, and queues it through the normal Prism3D job
+		// system. Keep the source on our stack only for the synchronous copy.
+		alignas(16) std::array<uint8_t, 0xF0> commandCopy{};
+		if (!safe_copy_diagnostic_bytes(
+			renderCommand, commandCopy.data(), commandCopy.size()))
+		{
+			scs_log(2,
+				"[RTT custom] Independent render submission aborted: "
+				"the live command could not be copied.");
+			return;
+		}
+
+		void* task{};
+		g_independentSubmitInProgress.store(
+			true, std::memory_order_release);
+		__try
+		{
+			g_renderTaskSubmit(
+				nullptr, &task, renderContext, commandCopy.data());
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			task = nullptr;
+		}
+
+		g_independentRenderTask.store(task, std::memory_order_release);
+		g_independentSubmitSucceeded.store(
+			task != nullptr, std::memory_order_release);
+		g_independentSubmitInProgress.store(
+			false, std::memory_order_release);
+		if (task)
+		{
+			scs_log(0,
+				"[RTT custom] Independent Prism3D render task submitted: "
+				"task=%p command=%p context=%p. This is a separate "
+				"engine job, not a second call on the live slot-7 task.",
+				task, static_cast<uint8_t*>(task) + 0x38,
+				renderContext);
+		}
+		else
+		{
+			scs_log(2,
+				"[RTT custom] Independent Prism3D render task submission "
+				"returned no task.");
+		}
+	}
+
 	void __fastcall hooked_mirror_render_dispatch(
 		void* renderer,
 		void* renderContext,
@@ -2090,13 +2172,39 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		const int32_t previousSlot = g_renderingMirrorSlot;
 		g_renderingMirrorSlot =
 			resolve_render_command_slot(renderCommand);
+		void* commandOwner = renderCommand
+			? static_cast<uint8_t*>(renderCommand) - 0x38
+			: nullptr;
+		const bool independentTask =
+			commandOwner != nullptr &&
+			(commandOwner == g_independentRenderTask.load(
+				std::memory_order_acquire) ||
+			g_independentSubmitInProgress.load(
+				std::memory_order_acquire));
 		const bool renderingParkSlot =
 			g_renderingMirrorSlot == static_cast<int32_t>(kParkSlot);
 		if (renderingParkSlot)
 		{
 			g_slot7DispatchCount.fetch_add(1, std::memory_order_relaxed);
-			capture_independent_camera_diagnostic(
-				renderer, renderContext, renderCommand);
+			if (independentTask)
+			{
+				const uint32_t count =
+					g_independentDispatchCount.fetch_add(
+						1, std::memory_order_relaxed) + 1;
+				if (count == 1)
+				{
+					scs_log(0,
+						"[RTT custom] Independent Prism3D render task "
+						"entered the engine renderer: task=%p renderer=%p "
+						"context=%p.",
+						commandOwner, renderer, renderContext);
+				}
+			}
+			else
+			{
+				capture_independent_camera_diagnostic(
+					renderer, renderContext, renderCommand);
+			}
 			// The engine can bind the target from its D3D worker rather than
 			// this dispatch thread. Publish a narrowly scoped cross-thread
 			// marker for the duration of the confirmed slot-7 render call.
@@ -2110,6 +2218,9 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				GetTickCount64(), std::memory_order_release);
 			g_slot7RenderDepth.fetch_sub(1, std::memory_order_release);
 		}
+		if (renderingParkSlot && !independentTask)
+			submit_independent_render_validation(
+				renderContext, renderCommand);
 		g_renderingMirrorSlot = previousSlot;
 	}
 
@@ -3117,6 +3228,17 @@ namespace dx11::internal_render_probe
 			}
 
 			if (matches_expected_bytes(
+				kExpectedRenderTaskSubmitRva,
+				kRenderTaskSubmitSignature))
+			{
+				g_renderTaskSubmitAddress =
+					g_executableBase + kExpectedRenderTaskSubmitRva;
+				g_renderTaskSubmit =
+					reinterpret_cast<render_task_submit_t>(
+						g_renderTaskSubmitAddress);
+			}
+
+			if (matches_expected_bytes(
 				kExpectedMirrorWorkerRva,
 				kMirrorWorkerSignature))
 			{
@@ -3159,7 +3281,7 @@ namespace dx11::internal_render_probe
 			0,
 			"[RTT probe] mirror hook=%s, "
 			"park init hook=%s, park mask hook=%s, slot dispatch hook=%s, "
-			"custom-camera worker=%s, "
+			"custom-camera worker=%s, independent submit=%s, "
 			"D3D11 target hook=%s, command-list hooks=%s",
 			g_mirrorHookInstalled.load()
 				? "ready" : "unavailable",
@@ -3171,6 +3293,8 @@ namespace dx11::internal_render_probe
 				? "ready" : "unavailable",
 			g_mirrorWorkerAddress
 				? "diagnostic-ready" : "unavailable",
+			g_renderTaskSubmit
+				? "ready" : "unavailable",
 			g_contextHookInstalled.load()
 				? "ready" : "unavailable",
 			g_commandListHooksInstalled.load()
@@ -3216,6 +3340,8 @@ namespace dx11::internal_render_probe
 			MH_RemoveHook(g_mirrorWorkerAddress);
 			g_mirrorWorkerAddress = nullptr;
 		}
+		g_renderTaskSubmitAddress = nullptr;
+		g_renderTaskSubmit = nullptr;
 		if (g_omSetRenderTargetsAddress)
 		{
 			MH_DisableHook(
@@ -3584,6 +3710,16 @@ namespace dx11::internal_render_probe
 				0, std::memory_order_relaxed);
 			g_independentTargetEvents.store(
 				0, std::memory_order_relaxed);
+			g_independentSubmitAttempted.store(
+				false, std::memory_order_relaxed);
+			g_independentSubmitInProgress.store(
+				false, std::memory_order_relaxed);
+			g_independentSubmitSucceeded.store(
+				false, std::memory_order_relaxed);
+			g_independentDispatchCount.store(
+				0, std::memory_order_relaxed);
+			g_independentRenderTask.store(
+				nullptr, std::memory_order_relaxed);
 		}
 
 		const uint64_t now = GetTickCount64();
@@ -3619,10 +3755,16 @@ namespace dx11::internal_render_probe
 			0,
 			"[RTT custom] Diagnostic finished with %u time-spaced "
 			"slot-7 command snapshots and %u high-level worker snapshots. "
-			"No independent render was submitted.",
+			"Independent submit attempted=%s succeeded=%s dispatched=%u.",
 			g_independentCameraSnapshots.load(
 				std::memory_order_relaxed),
 			g_independentWorkerSnapshots.load(
+				std::memory_order_relaxed),
+			g_independentSubmitAttempted.load(
+				std::memory_order_relaxed) ? "yes" : "no",
+			g_independentSubmitSucceeded.load(
+				std::memory_order_relaxed) ? "yes" : "no",
+			g_independentDispatchCount.load(
 				std::memory_order_relaxed));
 		g_parkMaskForced.store(
 			false, std::memory_order_relaxed);

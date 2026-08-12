@@ -272,6 +272,7 @@ namespace
 	std::atomic<bool> g_independentOutputCaptured{};
 	std::atomic<uint64_t> g_independentOutputArmedTick{};
 	std::atomic<uint32_t> g_independentOutputCopyCount{};
+	std::atomic<uint32_t> g_independentCorrelatedCopyCount{};
 	alignas(16) std::array<uint8_t, 0xF0>
 		g_independentCommandTemplate{};
 	std::mutex g_independentCameraDiagnosticMutex;
@@ -2895,8 +2896,20 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		const uint64_t now = GetTickCount64();
 		const uint64_t armed = g_independentOutputArmedTick.load(
 			std::memory_order_acquire);
-		if (armed == 0 || now < armed || now - armed > 2000 ||
-			!is_independent_render_source(sourceIdentity))
+		if (armed == 0 || now < armed || now - armed > 2000)
+			return false;
+		const uint64_t elapsed = now - armed;
+		const bool taggedSource =
+			is_independent_render_source(sourceIdentity);
+		// Prism3D queues the actual D3D work after the engine dispatch returns
+		// and can reuse the shared slot target instead of binding a task-owned
+		// texture. In the captured build the independent result is the first
+		// final park-sized copy after dispatch (16-82 ms in verified runs).
+		// Accept that one narrowly bounded copy, then immediately freeze it in
+		// our owned texture. Legacy A/B/C/D paths remain unable to display.
+		const bool boundedPostDispatchCopy =
+			!taggedSource && elapsed <= 250;
+		if (!taggedSource && !boundedPostDispatchCopy)
 			return false;
 
 		const uint32_t parkWidth = g_slotWidth[kParkSlot].load(
@@ -2982,6 +2995,9 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		g_parkColorTargetReady.store(true, std::memory_order_release);
 		g_independentOutputCopyCount.fetch_add(
 			1, std::memory_order_relaxed);
+		if (boundedPostDispatchCopy)
+			g_independentCorrelatedCopyCount.fetch_add(
+				1, std::memory_order_relaxed);
 		g_independentOutputCaptured.store(
 			true, std::memory_order_release);
 		g_independentOutputCapturePending.store(
@@ -2991,13 +3007,15 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		scs_log(0,
 			"[RTT custom] Independent output isolated into the "
 			"plugin-owned target: source=%p final=%p owned=%p, "
-			"%ux%u %s, delay=%llu ms. Legacy slot-7 output remains blocked.",
+			"%ux%u %s, delay=%llu ms, correlation=%s. "
+			"Legacy slot-7 output remains blocked.",
 			reinterpret_cast<void*>(sourceIdentity), texture,
 			g_independentColorTexture,
 			description.Width, description.Height,
 			dx11::internal_render_probe::format_name(
 				static_cast<uint32_t>(description.Format)),
-			static_cast<unsigned long long>(now - armed));
+			static_cast<unsigned long long>(elapsed),
+			taggedSource ? "tagged-target" : "bounded-post-dispatch");
 		return true;
 	}
 
@@ -4058,6 +4076,8 @@ namespace dx11::internal_render_probe
 				0, std::memory_order_relaxed);
 			g_independentOutputCopyCount.store(
 				0, std::memory_order_relaxed);
+			g_independentCorrelatedCopyCount.store(
+				0, std::memory_order_relaxed);
 		}
 		{
 			std::lock_guard<std::mutex> lock(
@@ -4100,7 +4120,8 @@ namespace dx11::internal_render_probe
 			"[RTT custom] Diagnostic finished with %u time-spaced "
 			"slot-7 command snapshots and %u high-level worker snapshots. "
 			"Independent submit attempted=%s succeeded=%s dispatched=%u; "
-			"isolated-output=%s copies=%u tagged-targets=%u.",
+			"isolated-output=%s copies=%u correlated-copies=%u "
+			"tagged-targets=%u.",
 			g_independentCameraSnapshots.load(
 				std::memory_order_relaxed),
 			g_independentWorkerSnapshots.load(
@@ -4114,6 +4135,8 @@ namespace dx11::internal_render_probe
 			g_independentOutputCaptured.load(
 				std::memory_order_relaxed) ? "yes" : "no",
 			g_independentOutputCopyCount.load(
+				std::memory_order_relaxed),
+			g_independentCorrelatedCopyCount.load(
 				std::memory_order_relaxed),
 			g_independentTaggedTargetCount.load(
 				std::memory_order_relaxed));

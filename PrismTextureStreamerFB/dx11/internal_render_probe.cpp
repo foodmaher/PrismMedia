@@ -257,6 +257,16 @@ namespace
 	std::atomic<bool> g_independentSubmitSucceeded{};
 	std::atomic<uint32_t> g_independentDispatchCount{};
 	std::atomic<void*> g_independentRenderTask{};
+	std::atomic<bool> g_independentTemplateReady{};
+	std::atomic<void*> g_independentRenderContext{};
+	std::atomic<bool> g_independentExclusiveWindow{};
+	std::atomic<uint64_t> g_independentSubmitDueTick{};
+	std::atomic<bool> g_independentOutputCapturePending{};
+	std::atomic<bool> g_independentOutputCaptured{};
+	std::atomic<uint64_t> g_independentOutputArmedTick{};
+	std::atomic<uint32_t> g_independentOutputCopyCount{};
+	alignas(16) std::array<uint8_t, 0xF0>
+		g_independentCommandTemplate{};
 	std::mutex g_independentCameraDiagnosticMutex;
 	std::array<uint64_t, 16> g_independentCameraSnapshotHashes{};
 	std::atomic<void*> g_parkVisualInterior{};
@@ -321,6 +331,7 @@ namespace
 
 	std::mutex g_parkTextureMutex;
 	ID3D11Texture2D* g_parkColorTexture{};
+	ID3D11Texture2D* g_independentColorTexture{};
 	uint32_t g_parkColorTextureScore{};
 	struct park_target_candidate_t
 	{
@@ -523,6 +534,7 @@ float4 ps_main(PixelInput input) : SV_TARGET
 	void release_park_color_target_locked()
 	{
 		release_com_object(g_parkColorTexture);
+		release_com_object(g_independentColorTexture);
 		for (auto& candidate : g_parkTargetCandidates)
 		{
 			release_com_object(candidate.texture);
@@ -539,6 +551,10 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		g_parkTargetWidth.store(0, std::memory_order_relaxed);
 		g_parkTargetHeight.store(0, std::memory_order_relaxed);
 		g_parkTargetFormat.store(0, std::memory_order_relaxed);
+		g_independentOutputCaptured.store(
+			false, std::memory_order_relaxed);
+		g_independentOutputCapturePending.store(
+			false, std::memory_order_relaxed);
 		release_park_sample_resources_locked();
 		release_park_readback_resources_locked();
 	}
@@ -1688,6 +1704,9 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		}
 	}
 
+	void submit_independent_render_validation(
+		void* renderContext, void* renderCommand);
+
 	void __fastcall hooked_resource_init(void* visualInterior)
 	{
 		if (visualInterior !=
@@ -1754,6 +1773,15 @@ float4 ps_main(PixelInput input) : SV_TARGET
 	{
 		uint32_t result =
 			g_originalActiveMask(visualInterior, state);
+		if (g_tracing.load(std::memory_order_acquire) &&
+			g_independentExclusiveWindow.load(
+				std::memory_order_acquire))
+		{
+			// Diagnosis-only quiescence: let already queued mirror work drain,
+			// then identify the independent job's final copy unambiguously.
+			g_parkMaskForced.store(false, std::memory_order_relaxed);
+			return 0;
+		}
 		const bool parkEligible =
 			(state == 2 || state == 12) &&
 			g_parkRenderRequested.load(
@@ -1811,6 +1839,36 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		uint64_t mode,
 		uint64_t fourthArgument)
 	{
+		if (g_tracing.load(std::memory_order_acquire) &&
+			g_independentExclusiveWindow.load(
+				std::memory_order_acquire))
+		{
+			const uint64_t now = GetTickCount64();
+			const uint64_t due = g_independentSubmitDueTick.load(
+				std::memory_order_acquire);
+			if (due != 0 && now >= due &&
+				!g_independentSubmitAttempted.load(
+					std::memory_order_acquire))
+			{
+				submit_independent_render_validation(
+					g_independentRenderContext.load(
+						std::memory_order_acquire),
+					g_independentCommandTemplate.data());
+			}
+			if (due != 0 && now > due + 1500 &&
+				!g_independentOutputCaptured.load(
+					std::memory_order_acquire))
+			{
+				g_independentExclusiveWindow.store(
+					false, std::memory_order_release);
+				g_independentOutputCapturePending.store(
+					false, std::memory_order_release);
+				scs_log(2,
+					"[RTT custom] Independent output capture timed out; "
+					"normal mirror scheduling resumed.");
+			}
+		}
+
 		const bool tracing =
 			g_tracing.load(std::memory_order_relaxed);
 		const bool observingPark =
@@ -2099,6 +2157,46 @@ float4 ps_main(PixelInput input) : SV_TARGET
 		g_workerRenderRequest = previousRequest;
 	}
 
+	void prepare_independent_render_validation(
+		void* renderContext, void* renderCommand)
+	{
+		if (!g_tracing.load(std::memory_order_acquire) ||
+			!g_renderTaskSubmit || !renderContext || !renderCommand)
+		{
+			return;
+		}
+
+		bool expected = false;
+		if (!g_independentTemplateReady.compare_exchange_strong(
+			expected, true, std::memory_order_acq_rel))
+		{
+			return;
+		}
+
+		if (!safe_copy_diagnostic_bytes(
+			renderCommand,
+			g_independentCommandTemplate.data(),
+			g_independentCommandTemplate.size()))
+		{
+			g_independentTemplateReady.store(
+				false, std::memory_order_release);
+			return;
+		}
+
+		const uint64_t now = GetTickCount64();
+		g_independentRenderContext.store(
+			renderContext, std::memory_order_release);
+		// Stop scheduling mirror jobs briefly so their queued copies drain.
+		// The validation job is then the only new 256x256 scene render.
+		g_independentSubmitDueTick.store(
+			now + 150, std::memory_order_release);
+		g_independentExclusiveWindow.store(
+			true, std::memory_order_release);
+		scs_log(0,
+			"[RTT custom] Independent command template captured; "
+			"entering a 150 ms diagnosis-only mirror drain window.");
+	}
+
 	void submit_independent_render_validation(
 		void* renderContext, void* renderCommand)
 	{
@@ -2193,6 +2291,10 @@ float4 ps_main(PixelInput input) : SV_TARGET
 						1, std::memory_order_relaxed) + 1;
 				if (count == 1)
 				{
+					g_independentOutputArmedTick.store(
+						GetTickCount64(), std::memory_order_release);
+					g_independentOutputCapturePending.store(
+						true, std::memory_order_release);
 					scs_log(0,
 						"[RTT custom] Independent Prism3D render task "
 						"entered the engine renderer: task=%p renderer=%p "
@@ -2219,7 +2321,7 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			g_slot7RenderDepth.fetch_sub(1, std::memory_order_release);
 		}
 		if (renderingParkSlot && !independentTask)
-			submit_independent_render_validation(
+			prepare_independent_render_validation(
 				renderContext, renderCommand);
 		g_renderingMirrorSlot = previousSlot;
 	}
@@ -2702,6 +2804,127 @@ float4 ps_main(PixelInput input) : SV_TARGET
 			destinationY, destinationZ, source, sourceSubresource, sourceBox);
 	}
 
+	bool capture_independent_output_copy(
+		ID3D11DeviceContext* context,
+		ID3D11Texture2D* texture,
+		const D3D11_TEXTURE2D_DESC& description,
+		uintptr_t sourceIdentity)
+	{
+		if (!context || !texture ||
+			!g_independentOutputCapturePending.load(
+				std::memory_order_acquire))
+		{
+			return false;
+		}
+
+		const uint64_t now = GetTickCount64();
+		const uint64_t armed = g_independentOutputArmedTick.load(
+			std::memory_order_acquire);
+		if (armed == 0 || now < armed || now - armed > 1000)
+			return false;
+
+		const uint32_t parkWidth = g_slotWidth[kParkSlot].load(
+			std::memory_order_relaxed);
+		const uint32_t parkHeight = g_slotHeight[kParkSlot].load(
+			std::memory_order_relaxed);
+		if (description.Width != parkWidth ||
+			description.Height != parkHeight ||
+			description.SampleDesc.Count != 1 ||
+			description.Format != DXGI_FORMAT_R16G16B16A16_FLOAT)
+		{
+			return false;
+		}
+
+		std::lock_guard<std::mutex> lock(g_parkTextureMutex);
+		if (!g_independentOutputCapturePending.load(
+			std::memory_order_relaxed))
+		{
+			return false;
+		}
+
+		ID3D11Device* device{};
+		texture->GetDevice(&device);
+		if (!device)
+			return false;
+
+		bool createTexture = g_independentColorTexture == nullptr;
+		if (g_independentColorTexture)
+		{
+			D3D11_TEXTURE2D_DESC existing{};
+			g_independentColorTexture->GetDesc(&existing);
+			createTexture =
+				existing.Width != description.Width ||
+				existing.Height != description.Height ||
+				existing.Format != description.Format ||
+				existing.SampleDesc.Count != description.SampleDesc.Count;
+		}
+		if (createTexture)
+		{
+			release_com_object(g_independentColorTexture);
+			D3D11_TEXTURE2D_DESC ownedDescription = description;
+			ownedDescription.MipLevels = 1;
+			ownedDescription.ArraySize = 1;
+			ownedDescription.Usage = D3D11_USAGE_DEFAULT;
+			ownedDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+			ownedDescription.CPUAccessFlags = 0;
+			ownedDescription.MiscFlags = 0;
+			const HRESULT result = device->CreateTexture2D(
+				&ownedDescription, nullptr,
+				&g_independentColorTexture);
+			if (FAILED(result) || !g_independentColorTexture)
+			{
+				device->Release();
+				scs_log(2,
+					"[RTT custom] Could not create the plugin-owned "
+					"independent target (hr=0x%08X).", result);
+				return false;
+			}
+		}
+		device->Release();
+
+		// Snapshot immediately after the engine's final copy. Subsequent left
+		// or right mirror work cannot modify this plugin-owned texture.
+		g_originalGameCopyResource(
+			context, g_independentColorTexture, texture);
+		release_com_object(g_parkColorTexture);
+		g_parkColorTexture = g_independentColorTexture;
+		g_parkColorTexture->AddRef();
+		release_park_sample_resources_locked();
+		release_park_readback_resources_locked();
+		g_parkSelectedCandidate = kNoParkTargetCandidate;
+		g_parkColorTextureScore = UINT32_MAX;
+		g_parkObservedFrame = g_frameIndex.load(
+			std::memory_order_relaxed);
+		g_parkSubmittedFrame = UINT64_MAX;
+		g_parkTargetWidth.store(
+			description.Width, std::memory_order_relaxed);
+		g_parkTargetHeight.store(
+			description.Height, std::memory_order_relaxed);
+		g_parkTargetFormat.store(
+			static_cast<uint32_t>(description.Format),
+			std::memory_order_relaxed);
+		g_parkColorTargetReady.store(true, std::memory_order_release);
+		g_independentOutputCopyCount.fetch_add(
+			1, std::memory_order_relaxed);
+		g_independentOutputCaptured.store(
+			true, std::memory_order_release);
+		g_independentOutputCapturePending.store(
+			false, std::memory_order_release);
+		g_independentExclusiveWindow.store(
+			false, std::memory_order_release);
+		scs_log(0,
+			"[RTT custom] Independent output isolated into the "
+			"plugin-owned target: source=%p final=%p owned=%p, "
+			"%ux%u %s, delay=%llu ms. Normal mirrors resumed.",
+			reinterpret_cast<void*>(sourceIdentity), texture,
+			g_independentColorTexture,
+			description.Width, description.Height,
+			dx11::internal_render_probe::format_name(
+				static_cast<uint32_t>(description.Format)),
+			static_cast<unsigned long long>(now - armed));
+		return true;
+	}
+
 	void STDMETHODCALLTYPE hooked_game_copy_resource(
 		ID3D11DeviceContext* context, ID3D11Resource* destination,
 		ID3D11Resource* source)
@@ -2739,12 +2962,21 @@ float4 ps_main(PixelInput input) : SV_TARGET
 				reinterpret_cast<void**>(&sourceTexture))) &&
 				sourceTexture)
 			{
-				capture_selected_park_copy(
-					context,
-					texture,
-					description,
-					g_frameIndex.load(std::memory_order_relaxed),
-					reinterpret_cast<uintptr_t>(sourceTexture));
+				const uintptr_t sourceIdentity =
+					reinterpret_cast<uintptr_t>(sourceTexture);
+				const bool isolated = capture_independent_output_copy(
+					context, texture, description, sourceIdentity);
+				if (!isolated &&
+					!g_independentOutputCaptured.load(
+						std::memory_order_acquire))
+				{
+					capture_selected_park_copy(
+						context,
+						texture,
+						description,
+						g_frameIndex.load(std::memory_order_relaxed),
+						sourceIdentity);
+				}
 				sourceTexture->Release();
 			}
 		}
@@ -3720,6 +3952,22 @@ namespace dx11::internal_render_probe
 				0, std::memory_order_relaxed);
 			g_independentRenderTask.store(
 				nullptr, std::memory_order_relaxed);
+			g_independentTemplateReady.store(
+				false, std::memory_order_relaxed);
+			g_independentRenderContext.store(
+				nullptr, std::memory_order_relaxed);
+			g_independentExclusiveWindow.store(
+				false, std::memory_order_relaxed);
+			g_independentSubmitDueTick.store(
+				0, std::memory_order_relaxed);
+			g_independentOutputCapturePending.store(
+				false, std::memory_order_relaxed);
+			g_independentOutputCaptured.store(
+				false, std::memory_order_relaxed);
+			g_independentOutputArmedTick.store(
+				0, std::memory_order_relaxed);
+			g_independentOutputCopyCount.store(
+				0, std::memory_order_relaxed);
 		}
 
 		const uint64_t now = GetTickCount64();
@@ -3755,7 +4003,8 @@ namespace dx11::internal_render_probe
 			0,
 			"[RTT custom] Diagnostic finished with %u time-spaced "
 			"slot-7 command snapshots and %u high-level worker snapshots. "
-			"Independent submit attempted=%s succeeded=%s dispatched=%u.",
+			"Independent submit attempted=%s succeeded=%s dispatched=%u; "
+			"isolated-output=%s copies=%u.",
 			g_independentCameraSnapshots.load(
 				std::memory_order_relaxed),
 			g_independentWorkerSnapshots.load(
@@ -3765,7 +4014,15 @@ namespace dx11::internal_render_probe
 			g_independentSubmitSucceeded.load(
 				std::memory_order_relaxed) ? "yes" : "no",
 			g_independentDispatchCount.load(
+				std::memory_order_relaxed),
+			g_independentOutputCaptured.load(
+				std::memory_order_relaxed) ? "yes" : "no",
+			g_independentOutputCopyCount.load(
 				std::memory_order_relaxed));
+		g_independentExclusiveWindow.store(
+			false, std::memory_order_release);
+		g_independentOutputCapturePending.store(
+			false, std::memory_order_release);
 		g_parkMaskForced.store(
 			false, std::memory_order_relaxed);
 	}
@@ -3783,6 +4040,12 @@ namespace dx11::internal_render_probe
 				requested, std::memory_order_acq_rel);
 		if (!requested)
 		{
+			g_independentExclusiveWindow.store(
+				false, std::memory_order_release);
+			g_independentOutputCapturePending.store(
+				false, std::memory_order_release);
+			g_independentSubmitDueTick.store(
+				0, std::memory_order_relaxed);
 			g_lastParkScheduleTick.store(
 				0, std::memory_order_relaxed);
 			g_lastParkForcedFrame.store(

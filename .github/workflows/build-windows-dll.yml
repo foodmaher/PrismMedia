@@ -87,6 +87,7 @@ jobs:
           Copy-Item "V3.9-SPOTIFY-SESSION-BACKUPS.md" $Docs
           Copy-Item "V3.10-VISUAL-AUDIO-INPUT.md" $Docs
           Copy-Item "V3.11-SPF-TRAFFIC-RADIO.md" $Docs
+          Copy-Item "INDEPENDENT-RENDER-TEST.md" $Docs
 
           $SpfBridge = "$Runtime\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $SpfBridge -Force |
@@ -95,7 +96,7 @@ jobs:
           Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Runtime\SPF-OPTIONAL"
 
           @"
-          PrismTextureStreamerFB 3.11.0 SPF AI Traffic Radio
+          PrismTextureStreamerFB 3.11.16 Independent Target Snapshot
 
           Copy PrismTextureStreamerFB.dll AND the PrismTextureStreamerFB
           folder into:
@@ -114,7 +115,7 @@ jobs:
       - name: Upload finished package
         uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-3.11.0-spf-traffic-radio
+          name: PrismTextureStreamerFB-3.11.16-independent-target-snapshot
           path: package
           if-no-files-found: error
           retention-days: 30

@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.11.15-independent-render-submit";
+inline const char* g_version = "3.11.16-independent-target-snapshot";

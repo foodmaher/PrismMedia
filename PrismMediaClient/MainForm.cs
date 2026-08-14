@@ -990,19 +990,14 @@ namespace PrismMediaClient
             if (command.StartsWith("vehiclepower|", StringComparison.Ordinal))
             {
                 bool powered = command.EndsWith("|1", StringComparison.Ordinal);
-                if (!powered)
-                {
-                    adaptiveAudio.SetTransportGain(false);
-                    // Let most of the shared 650 ms curve complete before the
-                    // browser is paused, avoiding a hard engine-off cut.
-                    await Task.Delay(420);
-                }
                 if (fullSpotifyWeb)
                     await ExecuteFullSpotifyCommandAsync(command);
                 else
                     await ExecuteCommandAsync(command);
                 if (powered)
                     adaptiveAudio.SetTransportGain(true);
+                else
+                    adaptiveAudio.SetTransportGain(false);
                 return;
             }
             if (command.StartsWith("load|", StringComparison.Ordinal) &&

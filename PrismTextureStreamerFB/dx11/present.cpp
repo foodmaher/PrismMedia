@@ -367,7 +367,16 @@ HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
         ImGui_ImplDX11_Init(device, context);
 
         ImGuiIO& io = ImGui::GetIO();
-        io.FontDefault = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\Arial.ttf", 15.0f);
+        // Keep a small font set in the atlas so the in-game interface can use
+        // the same strong hierarchy as the 4.0 console mock-up. Segoe UI is
+        // present on every supported Windows installation; every lookup in the
+        // menu still falls back to the default font if Windows rejects a face.
+        ImFont* regular = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f);
+        io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 19.0f);
+        io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuib.ttf", 24.0f);
+        io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuib.ttf", 31.0f);
+        if (regular)
+            io.FontDefault = regular;
         io.Fonts->Build();
 
         init = true;

@@ -5,8 +5,14 @@ or a desktop window onto supported ETS2/ATS truck displays.
 
 ## What changed in 4.0.0
 
-- New hybrid dashboard UI with animated audio waves, mouse/gamepad navigation,
-  auto-save, smooth page transitions, and a live option-effect inspector.
+- New hybrid dashboard UI with a Home overview, custom vector icons, elevated
+  cards and simulated soft shadows, animated audio waves, mouse/gamepad
+  navigation, auto-save, smooth page transitions, and a live option-effect
+  inspector.
+- The complete retained control set remains available: GPS/Dashboard/Custom
+  displays, Pause/Freeze, media mute and volume, hotkey target selection,
+  performance profiles, scaling modes, backups, adaptive audio tuning, update
+  notifications, detailed live performance, and sampled per-core activity.
 - Media URLs load immediately. A YouTube playlist URL is supported as one live
   source, but the old saved multi-playlist library and all bundled personal URLs
   are removed.
@@ -16,6 +22,8 @@ or a desktop window onto supported ETS2/ATS truck displays.
   resynchronize playback intent to prevent a stale pause indicator.
 - Adaptive gain, stereo pan, and low-pass changes use a 650 ms crossfade so
   cabin/exterior camera transitions do not produce an abrupt “DJ” effect.
+- Engine-off playback pauses immediately with no fade; engine-start can still
+  recover smoothly without changing cabin/exterior transition behavior.
 - Automatic brightness now behaves like a phone sensor: sunlight changes settle
   over about 2.5 seconds and dimming over about 4 seconds instead of jumping.
 - Normal options apply live and auto-save. Game texture identity changes and

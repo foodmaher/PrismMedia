@@ -51,7 +51,7 @@ namespace PrismCameraMonitor
         private uint completedPhaseMask;
         private ulong correlationSamples;
         private ulong observedJobs;
-        private ulong rejectedSlot7Jobs;
+        private ulong submittedProbeJobs;
         private string currentStageText = "";
         private string currentDetail = "";
         private string currentInstruction = "";
@@ -76,7 +76,7 @@ namespace PrismCameraMonitor
 
         internal MonitorForm()
         {
-            Text = "Prism Independent Camera Lab";
+            Text = "Prism GPU Command Trace";
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(900, 650);
             Size = new Size(1100, 760);
@@ -146,7 +146,7 @@ namespace PrismCameraMonitor
             instructionLabel.Padding = new Padding(8);
             instructionLabel.BackColor = Color.FromArgb(37, 42, 51);
             instructionLabel.Text =
-                "Start a diagnostic to begin the seven guided captures.";
+                "Press Start once, remain in the truck for 10 seconds, then send the two trace files from Documents\\ETS2.";
             guidancePanel.Controls.Add(instructionLabel, 0, 0);
 
             phaseButton.Dock = DockStyle.Fill;
@@ -155,6 +155,7 @@ namespace PrismCameraMonitor
             phaseButton.BackColor = Color.FromArgb(55, 105, 75);
             phaseButton.ForeColor = Color.White;
             phaseButton.Enabled = false;
+            phaseButton.Visible = false;
             phaseButton.Click += (_, __) => RequestPhaseCapture();
             guidancePanel.Controls.Add(phaseButton, 1, 0);
 
@@ -162,6 +163,7 @@ namespace PrismCameraMonitor
             saveButton.Text = "Save report";
             saveButton.FlatStyle = FlatStyle.Flat;
             saveButton.Enabled = false;
+            saveButton.Visible = false;
             saveButton.Click += (_, __) => SaveReport(true);
             guidancePanel.Controls.Add(saveButton, 2, 0);
             root.Controls.Add(guidancePanel, 0, 2);
@@ -232,7 +234,7 @@ namespace PrismCameraMonitor
                 case 0: return "Offline";
                 case 1: return "Plugin ready";
                 case 2: return "Diagnostic started";
-                case 3: return "Slot 7 blocked";
+                case 3: return "GPU trace ready";
                 case 4: return "Discovering independent camera state";
                 case 5: return "Independent camera state ready";
                 case 6: return "Plugin-owned render target ready";
@@ -244,7 +246,7 @@ namespace PrismCameraMonitor
                 case 12: return "Blocked";
                 case 13: return "Failed";
                 case 14: return "Guided camera-memory correlation";
-                case 15: return "Correlation candidates ready";
+                case 15: return "GPU trace saved";
                 default: return "Unknown stage " + stage;
             }
         }
@@ -390,7 +392,7 @@ namespace PrismCameraMonitor
                 uint stride = view.ReadUInt32(56);
                 uint pixelBytes = view.ReadUInt32(60);
                 ulong observedJobs = view.ReadUInt64(72);
-                ulong rejectedSlot7 = view.ReadUInt64(80);
+                ulong probeJobs = view.ReadUInt64(80);
                 ulong readbackFrames = view.ReadUInt64(96);
                 ulong sampledObjects = view.ReadUInt64(104);
                 uint phase = view.ReadUInt32(112);
@@ -434,7 +436,7 @@ namespace PrismCameraMonitor
                 ulong age = now >= updatedTick ? now - updatedTick : 0;
                 bool connected = (flags & 1U) != 0 && age < 2000;
                 connectionLabel.Text = connected
-                    ? "Connected — slot 7 is disabled"
+                    ? "Connected — legacy internal-camera path removed"
                     : "Plugin channel is stale/offline";
                 connectionLabel.ForeColor = connected
                     ? Color.LightGreen
@@ -450,13 +452,13 @@ namespace PrismCameraMonitor
                         ? Color.OrangeRed
                         : Color.LightSkyBlue;
                 countersLabel.Text = string.Format(
-                    "Run {0} | Jobs observed: {1} | Slot-7 jobs rejected: {2} | " +
-                    "Memory samples: {3} | Candidates: {4} | Readback: {5}",
-                    runId, observedJobs, rejectedSlot7, sampledObjects,
+                    "Run {0} | Jobs observed: {1} | Submitted control jobs: {2} | " +
+                    "Trace samples: {3} | Candidates: {4} | Readback: {5}",
+                    runId, observedJobs, probeJobs, sampledObjects,
                     candidateCount, readbackFrames);
                 detailBox.Text = detail;
                 instructionLabel.Text = string.IsNullOrWhiteSpace(instruction)
-                    ? "Waiting for a guided correlation instruction."
+                    ? "Press Start once and wait for GPU trace saved."
                     : (phase >= 1 && phase <= 7
                         ? "Phase " + phase + "/7 — " + PhaseName(phase)
                         : PhaseName(phase)) + Environment.NewLine + instruction;
@@ -474,7 +476,7 @@ namespace PrismCameraMonitor
                 completedPhaseMask = phaseMask;
                 correlationSamples = sampledObjects;
                 this.observedJobs = observedJobs;
-                rejectedSlot7Jobs = rejectedSlot7;
+                submittedProbeJobs = probeJobs;
                 currentStageText = stageText;
                 currentDetail = detail;
                 currentInstruction = instruction;
@@ -615,7 +617,7 @@ namespace PrismCameraMonitor
                 string path = Path.Combine(
                     directory, "PrismCameraLabReport.txt");
                 var report = new StringBuilder();
-                report.AppendLine("Prism Independent Camera Lab report");
+                report.AppendLine("Prism GPU Command Trace status report");
                 report.AppendLine("Created: " +
                     DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
                 report.AppendLine("Run: " + lastRunId);
@@ -625,8 +627,8 @@ namespace PrismCameraMonitor
                 report.AppendLine("Completed phases: " +
                     PhaseMask(completedPhaseMask));
                 report.AppendLine("Observed jobs: " + observedJobs);
-                report.AppendLine("Rejected slot-7 jobs: " +
-                    rejectedSlot7Jobs);
+                report.AppendLine("Submitted control jobs: " +
+                    submittedProbeJobs);
                 report.AppendLine("Bounded memory samples: " +
                     correlationSamples);
                 report.AppendLine("Detail: " + currentDetail);

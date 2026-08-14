@@ -123,10 +123,10 @@ namespace camera_monitor
         publish(
             prism_camera_monitor::Stage::PluginReady,
             prism_camera_monitor::kPluginConnected |
-                prism_camera_monitor::kSlot7Disabled,
+                prism_camera_monitor::kLegacyCameraPathRemoved,
             "Plugin ready",
-            "Independent Camera Lab is connected. Slot 7 is disabled; "
-            "no mirror or park frame can enter this channel.");
+            "GPU-command tracing is ready. The legacy internal-camera "
+            "renderer and all GPS diagnostic output paths are removed.");
         return true;
     }
 
@@ -136,7 +136,7 @@ namespace camera_monitor
         {
             publish(
                 prism_camera_monitor::Stage::Offline,
-                prism_camera_monitor::kSlot7Disabled,
+                prism_camera_monitor::kLegacyCameraPathRemoved,
                 "Plugin offline",
                 "The game plugin shut down.");
             UnmapViewOfFile(g_shared);
@@ -264,7 +264,7 @@ namespace camera_monitor
         publish(
             prism_camera_monitor::Stage::DiagnosticStarted,
             prism_camera_monitor::kPluginConnected |
-                prism_camera_monitor::kSlot7Disabled |
+                prism_camera_monitor::kLegacyCameraPathRemoved |
                 prism_camera_monitor::kDiagnosticRunning,
             "Diagnostic started",
             detail);
@@ -277,7 +277,7 @@ namespace camera_monitor
         const char* detailText,
         int32_t errorCode,
         uint64_t observedRenderJobs,
-        uint64_t rejectedSlot7Jobs,
+        uint64_t submittedProbeJobs,
         uint64_t taggedTargets,
         uint64_t readbackFrames)
     {
@@ -292,7 +292,7 @@ namespace camera_monitor
         g_shared->updatedTick = GetTickCount64();
         g_shared->runId = g_runId.load(std::memory_order_relaxed);
         g_shared->observedRenderJobs = observedRenderJobs;
-        g_shared->rejectedSlot7Jobs = rejectedSlot7Jobs;
+        g_shared->submittedProbeJobs = submittedProbeJobs;
         g_shared->taggedTargets = taggedTargets;
         g_shared->readbackFrames = readbackFrames;
         g_shared->correlationSamples = 0;
@@ -341,7 +341,7 @@ namespace camera_monitor
             prism_camera_monitor::Stage::FrameReady);
         g_shared->flags =
             prism_camera_monitor::kPluginConnected |
-            prism_camera_monitor::kSlot7Disabled |
+            prism_camera_monitor::kLegacyCameraPathRemoved |
             prism_camera_monitor::kCameraStateVerified |
             prism_camera_monitor::kOwnedTargetVerified |
             prism_camera_monitor::kFrameAvailable;
@@ -371,7 +371,7 @@ namespace camera_monitor
         const prism_camera_monitor::CorrelationCandidate* candidates,
         uint32_t candidateCount,
         uint64_t observedRenderJobs,
-        uint64_t rejectedSlot7Jobs)
+        uint64_t submittedProbeJobs)
     {
         if (!g_shared)
             return;
@@ -385,7 +385,7 @@ namespace camera_monitor
         g_shared->updatedTick = GetTickCount64();
         g_shared->runId = g_runId.load(std::memory_order_relaxed);
         g_shared->observedRenderJobs = observedRenderJobs;
-        g_shared->rejectedSlot7Jobs = rejectedSlot7Jobs;
+        g_shared->submittedProbeJobs = submittedProbeJobs;
         g_shared->taggedTargets = 0;
         g_shared->readbackFrames = 0;
         g_shared->correlationSamples = correlationSamples;

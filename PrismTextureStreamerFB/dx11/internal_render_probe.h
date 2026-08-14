@@ -21,8 +21,8 @@ namespace dx11::internal_render_probe
 		uint64_t bindCount{};
 		uint64_t omSetRenderTargetsBindCount{};
 		uint64_t omSetRenderTargetsUavBindCount{};
-		uint64_t duringSlot7BindCount{};
-		uint64_t afterSlot7BindCount{};
+		uint64_t duringProbeBindCount{};
+		uint64_t afterProbeBindCount{};
 		uint64_t duringMirrorScheduleBindCount{};
 		uint64_t nearMirrorBindCount{};
 		uint64_t firstFrame{};
@@ -62,7 +62,7 @@ namespace dx11::internal_render_probe
 		uint64_t parkScheduleCount{};
 		uint64_t parkOutputFrames{};
 		uint64_t parkReadbackBusySkips{};
-		uint64_t slot7DispatchCount{};
+		uint64_t probeDispatchCount{};
 		uint64_t commandListTagCount{};
 		uint64_t commandListExecuteCount{};
 		uint64_t traceStartedTick{};

@@ -252,9 +252,7 @@ void new_frame()
 	            !showEngineStandby &&
 	            screen.reverseCameraEnabled &&
 	            (g_reverse_active.load() || screen.reversePreview);
-            const bool internalParkMethod =
-                screen.reverseCameraMethod ==
-                    reverse_camera_method_t::INTERNAL_PARK_PROBE;
+			const bool internalParkMethod = false;
             internalParkActivationRequested |=
                 screen.reverseCameraEnabled &&
                 internalParkMethod;

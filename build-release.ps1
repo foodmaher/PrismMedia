@@ -40,7 +40,7 @@ if (-not (Test-Path (Join-Path $MonitorDirectory 'PrismCameraMonitor.exe'))) {
     throw "Build completed but PrismCameraMonitor.exe was not found at: $MonitorDirectory"
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.11.24-camera-memory-correlation'
+$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.11.25-gpu-command-trace'
 if (Test-Path $Package) {
     Remove-Item $Package -Recurse -Force
 }
@@ -63,7 +63,7 @@ Copy-Item (Join-Path $ProjectRoot 'V3.8-SPOTIFY-GAMEPAD-DIAGNOSTICS.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'V3.9-SPOTIFY-SESSION-BACKUPS.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'V3.10-VISUAL-AUDIO-INPUT.md') $Docs
 Copy-Item (Join-Path $ProjectRoot 'V3.11-SPF-TRAFFIC-RADIO.md') $Docs
-Copy-Item (Join-Path $ProjectRoot 'INDEPENDENT-RENDER-TEST.md') $Docs
+Copy-Item (Join-Path $ProjectRoot 'GPU-COMMAND-TRACE-TEST.md') $Docs
 $SpfBridge = Join-Path $Runtime 'SPF-OPTIONAL\PrismCameraBridge'
 New-Item -ItemType Directory -Path $SpfBridge -Force | Out-Null
 Copy-Item $BridgeDll $SpfBridge
@@ -71,15 +71,16 @@ Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (
     Join-Path $Runtime 'SPF-OPTIONAL')
 
 @"
-PrismTextureStreamerFB 3.11.24 Camera Memory Correlation
+PrismTextureStreamerFB 3.11.25 GPU Command Trace
 
 Copy PrismTextureStreamerFB.dll and the PrismTextureStreamerFB folder into
 <ETS2 or ATS>\bin\win_x64\plugins. The DLL must stay directly in plugins.
 Open the menu with Ctrl+F8.
 
-The Independent Camera Lab launches PrismCameraMonitor.exe from the plugin
-folder. It never uses slot 7 and never replaces GPS media with an unverified
-frame.
+The GPU Command Trace launches PrismCameraMonitor.exe from the plugin folder.
+The legacy internal-camera runtime is absent. The diagnostic submits one
+non-park control job, records D3D11 commands for ten seconds, and never replaces
+GPS media.
 "@ | Set-Content (Join-Path $Package 'INSTALL.txt')
 
 Write-Host ''

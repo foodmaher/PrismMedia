@@ -35,9 +35,6 @@
     <ClCompile Include="camera_bridge_client.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="camera_correlation.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="camera_monitor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -69,6 +66,9 @@
       <Filter>Source Files\dx11</Filter>
     </ClCompile>
     <ClCompile Include="dx11\internal_render_probe.cpp">
+      <Filter>Source Files\dx11</Filter>
+    </ClCompile>
+    <ClCompile Include="dx11\gpu_command_trace.cpp">
       <Filter>Source Files\dx11</Filter>
     </ClCompile>
     <ClCompile Include="sources\window.cpp">
@@ -110,9 +110,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="camera_bridge_client.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
-    <ClInclude Include="camera_correlation.h">
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="camera_monitor.h">
@@ -158,6 +155,9 @@
       <Filter>Source Files\dx11</Filter>
     </ClInclude>
     <ClInclude Include="dx11\internal_render_probe.h">
+      <Filter>Source Files\dx11</Filter>
+    </ClInclude>
+    <ClInclude Include="dx11\gpu_command_trace.h">
       <Filter>Source Files\dx11</Filter>
     </ClInclude>
     <ClInclude Include="sources\window.h">

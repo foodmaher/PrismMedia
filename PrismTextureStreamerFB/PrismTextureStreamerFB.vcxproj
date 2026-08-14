@@ -141,13 +141,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="camera_bridge_client.cpp" />
-    <ClCompile Include="camera_correlation.cpp" />
     <ClCompile Include="camera_monitor.cpp" />
     <ClCompile Include="diagnostic_log.cpp" />
     <ClCompile Include="dinput8\dinput8.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="engine_standby.cpp" />
     <ClCompile Include="dx11\CreateTexture2D.cpp" />
+    <ClCompile Include="dx11\gpu_command_trace.cpp" />
     <ClCompile Include="dx11\internal_render_probe.cpp" />
     <ClCompile Include="dx11\present.cpp" />
     <ClCompile Include="hotkeys.cpp" />
@@ -169,7 +169,6 @@
   <ItemGroup>
     <ClInclude Include="bmem.h" />
     <ClInclude Include="camera_bridge_client.h" />
-    <ClInclude Include="camera_correlation.h" />
     <ClInclude Include="camera_monitor.h" />
     <ClInclude Include="..\Shared\PrismCameraMonitorShared.h" />
     <ClInclude Include="diagnostic_log.h" />
@@ -177,6 +176,7 @@
     <ClInclude Include="dinput8\dinput8.h" />
     <ClInclude Include="dx11\CreateTexture2D.h" />
     <ClInclude Include="dx11\dx11.h" />
+    <ClInclude Include="dx11\gpu_command_trace.h" />
     <ClInclude Include="dx11\internal_render_probe.h" />
     <ClInclude Include="dx11\present.h" />
     <ClInclude Include="hotkeys.h" />

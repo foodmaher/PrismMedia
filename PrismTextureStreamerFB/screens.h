@@ -139,7 +139,7 @@ struct screen_t
 		reverse_camera_method_t::WINDOW_CROP;
 	// 0 follows the last matching target. 1-4 pin a discovered target.
 	uint8_t reverseInternalTargetVariant = 1;
-	// Manual slot-7 alignment is truck-local by default. SPF is only needed
+	// Saved manual alignment is truck-local by default. SPF is only needed
 	// when the user explicitly asks the camera to follow the final trailer.
 	bool reverseCameraKitInstalled = true;
 	bool reverseTrailerAwareMount = false;

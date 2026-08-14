@@ -21,7 +21,7 @@ namespace camera_monitor
         const char* detailText,
         int32_t errorCode = 0,
         uint64_t observedRenderJobs = 0,
-        uint64_t rejectedSlot7Jobs = 0,
+        uint64_t submittedProbeJobs = 0,
         uint64_t taggedTargets = 0,
         uint64_t readbackFrames = 0);
     void publish_frame(
@@ -42,5 +42,5 @@ namespace camera_monitor
         const prism_camera_monitor::CorrelationCandidate* candidates = nullptr,
         uint32_t candidateCount = 0,
         uint64_t observedRenderJobs = 0,
-        uint64_t rejectedSlot7Jobs = 0);
+        uint64_t submittedProbeJobs = 0);
 }

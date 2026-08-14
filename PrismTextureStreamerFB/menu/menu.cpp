@@ -213,18 +213,6 @@ static bool rebuild_reverse_source(screen_t& screen)
 		screen.reverseSource->SetPaused(
 			!(g_reverse_active.load() || screen.reversePreview));
 	g_screen_source_creation_in_progress = false;
-	if (screen.reverseCameraEnabled &&
-		screen.reverseCameraMethod ==
-			reverse_camera_method_t::INTERNAL_PARK_PROBE)
-	{
-		dx11::internal_render_probe::
-			set_park_activation_requested(true);
-		dx11::internal_render_probe::
-			set_park_render_requested(
-				g_reverse_active.load() ||
-				screen.reversePreview);
-		return true;
-	}
 	return !screen.reverseCameraEnabled ||
 		(screen.reverseZeroForwardImpact &&
 			!g_reverse_active.load() && !screen.reversePreview) ||
@@ -1963,7 +1951,7 @@ void on_frame()
 									ImGui::TextWrapped(
 										"Window crop remains the stable reverse view. The separate "
 										"Camera Lab observes the new independent Prism3D path and "
-										"shows live stages or verified frames without using slot 7.");
+										"records a bounded Prism3D-to-D3D11 command trace without replacing GPS media.");
 
 							if (ImGui::TreeNode(
 									"Independent Camera Lab"))
@@ -2009,8 +1997,7 @@ void on_frame()
 										? "ready" : "not available");
 									ImGui::TextColored(
 										ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
-										"Slot 7: disabled for install, scheduling, capture, "
-										"readback, and display");
+										"Legacy internal-camera renderer: removed from this build");
 									ImGui::Text(
 										"Native render jobs observed: %llu",
 										static_cast<unsigned long long>(
@@ -2057,8 +2044,8 @@ void on_frame()
 										ImVec4(0.55f, 0.75f, 0.95f, 1.0f),
 										"The GPS display is not used by this diagnosis.");
 									ImGui::TextWrapped(
-										"The companion guides seven captures: centred cabin, left, "
-										"right, exterior, both enlarged mirrors, then cabin again.");
+										"Press Start once and remain in the truck for ten seconds. "
+										"The trace files are saved automatically in Documents\\ETS2.");
 
 								const bool canTrace =
 										probeStatus.supportedBuild &&
@@ -2073,7 +2060,7 @@ void on_frame()
 											"Open Camera Lab and start diagnosis"))
 									{
 											dx11::internal_render_probe::
-												begin_trace(180);
+												begin_trace(10);
 									}
 								}
 								else
@@ -2085,7 +2072,7 @@ void on_frame()
 											: 0;
 									ImGui::TextColored(
 										ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-										"Guided diagnosis: %.1f seconds left | "
+										"GPU trace: %.1f seconds left | "
 										"%zu D3D targets observed",
 										static_cast<double>(
 											millisecondsLeft) / 1000.0,
@@ -2160,8 +2147,7 @@ void on_frame()
 									"Reverse detected: %s",
 									g_reverse_active.load() ? "Yes" : "No");
 									static const char* reverseMethodNames[] = {
-										"Window crop (stable)",
-										"Independent Camera Lab (slot 7 disabled)"
+										"Window crop (stable)"
 								};
 								int reverseMethod = static_cast<int>(
 									screen.reverseCameraMethod);
@@ -2180,10 +2166,7 @@ void on_frame()
 									saveConfiguration = true;
 								}
 
-								const bool internalParkMethod =
-									screen.reverseCameraMethod ==
-										reverse_camera_method_t::
-											INTERNAL_PARK_PROBE;
+								const bool internalParkMethod = false;
 								if (ImGui::Checkbox(
 									"Preview / calibrate now",
 									&screen.reversePreview))
@@ -2210,14 +2193,14 @@ void on_frame()
 									const auto parkStatus =
 										dx11::internal_render_probe::status();
 									ImGui::TextWrapped(
-										"Slot 7 and the old A/B/C/D copy paths are hard-disabled. "
+										"The legacy internal-camera and A/B/C/D copy paths are removed. "
 										"This read-only diagnosis never replaces the GPS media.");
 									if (!parkStatus.tracing)
 									{
 										if (ImGui::Button(
 											"Open Camera Lab and start guided diagnosis"))
 										{
-											dx11::internal_render_probe::begin_trace(180);
+											dx11::internal_render_probe::begin_trace(10);
 										}
 									}
 									else
@@ -2383,7 +2366,7 @@ void on_frame()
 										break;
 									}
 									ImGui::TextWrapped(
-										"Camera Lab never schedules slot 7. The companion "
+										"Camera Lab never schedules the removed park-camera path. The companion "
 										"viewer receives only a verified custom-camera frame; "
 										"otherwise it reports the exact blocked stage in real time.");
 								}

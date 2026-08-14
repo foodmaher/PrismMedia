@@ -591,16 +591,7 @@ namespace settings {
             screen.reverseCameraEnabled = GetPrivateProfileIntA(
                 section.c_str(), "ReverseCameraEnabled", 0, path.c_str()) != 0;
             screen.reverseCameraMethod =
-                static_cast<reverse_camera_method_t>((std::clamp)(
-                    GetPrivateProfileIntA(
-                        section.c_str(), "ReverseCameraMethod",
-                        static_cast<UINT>(
-                            reverse_camera_method_t::WINDOW_CROP),
-                        path.c_str()),
-                    0U,
-                    static_cast<UINT>(
-                        reverse_camera_method_t::
-                            INTERNAL_PARK_PROBE)));
+                reverse_camera_method_t::WINDOW_CROP;
             screen.reverseInternalTargetVariant =
                 static_cast<uint8_t>((std::clamp)(
                     GetPrivateProfileIntA(
@@ -761,16 +752,7 @@ namespace settings {
         }
 
         const auto loadedCount = loaded.size();
-        const bool internalParkRequested =
-            std::any_of(
-                loaded.begin(), loaded.end(),
-                [](const screen_t& screen)
-                {
-                    return screen.reverseCameraEnabled &&
-                        screen.reverseCameraMethod ==
-                            reverse_camera_method_t::
-                                INTERNAL_PARK_PROBE;
-                });
+		const bool internalParkRequested = false;
         {
             std::lock_guard<std::mutex> lock(g_screens_mutex);
             g_screens = std::move(loaded);

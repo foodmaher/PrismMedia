@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.11.24-camera-memory-correlation";
+inline const char* g_version = "3.11.25-gpu-command-trace-no-legacy-camera";

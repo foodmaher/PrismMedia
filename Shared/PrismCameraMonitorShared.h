@@ -21,7 +21,7 @@ namespace prism_camera_monitor
         Offline = 0,
         PluginReady = 1,
         DiagnosticStarted = 2,
-        Slot7Blocked = 3,
+        GpuTraceReady = 3,
         CameraStateDiscovery = 4,
         CameraStateReady = 5,
         OwnedTargetReady = 6,
@@ -39,7 +39,7 @@ namespace prism_camera_monitor
     enum Flags : uint32_t
     {
         kPluginConnected = 1U << 0,
-        kSlot7Disabled = 1U << 1,
+        kLegacyCameraPathRemoved = 1U << 1,
         kCameraStateVerified = 1U << 2,
         kOwnedTargetVerified = 1U << 3,
         kFrameAvailable = 1U << 4,
@@ -104,7 +104,7 @@ namespace prism_camera_monitor
         volatile LONG requestSequence;
         volatile LONG phaseRequestSequence;
         uint64_t observedRenderJobs;
-        uint64_t rejectedSlot7Jobs;
+        uint64_t submittedProbeJobs;
         uint64_t taggedTargets;
         uint64_t readbackFrames;
         uint64_t correlationSamples;

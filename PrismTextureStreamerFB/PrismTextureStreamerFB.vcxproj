@@ -141,14 +141,11 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="camera_bridge_client.cpp" />
-    <ClCompile Include="camera_monitor.cpp" />
     <ClCompile Include="diagnostic_log.cpp" />
     <ClCompile Include="dinput8\dinput8.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="engine_standby.cpp" />
     <ClCompile Include="dx11\CreateTexture2D.cpp" />
-    <ClCompile Include="dx11\gpu_command_trace.cpp" />
-    <ClCompile Include="dx11\internal_render_probe.cpp" />
     <ClCompile Include="dx11\present.cpp" />
     <ClCompile Include="hotkeys.cpp" />
     <ClCompile Include="menu\menu.cpp" />
@@ -156,11 +153,9 @@
     <ClCompile Include="prism\execute_command.cpp" />
     <ClCompile Include="prism\memserver_texture_queue.cpp" />
     <ClCompile Include="settings.cpp" />
-    <ClCompile Include="traffic_audio.cpp" />
     <ClCompile Include="update_checker.cpp" />
     <ClCompile Include="sources\media_client.cpp" />
     <ClCompile Include="sources\native_media.cpp" />
-    <ClCompile Include="sources\reverse_camera.cpp" />
     <ClCompile Include="sources\wgc_window.cpp" />
     <ClCompile Include="sources\window.cpp" />
     <ClCompile Include="environment_audio.cpp" />
@@ -169,15 +164,11 @@
   <ItemGroup>
     <ClInclude Include="bmem.h" />
     <ClInclude Include="camera_bridge_client.h" />
-    <ClInclude Include="camera_monitor.h" />
-    <ClInclude Include="..\Shared\PrismCameraMonitorShared.h" />
     <ClInclude Include="diagnostic_log.h" />
     <ClInclude Include="engine_standby.h" />
     <ClInclude Include="dinput8\dinput8.h" />
     <ClInclude Include="dx11\CreateTexture2D.h" />
     <ClInclude Include="dx11\dx11.h" />
-    <ClInclude Include="dx11\gpu_command_trace.h" />
-    <ClInclude Include="dx11\internal_render_probe.h" />
     <ClInclude Include="dx11\present.h" />
     <ClInclude Include="hotkeys.h" />
     <ClInclude Include="menu\menu.h" />
@@ -189,13 +180,11 @@
     <ClInclude Include="scs_logging.h" />
     <ClInclude Include="settings.h" />
     <ClInclude Include="telemetry_state.h" />
-    <ClInclude Include="traffic_audio.h" />
     <ClInclude Include="update_checker.h" />
     <ClInclude Include="thread_scheduling.h" />
     <ClInclude Include="sources\content_source.h" />
     <ClInclude Include="sources\media_client.h" />
     <ClInclude Include="sources\native_media.h" />
-    <ClInclude Include="sources\reverse_camera.h" />
     <ClInclude Include="sources\wgc_dispatcher.h" />
     <ClInclude Include="sources\wgc_window.h" />
     <ClInclude Include="sources\window.h" />

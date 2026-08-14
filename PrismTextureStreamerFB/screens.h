@@ -33,19 +33,6 @@ enum class performance_profile_t : uint8_t {
 	SMOOTH
 };
 
-enum class reverse_performance_profile_t : uint8_t {
-	CUSTOM = 0,
-	ECONOMY,
-	BALANCED,
-	QUALITY,
-	ULTRA
-};
-
-enum class reverse_camera_method_t : uint8_t {
-	WINDOW_CROP = 0,
-	INTERNAL_PARK_PROBE
-};
-
 enum class content_mode_t : uint8_t {
 	WINDOW_CAPTURE = 0,
 	INTEGRATED_MEDIA,
@@ -55,11 +42,6 @@ enum class content_mode_t : uint8_t {
 enum class media_service_t : uint8_t {
 	YOUTUBE = 0,
 	SPOTIFY
-};
-
-enum class spotify_playback_mode_t : uint8_t {
-	EMBED = 0,
-	FULL_WEB_PLAYER
 };
 
 struct screen_t
@@ -76,12 +58,6 @@ struct screen_t
 	std::string source_application_display_name;
 	std::string mediaUrl;
 	media_service_t mediaService = media_service_t::YOUTUBE;
-	spotify_playback_mode_t spotifyPlaybackMode =
-		spotify_playback_mode_t::EMBED;
-	std::vector<std::string> youtubeUrls;
-	std::vector<std::string> spotifyUrls;
-	uint32_t selectedYoutubeUrl{};
-	uint32_t selectedSpotifyUrl{};
 	std::unique_ptr<IContentSource> source;
 	std::vector<uint8_t> frameScratch;
 	uint32_t frameScratchWidth{};
@@ -91,10 +67,6 @@ struct screen_t
 	uint32_t engineStandbyScratchHeight{};
 	uint64_t engineStandbyIdentityRevision{};
 	bool engineStandbyWasDisplayed{};
-	std::vector<uint8_t> internalParkScratch;
-	uint32_t internalParkScratchWidth{};
-	uint32_t internalParkScratchHeight{};
-	uint64_t internalParkFrameSequence{};
 	bool hasUploadedFrame{};
 	std::vector<uint32_t> scaleX;
 	uint32_t scaleXSourceOffset{};
@@ -108,72 +80,35 @@ struct screen_t
 	// Brightness multiplier for the generated truck-name standby logo while
 	// engine-follow pauses the media source.
 	float engineOffBrightness = 0.35f;
-	bool adaptiveAudioEnabled = false;
+	bool adaptiveAudioEnabled = true;
 	float adaptiveAudioInteriorVolume = 1.0f;
 	float adaptiveAudioStrength = 0.85f;
 	float adaptiveAudioSpeakerAzimuth = 0.0f;
-	float adaptiveAudioFacingAwayVolume = 0.05f;
-	float adaptiveAudioOutsideDistance = 0.85f;
+	float adaptiveAudioFacingAwayVolume = 0.0f;
+	float adaptiveAudioOutsideDistance = 0.25f;
 	float adaptiveAudioOutsideVolume = 0.0f;
-	float adaptiveAudioMenuVolume = 0.50f;
+	float adaptiveAudioMenuVolume = 0.15f;
 	bool adaptiveAudioExternalDistanceEnabled = true;
-	float adaptiveAudioExternalNearVolume = 0.35f;
-	float adaptiveAudioExternalNearCutoff = 1200.0f;
-	float adaptiveAudioExternalFullVolumeDistance = 1.5f;
+	float adaptiveAudioExternalNearVolume = 1.0f;
+	float adaptiveAudioExternalNearCutoff = 144.0f;
+	float adaptiveAudioExternalFullVolumeDistance = 0.0f;
 	float adaptiveAudioExternalMuteDistance = 20.0f;
 	bool adaptiveAudioExternalLowPassEnabled = true;
-	float adaptiveAudioExternalMinimumCutoff = 120.0f;
-	// Optional AI traffic radio. A stable percentage of SPF traffic actors is
-	// eligible, while one dedicated helper follows only the nearest audible car.
-	bool trafficRadioEnabled = false;
-	float trafficRadioVehicleDensity = 0.50f;
-	float trafficRadioMaximumVolume = 0.20f;
-	float trafficRadioFullVolumeDistance = 2.5f;
-	float trafficRadioMuteDistance = 28.0f;
-	float trafficRadioNearCutoff = 1400.0f;
-	float trafficRadioFarCutoff = 260.0f;
-	bool reverseCameraEnabled = false;
-	bool reversePreview = false;
-	bool reverseZeroForwardImpact = true;
-	reverse_camera_method_t reverseCameraMethod =
-		reverse_camera_method_t::WINDOW_CROP;
-	// 0 follows the last matching target. 1-4 pin a discovered target.
-	uint8_t reverseInternalTargetVariant = 1;
-	// Saved manual alignment is truck-local by default. SPF is only needed
-	// when the user explicitly asks the camera to follow the final trailer.
-	bool reverseCameraKitInstalled = true;
-	bool reverseTrailerAwareMount = false;
-	bool reverseFlipHorizontal = false;
-	bool reverseFlipVertical = false;
-	float reverseMountLateral = 0.0f;
-	float reverseMountHeight = 2.6f;
-	float reverseMountLongitudinal = -0.35f;
-	float reverseMountYaw = 180.0f;
-	float reverseMountPitch = -8.0f;
-	uint64_t reverseLastStartAttemptTick{};
-	reverse_performance_profile_t reversePerformanceProfile =
-		reverse_performance_profile_t::BALANCED;
-	uint32_t reverseCaptureWidth = 640;
-	uint32_t reverseCaptureHeight = 360;
-	uint8_t reverseFramerate = 15;
-	float reverseCropLeft = 0.30f;
-	float reverseCropTop = 0.02f;
-	float reverseCropWidth = 0.40f;
-	float reverseCropHeight = 0.22f;
-	std::unique_ptr<IContentSource> reverseSource;
+	float adaptiveAudioExternalMinimumCutoff = 20.0f;
 	scale_mode_t scaleMode = scale_mode_t::FIT;
-	float brightness = 1.0f;
-	bool autoBrightnessEnabled = false;
+	float brightness = 0.30f;
+	bool autoBrightnessEnabled = true;
 	float autoBrightnessDarkMultiplier = 0.65f;
 	float autoBrightnessBrightMultiplier = 1.15f;
 	// Runtime brightness after the optional game-lighting adjustment.
 	// This is deliberately not persisted; it is rebuilt from saved controls.
 	float effectiveBrightness = 1.0f;
+	uint64_t brightnessLastAdjustmentTick{};
 	float brightnessLutScale = -1.0f;
 	std::array<uint8_t, 256> brightnessLut{};
 	uint8_t edgeBleedGuard = 2;
-	performance_profile_t performanceProfile = performance_profile_t::BALANCED;
-	content_mode_t contentMode = content_mode_t::WINDOW_CAPTURE;
+	performance_profile_t performanceProfile = performance_profile_t::SMOOTH;
+	content_mode_t contentMode = content_mode_t::INTEGRATED_MEDIA;
 
 	// Performance measurements are smoothed on the game's render thread.
 	double uploadCpuMs{};
@@ -182,8 +117,6 @@ struct screen_t
 	double deliveredFps{};
 	uint64_t uploadedFrames{};
 	uint64_t lastUploadTick{};
-	uint64_t internalParkLastBlitTick{};
-	bool internalParkWasDisplayed{};
 
 	// Low-frequency render diagnostics. These fields are updated only while
 	// the screens mutex is held and never add a second capture/readback pass.
@@ -206,7 +139,7 @@ struct screen_t
 	ID3D11RenderTargetView* liveTextureRenderTarget{};
 	ID3D11DeviceContext* immediateContext{};
 
-	uint8_t framerate = 30; // Framerate of source, can actually be updated live
+	uint8_t framerate = 60; // Framerate of source, can actually be updated live
 
 	// Target live texture size
 	uint32_t targetLiveTextureWidth = 1280;
@@ -216,36 +149,6 @@ struct screen_t
 	uint32_t liveTextureWidth{};
 	uint32_t liveTextureHeight{};
 };
-
-inline void apply_reverse_performance_profile(screen_t& screen)
-{
-	switch (screen.reversePerformanceProfile)
-	{
-	case reverse_performance_profile_t::ECONOMY:
-		screen.reverseCaptureWidth = 426;
-		screen.reverseCaptureHeight = 240;
-		screen.reverseFramerate = 10;
-		break;
-	case reverse_performance_profile_t::BALANCED:
-		screen.reverseCaptureWidth = 640;
-		screen.reverseCaptureHeight = 360;
-		screen.reverseFramerate = 15;
-		break;
-	case reverse_performance_profile_t::QUALITY:
-		screen.reverseCaptureWidth = 960;
-		screen.reverseCaptureHeight = 540;
-		screen.reverseFramerate = 20;
-		break;
-	case reverse_performance_profile_t::ULTRA:
-		screen.reverseCaptureWidth = 1280;
-		screen.reverseCaptureHeight = 720;
-		screen.reverseFramerate = 30;
-		break;
-	case reverse_performance_profile_t::CUSTOM:
-	default:
-		break;
-	}
-}
 
 inline std::atomic<bool> g_screen_source_creation_in_progress{}; // Mainly for WGC to prevent deadlock on create texture 2d
 inline std::mutex g_screens_mutex;

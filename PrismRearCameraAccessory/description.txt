@@ -1,2 +1,0 @@
-Adds the cosmetic Prism rear-camera kit for supported trucks.
-Requires PrismTextureStreamerFB 3.0 for the live GPS picture.

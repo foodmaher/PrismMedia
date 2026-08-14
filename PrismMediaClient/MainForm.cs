@@ -116,7 +116,7 @@ namespace PrismMediaClient
             {
                 await InitializePlayerAsync();
             };
-            parentMonitor.Interval = 1000;
+            parentMonitor.Interval = 250;
             parentMonitor.Tick += (_, __) =>
             {
                 if (this.parentProcessId <= 0)
@@ -306,9 +306,10 @@ namespace PrismMediaClient
                     string command = Encoding.UTF8.GetString(bytes).TrimEnd('\0');
                     BeginInvoke(new Action(async () =>
                     {
-                        bool immediate =
-                            command.StartsWith(
-                                "parent|", StringComparison.Ordinal);
+                        bool immediate = command.StartsWith(
+                                "parent|", StringComparison.Ordinal) ||
+                            string.Equals(command, "shutdown",
+                                StringComparison.Ordinal);
                         if (immediate || ready)
                             await ApplyCommandAsync(command);
                         else if (string.Equals(
@@ -941,11 +942,6 @@ namespace PrismMediaClient
                 }
                 return;
             }
-            if (command.StartsWith("randomize|", StringComparison.Ordinal))
-            {
-                await ExecuteCommandAsync(command);
-                return;
-            }
             if (command.StartsWith("resize|", StringComparison.Ordinal))
             {
                 string[] dimensions = command.Substring(7).Split('x');
@@ -989,6 +985,24 @@ namespace PrismMediaClient
             if (command.StartsWith("loadspotifyweb|", StringComparison.Ordinal))
             {
                 await NavigateToFullSpotifyAsync(command.Substring(15));
+                return;
+            }
+            if (command.StartsWith("vehiclepower|", StringComparison.Ordinal))
+            {
+                bool powered = command.EndsWith("|1", StringComparison.Ordinal);
+                if (!powered)
+                {
+                    adaptiveAudio.SetTransportGain(false);
+                    // Let most of the shared 650 ms curve complete before the
+                    // browser is paused, avoiding a hard engine-off cut.
+                    await Task.Delay(420);
+                }
+                if (fullSpotifyWeb)
+                    await ExecuteFullSpotifyCommandAsync(command);
+                else
+                    await ExecuteCommandAsync(command);
+                if (powered)
+                    adaptiveAudio.SetTransportGain(true);
                 return;
             }
             if (command.StartsWith("load|", StringComparison.Ordinal) &&

@@ -9,8 +9,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PrismMediaClient", "PrismMe
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PrismCameraBridge", "PrismCameraBridge\PrismCameraBridge.vcxproj", "{4FA29687-A240-40F4-9C10-67C7D5F16F23}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PrismCameraMonitor", "PrismCameraMonitor\PrismCameraMonitor.csproj", "{E67BD814-C594-43B2-A69C-F5A85F2678F6}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -39,12 +37,6 @@ Global
 		{4FA29687-A240-40F4-9C10-67C7D5F16F23}.Release|x64.ActiveCfg = Release|x64
 		{4FA29687-A240-40F4-9C10-67C7D5F16F23}.Release|x64.Build.0 = Release|x64
 		{4FA29687-A240-40F4-9C10-67C7D5F16F23}.Release|x86.ActiveCfg = Release|x64
-		{E67BD814-C594-43B2-A69C-F5A85F2678F6}.Debug|x64.ActiveCfg = Debug|x64
-		{E67BD814-C594-43B2-A69C-F5A85F2678F6}.Debug|x64.Build.0 = Debug|x64
-		{E67BD814-C594-43B2-A69C-F5A85F2678F6}.Debug|x86.ActiveCfg = Debug|x64
-		{E67BD814-C594-43B2-A69C-F5A85F2678F6}.Release|x64.ActiveCfg = Release|x64
-		{E67BD814-C594-43B2-A69C-F5A85F2678F6}.Release|x64.Build.0 = Release|x64
-		{E67BD814-C594-43B2-A69C-F5A85F2678F6}.Release|x86.ActiveCfg = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

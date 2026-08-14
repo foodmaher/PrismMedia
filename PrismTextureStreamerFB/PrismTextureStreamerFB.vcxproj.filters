@@ -35,9 +35,6 @@
     <ClCompile Include="camera_bridge_client.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="camera_monitor.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="diagnostic_log.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -65,12 +62,6 @@
     <ClCompile Include="dx11\CreateTexture2D.cpp">
       <Filter>Source Files\dx11</Filter>
     </ClCompile>
-    <ClCompile Include="dx11\internal_render_probe.cpp">
-      <Filter>Source Files\dx11</Filter>
-    </ClCompile>
-    <ClCompile Include="dx11\gpu_command_trace.cpp">
-      <Filter>Source Files\dx11</Filter>
-    </ClCompile>
     <ClCompile Include="sources\window.cpp">
       <Filter>Source Files\sources</Filter>
     </ClCompile>
@@ -83,9 +74,6 @@
     <ClCompile Include="sources\wgc_window.cpp">
       <Filter>Source Files\sources</Filter>
     </ClCompile>
-    <ClCompile Include="sources\reverse_camera.cpp">
-      <Filter>Source Files\sources</Filter>
-    </ClCompile>
     <ClCompile Include="environment_audio.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -93,9 +81,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="settings.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="traffic_audio.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="update_checker.cpp">
@@ -110,12 +95,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="camera_bridge_client.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
-    <ClInclude Include="camera_monitor.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
-    <ClInclude Include="..\Shared\PrismCameraMonitorShared.h">
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="engine_standby.h">
@@ -154,12 +133,6 @@
     <ClInclude Include="dx11\CreateTexture2D.h">
       <Filter>Source Files\dx11</Filter>
     </ClInclude>
-    <ClInclude Include="dx11\internal_render_probe.h">
-      <Filter>Source Files\dx11</Filter>
-    </ClInclude>
-    <ClInclude Include="dx11\gpu_command_trace.h">
-      <Filter>Source Files\dx11</Filter>
-    </ClInclude>
     <ClInclude Include="sources\window.h">
       <Filter>Source Files\sources</Filter>
     </ClInclude>
@@ -193,9 +166,6 @@
     <ClInclude Include="thread_scheduling.h">
       <Filter>Source Files</Filter>
     </ClInclude>
-    <ClInclude Include="sources\reverse_camera.h">
-      <Filter>Source Files\sources</Filter>
-    </ClInclude>
     <ClInclude Include="environment_audio.h">
       <Filter>Source Files</Filter>
     </ClInclude>
@@ -203,9 +173,6 @@
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="settings.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
-    <ClInclude Include="traffic_audio.h">
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="update_checker.h">

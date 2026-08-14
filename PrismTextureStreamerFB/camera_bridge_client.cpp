@@ -5,7 +5,6 @@
 #include "telemetry_state.h"
 #include "../Shared/PrismCameraBridgeShared.h"
 
-#include <algorithm>
 #include <cstring>
 
 namespace
@@ -33,10 +32,6 @@ namespace
         g_camera_bridge_trailer_valid = false;
         g_camera_bridge_truck_valid = false;
         g_camera_bridge_trailer_count = 0;
-        {
-            std::lock_guard<std::mutex> lock(g_ai_traffic_mutex);
-            g_ai_traffic = {};
-        }
     }
 
     bool try_open_mapping(uint64_t now)
@@ -114,10 +109,6 @@ namespace camera_bridge
             g_camera_bridge_trailer_valid = false;
             g_camera_bridge_truck_valid = false;
             g_camera_bridge_trailer_count = 0;
-            {
-                std::lock_guard<std::mutex> lock(g_ai_traffic_mutex);
-                g_ai_traffic = {};
-            }
             return;
         }
 
@@ -165,29 +156,6 @@ namespace camera_bridge
             g_bridge_truck_heading = snapshot.truckHeading;
             g_bridge_truck_pitch = snapshot.truckPitch;
             g_bridge_truck_roll = snapshot.truckRoll;
-        }
-        {
-            std::lock_guard<std::mutex> lock(g_ai_traffic_mutex);
-            g_ai_traffic = {};
-            g_ai_traffic.available =
-                (snapshot.flags &
-                    prism_camera_bridge::kTrafficValid) != 0;
-            g_ai_traffic.updatedTick = snapshot.updatedTick;
-            g_ai_traffic.count = (std::min)(
-                snapshot.trafficCount,
-                prism_camera_bridge::kMaxTrafficVehicles);
-            for (uint32_t index = 0;
-                index < g_ai_traffic.count; ++index)
-            {
-                const auto& source = snapshot.traffic[index];
-                auto& destination = g_ai_traffic.vehicles[index];
-                destination.id = source.id;
-                destination.x = source.x;
-                destination.y = source.y;
-                destination.z = source.z;
-                destination.speed = source.speed;
-                destination.acceleration = source.acceleration;
-            }
         }
         g_last_camera_bridge_tick = snapshot.updatedTick;
     }

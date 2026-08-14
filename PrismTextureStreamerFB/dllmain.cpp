@@ -7,6 +7,7 @@
 #include "version.h"
 
 #include "sources/wgc_dispatcher.h"
+#include "sources/media_client.h"
 #include <MinHook/MinHook.h>
 #include "bmem.h"
 #include "screens.h"
@@ -20,7 +21,6 @@
 #include "camera_bridge_client.h"
 #include "diagnostic_log.h"
 #include "environment_audio.h"
-#include "traffic_audio.h"
 #include "thread_scheduling.h"
 #include "update_checker.h"
 
@@ -53,15 +53,6 @@ namespace
         return (std::clamp)(effective, 0.05f, 2.0f);
     }
 
-    void update_reverse_state(bool active)
-    {
-        if (g_reverse_active.load(std::memory_order_relaxed) == active)
-            return;
-        g_reverse_active.store(active, std::memory_order_relaxed);
-        diagnostic_log::writef(
-            "telemetry", "Reverse state changed: %s",
-            active ? "active" : "inactive");
-    }
 }
 
 #ifdef _DEBUG
@@ -182,22 +173,6 @@ SCSAPI_VOID truck_configuration_changed(
         name.empty() ? "unknown" : name.c_str());
 }
 
-SCSAPI_VOID selected_gear_changed(
-    const scs_string_t,
-    const scs_u32_t,
-    const scs_value_t* const value,
-    const scs_context_t)
-{
-    if (!value || value->type != SCS_VALUE_TYPE_s32)
-        return;
-
-    const int gear = value->value_s32.value;
-    if (g_selected_gear.load(std::memory_order_relaxed) != gear)
-        g_selected_gear.store(gear, std::memory_order_relaxed);
-    update_reverse_state(
-        gear < 0 || g_reverse_light.load(std::memory_order_relaxed));
-}
-
 SCSAPI_VOID engine_enabled_changed(
     const scs_string_t,
     const scs_u32_t,
@@ -214,22 +189,6 @@ SCSAPI_VOID engine_enabled_changed(
     diagnostic_log::writef(
         "telemetry", "Truck engine changed: %s",
         enabled ? "running" : "stopped");
-}
-
-SCSAPI_VOID reverse_light_changed(
-    const scs_string_t,
-    const scs_u32_t,
-    const scs_value_t* const value,
-    const scs_context_t)
-{
-    if (!value || value->type != SCS_VALUE_TYPE_bool)
-        return;
-
-    const bool lightOn = value->value_bool.value != 0;
-    if (g_reverse_light.load(std::memory_order_relaxed) != lightOn)
-        g_reverse_light.store(lightOn, std::memory_order_relaxed);
-    update_reverse_state(
-        lightOn || g_selected_gear.load(std::memory_order_relaxed) < 0);
 }
 
 SCSAPI_VOID truck_speed_changed(
@@ -271,8 +230,6 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
     IContentSource* spatialAudioTarget{};
     IContentSource* spatialAudioFallback{};
     screen_t* spatialAudioScreen{};
-    traffic_audio::config_t trafficRadioConfig{};
-    const bool reverseActive = g_reverse_active.load();
 
     camera_bridge::poll();
 
@@ -476,14 +433,13 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
         const DWORD processor2 = thread_scheduling::preferred_processor(2);
         diagnostic_log::writef(
             "runtime",
-            "driving=%d engine=%d reverse=%d camera=%s speed=%.1fkm/h "
+            "driving=%d engine=%d camera=%s speed=%.1fkm/h "
             "environment=%.3f media_gain=%.3f spatial_gain=%.3f "
             "lighting=%.3f lighting_valid=%d "
             "cutoff=%.0fHz estimator=%.1fus "
             "background_lp=%ld,%ld,%ld",
             g_telemetry_driving.load() ? 1 : 0,
             g_engine_enabled.load() ? 1 : 0,
-            reverseActive ? 1 : 0,
             environmentExternalCamera ? "exterior" : "interior",
             std::fabs(g_truck_speed_mps.load()) * 3.6f,
             g_environment_intensity.load(),
@@ -507,13 +463,8 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
         uint32_t autoBrightnessSampleHz = 1;
         for (auto& screen : g_screens)
         {
-            if (!screen.source && !screen.reverseSource &&
-                !screen.reverseCameraEnabled)
+            if (!screen.source)
                 continue;
-
-            if (screen.reverseSource)
-                screen.reverseSource->SetPaused(
-                    !(reverseActive || screen.reversePreview));
 
             if (screen.type == screen_type_t::GPS)
                 has_gps = true;
@@ -531,28 +482,6 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                     spatialAudioTarget = screen.source.get();
                     spatialAudioScreen = &screen;
                 }
-            }
-
-            if (!trafficRadioConfig.enabled &&
-                screen.trafficRadioEnabled &&
-                screen.contentMode ==
-                    content_mode_t::INTEGRATED_MEDIA &&
-                !screen.mediaUrl.empty())
-            {
-                trafficRadioConfig.enabled = true;
-                trafficRadioConfig.playlistUrl = screen.mediaUrl;
-                trafficRadioConfig.vehicleDensity =
-                    screen.trafficRadioVehicleDensity;
-                trafficRadioConfig.maximumVolume =
-                    screen.trafficRadioMaximumVolume;
-                trafficRadioConfig.fullVolumeDistance =
-                    screen.trafficRadioFullVolumeDistance;
-                trafficRadioConfig.muteDistance =
-                    screen.trafficRadioMuteDistance;
-                trafficRadioConfig.nearCutoffHz =
-                    screen.trafficRadioNearCutoff;
-                trafficRadioConfig.farCutoffHz =
-                    screen.trafficRadioFarCutoff;
             }
 
             if (screen.source &&
@@ -577,12 +506,36 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                     (std::max)(1U,
                         static_cast<uint32_t>(screen.framerate) / 2U));
             }
-            const float effectiveBrightness =
+            const float targetBrightness =
                 calculate_effective_brightness(screen);
-            if (std::fabs(
-                effectiveBrightness - screen.effectiveBrightness) >= 0.003f)
+            float nextBrightness = targetBrightness;
+            if (screen.autoBrightnessEnabled &&
+                g_game_lighting_valid.load())
             {
-                screen.effectiveBrightness = effectiveBrightness;
+                const uint64_t last = screen.brightnessLastAdjustmentTick;
+                const float elapsed = last == 0 || environmentNow < last
+                    ? 1.0f / 60.0f
+                    : (std::clamp)(
+                        (environmentNow - last) / 1000.0f,
+                        0.001f, 0.10f);
+                // Phone-like adaptation: brighten in roughly 2.5 seconds and
+                // dim more gently in roughly 4 seconds. This also removes
+                // visible flicker from small backbuffer-luminance changes.
+                const float timeConstant = targetBrightness >
+                    screen.effectiveBrightness ? 0.85f : 1.35f;
+                const float blend =
+                    1.0f - std::exp(-elapsed / timeConstant);
+                nextBrightness = screen.effectiveBrightness +
+                    (targetBrightness - screen.effectiveBrightness) * blend;
+                if (std::fabs(
+                    targetBrightness - screen.effectiveBrightness) < 0.004f)
+                    nextBrightness = targetBrightness;
+            }
+            screen.brightnessLastAdjustmentTick = environmentNow;
+            if (std::fabs(
+                nextBrightness - screen.effectiveBrightness) >= 0.0005f)
+            {
+                screen.effectiveBrightness = nextBrightness;
                 if (screen.source &&
                     screen.source->SupportsSourceBrightness())
                 {
@@ -772,16 +725,6 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
         }
     }
 
-    static uint64_t lastTrafficAudioUpdate{};
-    const uint64_t trafficAudioNow = GetTickCount64();
-    if (lastTrafficAudioUpdate == 0 ||
-        trafficAudioNow < lastTrafficAudioUpdate ||
-        trafficAudioNow - lastTrafficAudioUpdate >= 50)
-    {
-        lastTrafficAudioUpdate = trafficAudioNow;
-        traffic_audio::update(trafficRadioConfig);
-    }
-
     if (has_gps != gps_patched)
     {
         static uint64_t patch_addr{};
@@ -907,20 +850,6 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
         engine_enabled_changed,
         nullptr);
     version_params->register_for_channel(
-        SCS_TELEMETRY_TRUCK_CHANNEL_engine_gear,
-        SCS_U32_NIL,
-        SCS_VALUE_TYPE_s32,
-        SCS_TELEMETRY_CHANNEL_FLAG_each_frame,
-        selected_gear_changed,
-        nullptr);
-    version_params->register_for_channel(
-        SCS_TELEMETRY_TRUCK_CHANNEL_light_reverse,
-        SCS_U32_NIL,
-        SCS_VALUE_TYPE_bool,
-        SCS_TELEMETRY_CHANNEL_FLAG_each_frame,
-        reverse_light_changed,
-        nullptr);
-    version_params->register_for_channel(
         SCS_TELEMETRY_TRUCK_CHANNEL_speed,
         SCS_U32_NIL,
         SCS_VALUE_TYPE_float,
@@ -983,8 +912,8 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 SCSAPI_VOID scs_telemetry_shutdown()
 {
     diagnostic_log::write("session", "Plugin shutdown started.");
+    sources::ShutdownMediaClient();
     update_checker::shutdown();
-    traffic_audio::shutdown();
     settings::save();
     environment_audio::reset();
     {

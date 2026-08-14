@@ -1,5 +1,4 @@
 #include "dx11.h"
-#include "internal_render_probe.h"
 #include "../telemetry_state.h"
 #include "../thread_scheduling.h"
 #include "../win32/win32.h"
@@ -374,7 +373,6 @@ HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
         init = true;
     }
 
-    dx11::internal_render_probe::on_present_frame(context);
     // Capture the game's lighting before the plugin UI is rendered. The
     // asynchronous query is consumed on a later frame and never blocks here.
     sample_game_lighting(SwapChain);

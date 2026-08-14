@@ -1,54 +1,13 @@
-OPTIONAL CAMERA DISTANCE AND AI TRAFFIC AUDIO
-=============================================
+OPTIONAL SPF CAMERA BRIDGE — VERSION 4.0.0
 
-The main PrismTextureStreamerFB plugin works without SPF. Install this
-companion only if you want true camera-to-driver distance falloff and the
-distance-controlled low-pass effect, or positional music from AI traffic.
+The bridge improves adaptive audio by publishing exact camera, truck, and
+trailer placement. It does not provide a reverse camera and does not enumerate
+AI traffic.
 
-1. Install the latest SPF Framework runtime from:
-   https://github.com/TrackAndTruckDevs/SPF-Framework/releases
+1. Install the SCS Plugin Framework (SPF) for ETS2/ATS.
+2. Copy the packaged PrismCameraBridge folder into SPF's plugin folder.
+3. Start the game. The main plugin automatically uses the shared camera feed
+   when it is available and falls back safely when it is absent.
 
-   Follow its installer, or copy its manualInstall contents into:
-   <ETS2 or ATS>\bin\win_x64\plugins
-
-2. Copy this complete folder:
-   SPF-OPTIONAL\PrismCameraBridge
-
-   into:
-   <ETS2 or ATS>\bin\win_x64\plugins\spfPlugins
-
-3. The final structure must be:
-   bin\win_x64\plugins\PrismTextureStreamerFB.dll
-   bin\win_x64\plugins\PrismMediaClient.exe
-   bin\win_x64\plugins\spf-framework.dll
-   bin\win_x64\plugins\spfPlugins\PrismCameraBridge\
-       PrismCameraBridge.dll
-
-4. Start the game and press Delete to open SPF Framework. Open Plugins,
-   find PrismCameraBridge, and switch it ON. SPF discovers new plugins but
-   may leave them disabled until the user explicitly enables them.
-
-5. Fully restart the game after enabling the bridge.
-
-6. Start a driving session, switch to interior camera 1 once, and open:
-   Ctrl+F8 > your screen > Adaptive Cabin Audio
-
-   The menu should show the exact camera distance when you switch outside.
-
-7. For AI traffic music, use an Integrated Media screen with a YouTube,
-   Spotify, local-file or direct-media link, then open:
-   Ctrl+F8 > your screen > AI Traffic Radios (SPF)
-
-   Enable positional AI traffic music. The status line should report observed
-   AI actors and the nearest selected actor when one is inside the mute range.
-
-The same bridge publishes the live placement of the last connected trailer and
-up to 32 nearby AI traffic actors. AI placement uses SPF's current per-frame
-handles and rejects an actor safely if it despawns during the copy. SPF 1.2
-does not expose an independent render-to-texture camera, so the current working
-GPS reverse feed still uses an F2 virtual side mirror and never replaces the
-driver's main camera.
-
-If SPF or the companion is missing, Prism automatically falls back to its
-fixed outside-volume setting, and AI traffic music remains silent. Game audio
-is never passed through the filter.
+The bridge is optional. YouTube, Spotify Web, display streaming, hotkeys, and
+normal adaptive cabin/exterior audio work without it.

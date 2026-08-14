@@ -19,13 +19,19 @@ namespace PrismMediaClient
         private float pan;
         private float duckingGain = 1.0f;
         private float userGain = 1.0f;
+        private float transportGain = 1.0f;
+        private float appliedGain = 1.0f;
+        private float appliedPan;
+        private DateTime lastApplyUtc = DateTime.UtcNow;
         private DateTime nextDiscoveryUtc = DateTime.MinValue;
         private DateTime nextHealthCheckUtc = DateTime.MinValue;
         private bool applyPending = true;
 
         internal AdaptiveAudioController()
         {
-            timer = new Timer { Interval = 100 };
+            // 50 Hz is inexpensive and gives camera changes a continuous
+            // crossfade instead of one audible gain/filter step.
+            timer = new Timer { Interval = 20 };
             timer.Tick += (_, __) => Tick();
             timer.Start();
         }
@@ -77,6 +83,15 @@ namespace PrismMediaClient
             return userGain;
         }
 
+        internal void SetTransportGain(bool audible)
+        {
+            float next = audible ? 1.0f : 0.0f;
+            if (Math.Abs(transportGain - next) < 0.0005f)
+                return;
+            transportGain = next;
+            applyPending = true;
+        }
+
         internal void RequestSessionRefresh(string reason)
         {
             nextDiscoveryUtc = DateTime.MinValue;
@@ -102,20 +117,39 @@ namespace PrismMediaClient
                 }
 
                 bool healthCheck = now >= nextHealthCheckUtc;
-                if (!applyPending && !sessionAdded && !healthCheck)
+                float targetGain = (enabled ? gain : 1.0f) *
+                    duckingGain * userGain * transportGain;
+                float targetPan = enabled ? pan : 0.0f;
+                double elapsed = Math.Max(
+                    0.001, Math.Min(0.25,
+                        (now - lastApplyUtc).TotalSeconds));
+                lastApplyUtc = now;
+                // 220 ms time constant reaches about 95% in 650 ms.
+                float blend = (float)(1.0 - Math.Exp(-elapsed / 0.22));
+                appliedGain += (targetGain - appliedGain) * blend;
+                appliedPan += (targetPan - appliedPan) * blend;
+                bool transitioning =
+                    Math.Abs(targetGain - appliedGain) >= 0.0005f ||
+                    Math.Abs(targetPan - appliedPan) >= 0.0005f;
+                if (!applyPending && !sessionAdded && !healthCheck &&
+                    !transitioning)
                     return;
 
-                float combinedGain = gain * duckingGain * userGain;
-                bool processing = enabled || duckingGain < 0.999f ||
-                    userGain < 0.999f;
-                float combinedPan = enabled ? pan : 0.0f;
+                if (!transitioning)
+                {
+                    appliedGain = targetGain;
+                    appliedPan = targetPan;
+                }
+                bool processing = enabled || appliedGain < 0.999f ||
+                    Math.Abs(appliedPan) > 0.001f || userGain < 0.999f ||
+                    transportGain < 0.999f;
                 List<string> expired = null;
                 foreach (KeyValuePair<string, AudioSession> item in sessions)
                 {
                     try
                     {
                         item.Value.Apply(
-                            processing, combinedGain, combinedPan);
+                            processing, appliedGain, appliedPan);
                     }
                     catch
                     {
@@ -131,7 +165,7 @@ namespace PrismMediaClient
                         sessions.Remove(key);
                     nextDiscoveryUtc = DateTime.MinValue;
                 }
-                applyPending = false;
+                applyPending = transitioning;
                 nextHealthCheckUtc = now.AddSeconds(5);
             }
             catch

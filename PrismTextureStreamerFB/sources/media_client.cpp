@@ -259,19 +259,9 @@ namespace {
                 (m_fullSpotifyWeb ? "loadspotifyweb|" : "load|") + url);
             diagnostic_log::writef(
                 "media", "%s media load request: %s",
-                m_fullSpotifyWeb ? "Full Spotify Web" : "Embedded/local",
+                m_fullSpotifyWeb ? "Spotify Web" : "YouTube/direct",
                 sent ? "delivered" : "failed");
             return sent;
-        }
-        bool SetFullSpotifyWeb(bool enabled) override
-        {
-            if (m_fullSpotifyWeb == enabled)
-                return true;
-            m_fullSpotifyWeb = enabled;
-            diagnostic_log::writef(
-                "media", "Spotify playback experience changed to %s.",
-                enabled ? "Full Web Player" : "Embed");
-            return true;
         }
         bool ShowInteractivePlayer(bool show) override
         {
@@ -452,6 +442,16 @@ namespace sources {
             std::lround(gain * 10000.0f));
         return PostMessageA(
             window, kPrismEnvironmentMessage, scaledGain, 0) != FALSE;
+    }
+
+    void ShutdownMediaClient()
+    {
+        const HWND window = find_media_client();
+        if (!window)
+            return;
+        // Close the owned helper before DXGI and telemetry start tearing down.
+        if (!send_payload("shutdown", 30))
+            PostMessageA(window, WM_CLOSE, 0, 0);
     }
 
     std::unique_ptr<IContentSource> CreateMediaClientSource(

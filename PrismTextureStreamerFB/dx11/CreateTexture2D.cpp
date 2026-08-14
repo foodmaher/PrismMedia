@@ -13,8 +13,6 @@ using namespace scs_logging;
 #include "../engine_standby.h"
 #include "../screens.h"
 #include "../telemetry_state.h"
-#include "../sources/reverse_camera.h"
-#include "internal_render_probe.h"
 
 
 typedef HRESULT(__stdcall* CreateTexture2D_t)(ID3D11Device*, const D3D11_TEXTURE2D_DESC*, const D3D11_SUBRESOURCE_DATA*, ID3D11Texture2D**);
@@ -121,8 +119,8 @@ namespace
                 "render",
                 "%s source is predominantly magenta/pink (%u/%u samples, "
                 "%ux%u). This usually indicates a WebView protected-video "
-                "or compositor capture failure; switch Spotify to Embed and "
-                "check PrismMediaClient.log navigation/process events.",
+                    "or compositor capture failure; check PrismMediaClient.log "
+                    "navigation and WebView process events.",
                 screen_type_name(screen.type), magentaSamples, totalSamples,
                 width, height);
         }
@@ -143,8 +141,7 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 
         for (screen_t& screen : g_screens)
         {
-	            if (!screen.source && !screen.reverseSource &&
-	                !screen.reverseCameraEnabled)
+	            if (!screen.source)
 	                continue;
 
             if (!pDesc) continue;
@@ -172,8 +169,6 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 
             HRESULT hr = CreateTexture2D_Original(pDevice, &modifiedDesc, pInitialData, ppTexture2D);
             if (SUCCEEDED(hr) && ppTexture2D && *ppTexture2D)
-                dx11::internal_render_probe::on_texture_created(*ppTexture2D);
-            if (SUCCEEDED(hr) && ppTexture2D && *ppTexture2D)
             {
                 if (screen.liveTexture) screen.liveTexture->Release();
                 if (screen.uploadTexture) screen.uploadTexture->Release();
@@ -191,8 +186,6 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
                 screen.uploadTexture = nullptr;
                 screen.liveTextureRenderTarget = nullptr;
                 pDevice->GetImmediateContext(&screen.immediateContext);
-				dx11::internal_render_probe::on_game_context_available(
-					screen.immediateContext);
 
                 scs_log(
                     0,
@@ -218,28 +211,12 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
         }
     }
 
-    const HRESULT hr = CreateTexture2D_Original(
-        pDevice, pDesc, pInitialData, ppTexture2D);
-    if (SUCCEEDED(hr) && ppTexture2D && *ppTexture2D)
-        dx11::internal_render_probe::on_texture_created(*ppTexture2D);
-    return hr;
+    return CreateTexture2D_Original(pDevice, pDesc, pInitialData, ppTexture2D);
 }
 
 
 void new_frame()
 {
-    bool internalParkActivationRequested{};
-    bool internalParkRenderRequested{};
-    uint32_t internalParkTargetFramerate = 1;
-    uint32_t internalParkTargetVariant = 1;
-    bool internalParkMountConfigured{};
-    bool internalParkManualAlignment{};
-    bool internalParkTrailerAware{};
-    float internalParkLateral{};
-    float internalParkHeight{ 2.6f };
-    float internalParkLongitudinal{ -0.35f };
-    float internalParkYaw{ 180.0f };
-    float internalParkPitch{ -8.0f };
     std::lock_guard<std::mutex> lock(g_screens_mutex);
 	    for (auto& screen : g_screens)
 	    {
@@ -248,72 +225,6 @@ void new_frame()
 	            screen.followTruckEngine &&
 	            g_telemetry_driving.load() &&
 	            !g_engine_enabled.load();
-	        const bool reverseRequested =
-	            !showEngineStandby &&
-	            screen.reverseCameraEnabled &&
-	            (g_reverse_active.load() || screen.reversePreview);
-			const bool internalParkMethod = false;
-            internalParkActivationRequested |=
-                screen.reverseCameraEnabled &&
-                internalParkMethod;
-            internalParkRenderRequested |=
-                reverseRequested && internalParkMethod;
-            if (screen.reverseCameraEnabled && internalParkMethod)
-            {
-                internalParkTargetFramerate = (std::max)(
-                    internalParkTargetFramerate,
-                    static_cast<uint32_t>(
-                        screen.reverseFramerate));
-                internalParkTargetVariant =
-                    screen.reverseInternalTargetVariant;
-                if (!internalParkMountConfigured)
-                {
-                    internalParkMountConfigured = true;
-                    internalParkManualAlignment =
-                        screen.reverseCameraKitInstalled;
-                    internalParkTrailerAware =
-                        screen.reverseTrailerAwareMount;
-                    internalParkLateral = screen.reverseMountLateral;
-                    internalParkHeight = screen.reverseMountHeight;
-                    internalParkLongitudinal =
-                        screen.reverseMountLongitudinal;
-                    internalParkYaw = screen.reverseMountYaw;
-                    internalParkPitch = screen.reverseMountPitch;
-                }
-            }
-            const bool windowReverseRequested =
-                reverseRequested && !internalParkMethod;
-
-	        const uint64_t reverseNowTick = GetTickCount64();
-	        if (windowReverseRequested && !screen.reverseSource &&
-	            (screen.reverseLastStartAttemptTick == 0 ||
-	                reverseNowTick - screen.reverseLastStartAttemptTick >= 2000))
-	        {
-	            g_screen_source_creation_in_progress = true;
-	            screen.reverseLastStartAttemptTick = reverseNowTick;
-	            screen.reverseSource = sources::CreateReverseCameraSource(
-	                screen.reverseFramerate,
-	                screen.reverseCaptureWidth,
-	                screen.reverseCaptureHeight,
-	                screen.reverseCropLeft,
-	                screen.reverseCropTop,
-	                screen.reverseCropWidth,
-	                screen.reverseCropHeight);
-	            g_screen_source_creation_in_progress = false;
-	        }
-	        else if (!reverseRequested &&
-	            screen.reverseZeroForwardImpact &&
-	            screen.reverseSource)
-	        {
-	            g_screen_source_creation_in_progress = true;
-	            screen.reverseSource.reset();
-	            screen.reverseLastStartAttemptTick = 0;
-	            g_screen_source_creation_in_progress = false;
-	        }
-
-	        const bool reverseActive =
-	            windowReverseRequested && screen.reverseSource;
-
         if (!screen.liveTexture || !screen.immediateContext)
             continue;
 
@@ -359,77 +270,22 @@ void new_frame()
             screen.hasUploadedFrame = false;
         }
 
-        bool usingInternalParkFrame{};
-        if (reverseRequested && internalParkMethod)
-        {
-            uint32_t parkWidth =
-                screen.internalParkScratchWidth;
-            uint32_t parkHeight =
-                screen.internalParkScratchHeight;
-            const bool hasNewParkFrame =
-                dx11::internal_render_probe::copy_park_frame(
-                    screen.internalParkScratch,
-                    parkWidth,
-                    parkHeight,
-                    screen.internalParkFrameSequence);
-            if (hasNewParkFrame)
-            {
-                screen.internalParkScratchWidth = parkWidth;
-                screen.internalParkScratchHeight = parkHeight;
-                screen.internalParkWasDisplayed = true;
-                screen.internalParkLastBlitTick =
-                    GetTickCount64();
-                usingInternalParkFrame = true;
-            }
-            else if (screen.internalParkWasDisplayed)
-            {
-                // The staged readback is deliberately non-blocking. Keep the
-                // last uploaded park frame until a newer one is ready instead
-                // of re-uploading or waiting on the GPU.
-                continue;
-            }
-            // Until the first staged frame arrives, retain normal media.
-        }
-        else
-        {
-            screen.internalParkLastBlitTick = 0;
-            if (screen.internalParkWasDisplayed)
-            {
-                // Force one upload of the last normal media frame, even when
-                // that media source is paused, so the rear view never remains
-                // stuck on the GPS after leaving reverse.
-                screen.internalParkWasDisplayed = false;
-                screen.hasUploadedFrame = false;
-            }
-        }
+		        IContentSource* activeSource = showEngineStandby
+		            ? nullptr : screen.source.get();
 
-	        IContentSource* activeSource = showEngineStandby
-	            ? nullptr
-	            : reverseActive
-	            ? screen.reverseSource.get()
-	            : screen.source.get();
-
-	        if (!showEngineStandby && screen.paused && !reverseRequested &&
-                screen.hasUploadedFrame)
-	            continue;
+		        if (!showEngineStandby && screen.paused &&
+		                screen.hasUploadedFrame)
+		            continue;
 
         const std::vector<uint8_t>* activeFrame =
             &screen.frameScratch;
-        uint32_t srcWidth = usingInternalParkFrame
-            ? screen.internalParkScratchWidth
-            : screen.frameScratchWidth;
-        uint32_t srcHeight = usingInternalParkFrame
-            ? screen.internalParkScratchHeight
-            : screen.frameScratchHeight;
+        uint32_t srcWidth = screen.frameScratchWidth;
+        uint32_t srcHeight = screen.frameScratchHeight;
         if (showEngineStandby)
         {
             activeFrame = &screen.engineStandbyScratch;
             srcWidth = screen.engineStandbyScratchWidth;
             srcHeight = screen.engineStandbyScratchHeight;
-        }
-        else if (usingInternalParkFrame)
-        {
-            activeFrame = &screen.internalParkScratch;
         }
         else
         {
@@ -561,8 +417,6 @@ void new_frame()
         // compositor. Other sources retain the compatible CPU fallback.
         const bool sourceHandlesBrightness =
             !showEngineStandby &&
-            !usingInternalParkFrame &&
-            !reverseActive &&
             activeSource &&
             activeSource->SupportsSourceBrightness();
         const float brightness = showEngineStandby
@@ -641,10 +495,8 @@ void new_frame()
             const UINT sampledSourceY = srcY + static_cast<UINT>(
                 static_cast<uint64_t>(y) * srcSpanHeight / renderHeight);
             const UINT logicalDestinationY = dstY + y;
-            const bool flipParkVertical = usingInternalParkFrame &&
-                screen.reverseFlipVertical;
             const UINT destinationRow =
-                (screen.flipVertical != flipParkVertical)
+                screen.flipVertical
                 ? (dstHeight - 1 - logicalDestinationY)
                 : logicalDestinationY;
             const uint8_t* srcRow =
@@ -655,10 +507,7 @@ void new_frame()
 
             const bool directHorizontalCopy =
                 srcX == 0 && srcSpanWidth == renderWidth;
-            const bool flipParkHorizontal = usingInternalParkFrame &&
-                screen.reverseFlipHorizontal;
-            if (directHorizontalCopy && !adjustBrightness &&
-                !flipParkHorizontal) {
+            if (directHorizontalCopy && !adjustBrightness) {
                 memcpy(dstRowPtr, srcRow, static_cast<size_t>(renderWidth) * 4);
                 continue;
             }
@@ -668,11 +517,6 @@ void new_frame()
             for (UINT x = 0; x < renderWidth; ++x) {
                 UINT sourcePixelX =
                     directHorizontalCopy ? x : screen.scaleX[x];
-                if (flipParkHorizontal)
-                {
-                    sourcePixelX = srcX + srcSpanWidth - 1 -
-                        (sourcePixelX - srcX);
-                }
                 const uint32_t pixel = srcPixels[sourcePixelX];
                 if (!adjustBrightness)
                 {
@@ -770,23 +614,6 @@ void new_frame()
                 screen.lastRenderDiagnosticTick = nowTick;
             }
 	    }
-
-    dx11::internal_render_probe::set_park_activation_requested(
-        internalParkActivationRequested);
-    dx11::internal_render_probe::set_park_render_requested(
-        internalParkRenderRequested);
-    dx11::internal_render_probe::set_park_target_framerate(
-        internalParkTargetFramerate);
-    dx11::internal_render_probe::set_park_target_variant(
-        internalParkTargetVariant);
-    dx11::internal_render_probe::set_park_camera_mount(
-        internalParkMountConfigured && internalParkManualAlignment,
-        internalParkTrailerAware,
-        internalParkLateral,
-        internalParkHeight,
-        internalParkLongitudinal,
-        internalParkYaw,
-        internalParkPitch);
 }
 
 

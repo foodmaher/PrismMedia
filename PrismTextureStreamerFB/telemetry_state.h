@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <array>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -14,9 +13,6 @@ inline std::atomic<uint64_t> g_last_head_update_tick{};
 inline std::atomic<bool> g_telemetry_driving{};
 inline std::atomic<bool> g_camera_interior_hint{ true };
 inline std::atomic<bool> g_engine_enabled{};
-inline std::atomic<int> g_selected_gear{};
-inline std::atomic<bool> g_reverse_light{};
-inline std::atomic<bool> g_reverse_active{};
 
 struct truck_identity_snapshot_t
 {
@@ -80,33 +76,6 @@ inline std::atomic<double> g_bridge_truck_world_z{};
 inline std::atomic<double> g_bridge_truck_heading{};
 inline std::atomic<double> g_bridge_truck_pitch{};
 inline std::atomic<double> g_bridge_truck_roll{};
-
-struct ai_traffic_vehicle_t
-{
-    int32_t id{};
-    double x{};
-    double y{};
-    double z{};
-    float speed{};
-    float acceleration{};
-};
-
-struct ai_traffic_snapshot_t
-{
-    std::array<ai_traffic_vehicle_t, 32> vehicles{};
-    uint32_t count{};
-    uint64_t updatedTick{};
-    bool available{};
-};
-
-inline std::mutex g_ai_traffic_mutex;
-inline ai_traffic_snapshot_t g_ai_traffic;
-
-inline ai_traffic_snapshot_t ai_traffic_snapshot()
-{
-    std::lock_guard<std::mutex> lock(g_ai_traffic_mutex);
-    return g_ai_traffic;
-}
 
 // SCS truck placement and the per-truck driver-head anchor calibrated from
 // the live interior camera. The anchor follows the truck while the player

@@ -4,86 +4,51 @@ Set-StrictMode -Version Latest
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Solution = Join-Path $ProjectRoot 'PrismTextureStreamerFB.sln'
 $VsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-
 if (-not (Test-Path $VsWhere)) {
-    throw 'Visual Studio 2022 Build Tools were not found. Install the "Desktop development with C++" workload, then run this script again.'
+    throw 'Visual Studio 2022 Build Tools with Desktop development with C++ are required.'
 }
-
-$MsBuild = & $VsWhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
-    Select-Object -First 1
-
-if (-not $MsBuild -or -not (Test-Path $MsBuild)) {
-    throw 'MSBuild was not found. Install Visual Studio 2022 Build Tools with Desktop development with C++.'
-}
+$MsBuild = & $VsWhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+if (-not $MsBuild) { throw 'MSBuild was not found.' }
 
 & $MsBuild $Solution /m /restore /t:Build /p:Configuration=Release /p:Platform=x64
-if ($LASTEXITCODE -ne 0) {
-    throw "MSBuild failed with exit code $LASTEXITCODE."
-}
+if ($LASTEXITCODE -ne 0) { throw "MSBuild failed with exit code $LASTEXITCODE." }
 
-$Dll = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB.dll'
-$BridgeDll = Join-Path $ProjectRoot 'x64\Release\PrismCameraBridge.dll'
-if (-not (Test-Path $Dll)) {
-    throw "Build completed but the expected DLL was not found at: $Dll"
-}
-if (-not (Test-Path $BridgeDll)) {
-    throw "Build completed but the SPF bridge DLL was not found at: $BridgeDll"
-}
-
-$Hash = Get-FileHash -Algorithm SHA256 $Dll
+$Output = Join-Path $ProjectRoot 'x64\Release'
+$Dll = Join-Path $Output 'PrismTextureStreamerFB.dll'
+$BridgeDll = Join-Path $Output 'PrismCameraBridge.dll'
 $ClientDirectory = Join-Path $ProjectRoot 'PrismMediaClient\bin\x64\Release\net48'
-if (-not (Test-Path (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
-    throw "Build completed but PrismMediaClient.exe was not found at: $ClientDirectory"
-}
-$MonitorDirectory = Join-Path $ProjectRoot 'PrismCameraMonitor\bin\x64\Release\net48'
-if (-not (Test-Path (Join-Path $MonitorDirectory 'PrismCameraMonitor.exe'))) {
-    throw "Build completed but PrismCameraMonitor.exe was not found at: $MonitorDirectory"
+foreach ($required in @($Dll, $BridgeDll, (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
+    if (-not (Test-Path $required)) { throw "Expected build output is missing: $required" }
 }
 
-$Package = Join-Path $ProjectRoot 'x64\Release\PrismTextureStreamerFB-3.11.26-prism-call-path-trace'
-if (Test-Path $Package) {
-    Remove-Item $Package -Recurse -Force
-}
+$Package = Join-Path $Output 'PrismTextureStreamerFB-4.0.0'
+if (Test-Path $Package) { Remove-Item $Package -Recurse -Force }
 New-Item -ItemType Directory -Path $Package | Out-Null
 $Runtime = Join-Path $Package 'PrismTextureStreamerFB'
-$Docs = Join-Path $Runtime 'docs'
-New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
-New-Item -ItemType Directory -Path $Docs -Force | Out-Null
+New-Item -ItemType Directory -Path $Runtime | Out-Null
 Copy-Item $Dll $Package
 Copy-Item (Join-Path $ClientDirectory '*') $Runtime -Recurse
-Copy-Item (Join-Path $MonitorDirectory '*') $Runtime -Recurse
-Get-ChildItem $Runtime -Recurse -File |
-    Where-Object { $_.Extension -in '.pdb', '.xml' } |
-    Remove-Item -Force
-Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Docs
-Copy-Item (Join-Path $ProjectRoot 'V3.3-DYNAMIC-OUTSIDE-AUDIO.md') $Docs
-Copy-Item (Join-Path $ProjectRoot 'V3.6-TELEMETRY-ENVIRONMENT.md') $Docs
-Copy-Item (Join-Path $ProjectRoot 'V3.7-PLAYLIST-CORE-BALANCE.md') $Docs
-Copy-Item (Join-Path $ProjectRoot 'V3.8-SPOTIFY-GAMEPAD-DIAGNOSTICS.md') $Docs
-Copy-Item (Join-Path $ProjectRoot 'V3.9-SPOTIFY-SESSION-BACKUPS.md') $Docs
-Copy-Item (Join-Path $ProjectRoot 'V3.10-VISUAL-AUDIO-INPUT.md') $Docs
-Copy-Item (Join-Path $ProjectRoot 'V3.11-SPF-TRAFFIC-RADIO.md') $Docs
-Copy-Item (Join-Path $ProjectRoot 'GPU-COMMAND-TRACE-TEST.md') $Docs
+Get-ChildItem $Runtime -Recurse -File | Where-Object { $_.Extension -in '.pdb', '.xml' } | Remove-Item -Force
+
 $SpfBridge = Join-Path $Runtime 'SPF-OPTIONAL\PrismCameraBridge'
 New-Item -ItemType Directory -Path $SpfBridge -Force | Out-Null
 Copy-Item $BridgeDll $SpfBridge
-Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (
-    Join-Path $Runtime 'SPF-OPTIONAL')
+Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (Join-Path $Runtime 'SPF-OPTIONAL')
+Copy-Item (Join-Path $ProjectRoot 'config-recommended.ini') $Runtime
+Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Runtime
+Copy-Item (Join-Path $ProjectRoot 'README.md') $Package
 
 @"
-PrismTextureStreamerFB 3.11.26 Prism Call-Path Trace
+PrismTextureStreamerFB 4.0.0
 
-Copy PrismTextureStreamerFB.dll and the PrismTextureStreamerFB folder into
-<ETS2 or ATS>\bin\win_x64\plugins. The DLL must stay directly in plugins.
-Open the menu with Ctrl+F8.
+Copy PrismTextureStreamerFB.dll and the PrismTextureStreamerFB folder into:
+<ETS2 or ATS>\bin\win_x64\plugins
 
-The Prism Call-Path Trace launches PrismCameraMonitor.exe from the plugin folder.
-The legacy internal-camera runtime is absent. The diagnostic submits one
-non-park control job, compares its worker/submit/dispatch path with the native
-control job, records a low-noise D3D11 frame stream, and never replaces GPS media.
+Keep the DLL directly inside plugins. Open the interface with Ctrl+F8.
+Settings apply live and auto-save. Only texture identity changes need the
+System > Reload game textures action.
 "@ | Set-Content (Join-Path $Package 'INSTALL.txt')
 
-Write-Host ''
-Write-Host "Build succeeded: $Dll" -ForegroundColor Green
-Write-Host "Install package: $Package" -ForegroundColor Green
-Write-Host "SHA-256: $($Hash.Hash)"
+$Hash = Get-FileHash -Algorithm SHA256 $Dll
+Write-Host "Build succeeded: $Package" -ForegroundColor Green
+Write-Host "DLL SHA-256: $($Hash.Hash)"

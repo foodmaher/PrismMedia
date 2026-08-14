@@ -117,7 +117,7 @@
         filter.frequency.setTargetAtTime(
             state.enabled ? state.cutoff : 20000,
             context.currentTime,
-            0.035);
+            0.22);
     }
 
     function registerFilter(filter, context, route) {

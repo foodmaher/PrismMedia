@@ -10,13 +10,11 @@
 #include <vector>
 
 #include "screens.h"
-#include "dx11/internal_render_probe.h"
 #include "diagnostic_log.h"
 #include "hotkeys.h"
 #include "scs_logging.h"
 #include "sources/media_client.h"
 #include "sources/native_media.h"
-#include "sources/reverse_camera.h"
 #include "sources/window.h"
 #include "sources/wgc_window.h"
 #include "telemetry_state.h"
@@ -212,49 +210,6 @@ namespace {
         WritePrivateProfileStringA(section, key, text, path.c_str());
     }
 
-    std::vector<std::string> read_url_list(
-        const std::string& path,
-        const std::string& section,
-        const char* prefix)
-    {
-        std::vector<std::string> result;
-        const std::string countKey = std::string(prefix) + "Count";
-        const UINT count = (std::min)(
-            GetPrivateProfileIntA(
-                section.c_str(), countKey.c_str(), 0, path.c_str()),
-            100U);
-        result.reserve(count);
-        for (UINT index = 0; index < count; ++index)
-        {
-            const std::string key =
-                std::string(prefix) + std::to_string(index);
-            std::string value =
-                read_string(path, section.c_str(), key.c_str());
-            if (!value.empty())
-                result.push_back(std::move(value));
-        }
-        return result;
-    }
-
-    void write_url_list(
-        const std::string& path,
-        const std::string& section,
-        const char* prefix,
-        const std::vector<std::string>& values)
-    {
-        const std::string countKey = std::string(prefix) + "Count";
-        write_number(
-            path, section.c_str(), countKey.c_str(),
-            static_cast<uint32_t>((std::min)(values.size(), size_t{100})));
-        for (size_t index = 0; index < values.size() && index < 100; ++index)
-        {
-            const std::string key =
-                std::string(prefix) + std::to_string(index);
-            WritePrivateProfileStringA(
-                section.c_str(), key.c_str(), values[index].c_str(),
-                path.c_str());
-        }
-    }
 }
 
 namespace settings {
@@ -362,8 +317,6 @@ namespace settings {
         {
             std::lock_guard<std::mutex> lock(g_screens_mutex);
             g_screens.clear();
-            dx11::internal_render_probe::set_park_activation_requested(false);
-            dx11::internal_render_probe::set_park_render_requested(false);
             return true;
         }
 
@@ -389,7 +342,7 @@ namespace settings {
             screen.targetLiveTextureHeight = (std::clamp)(
                 GetPrivateProfileIntA(section.c_str(), "TargetHeight", 720, path.c_str()), 64U, 4320U);
             screen.framerate = static_cast<uint8_t>((std::clamp)(
-                GetPrivateProfileIntA(section.c_str(), "Framerate", 30, path.c_str()), 1U, 120U));
+                GetPrivateProfileIntA(section.c_str(), "Framerate", 60, path.c_str()), 1U, 120U));
             screen.legacyCapture = GetPrivateProfileIntA(section.c_str(), "LegacyCapture", 0, path.c_str()) != 0;
             screen.flipVertical = GetPrivateProfileIntA(section.c_str(), "FlipVertical", 1, path.c_str()) != 0;
             screen.paused = GetPrivateProfileIntA(section.c_str(), "Paused", 0, path.c_str()) != 0;
@@ -397,10 +350,10 @@ namespace settings {
                 GetPrivateProfileIntA(section.c_str(), "ScaleMode", static_cast<UINT>(scale_mode_t::FIT), path.c_str()),
                 0U, static_cast<UINT>(scale_mode_t::CROP)));
             screen.brightness = (std::clamp)(
-                read_float(path, section.c_str(), "Brightness", 1.0f),
+                read_float(path, section.c_str(), "Brightness", 0.30f),
                 0.10f, 2.0f);
             screen.autoBrightnessEnabled = GetPrivateProfileIntA(
-                section.c_str(), "AutoBrightnessEnabled", 0,
+                section.c_str(), "AutoBrightnessEnabled", 1,
                 path.c_str()) != 0;
             screen.autoBrightnessDarkMultiplier = (std::clamp)(
                 read_float(
@@ -418,7 +371,7 @@ namespace settings {
                     section.c_str(), "EdgeBleedGuard", 2, path.c_str()),
                 0U, 16U));
             screen.performanceProfile = static_cast<performance_profile_t>((std::clamp)(
-                GetPrivateProfileIntA(section.c_str(), "PerformanceProfile", static_cast<UINT>(performance_profile_t::CUSTOM), path.c_str()),
+                GetPrivateProfileIntA(section.c_str(), "PerformanceProfile", static_cast<UINT>(performance_profile_t::SMOOTH), path.c_str()),
                 0U, static_cast<UINT>(performance_profile_t::SMOOTH)));
             screen.source_application_name = read_string(path, section.c_str(), "SourceApplication");
             screen.source_application_display_name = read_string(path, section.c_str(), "SourceTitle");
@@ -429,53 +382,9 @@ namespace settings {
                     static_cast<UINT>(media_service_t::YOUTUBE),
                     path.c_str()),
                 0U, static_cast<UINT>(media_service_t::SPOTIFY)));
-            screen.spotifyPlaybackMode =
-                static_cast<spotify_playback_mode_t>((std::clamp)(
-                    GetPrivateProfileIntA(
-                        section.c_str(), "SpotifyPlaybackMode",
-                        static_cast<UINT>(
-                            spotify_playback_mode_t::EMBED),
-                        path.c_str()),
-                    0U,
-                    static_cast<UINT>(
-                        spotify_playback_mode_t::FULL_WEB_PLAYER)));
-            screen.youtubeUrls =
-                read_url_list(path, section, "YouTubeUrl");
-            screen.spotifyUrls =
-                read_url_list(path, section, "SpotifyUrl");
-            screen.selectedYoutubeUrl = (std::min)(
-                GetPrivateProfileIntA(
-                    section.c_str(), "SelectedYouTubeUrl", 0,
-                    path.c_str()),
-                screen.youtubeUrls.empty()
-                    ? 0U
-                    : static_cast<UINT>(screen.youtubeUrls.size() - 1));
-            screen.selectedSpotifyUrl = (std::min)(
-                GetPrivateProfileIntA(
-                    section.c_str(), "SelectedSpotifyUrl", 0,
-                    path.c_str()),
-                screen.spotifyUrls.empty()
-                    ? 0U
-                    : static_cast<UINT>(screen.spotifyUrls.size() - 1));
-            if (screen.youtubeUrls.empty() &&
-                screen.spotifyUrls.empty() &&
-                !screen.mediaUrl.empty())
-            {
-                if (screen.mediaUrl.find("spotify.com") != std::string::npos ||
-                    screen.mediaUrl.rfind("spotify:", 0) == 0)
-                {
-                    screen.mediaService = media_service_t::SPOTIFY;
-                    screen.spotifyUrls.push_back(screen.mediaUrl);
-                }
-                else
-                {
-                    screen.mediaService = media_service_t::YOUTUBE;
-                    screen.youtubeUrls.push_back(screen.mediaUrl);
-                }
-            }
             screen.contentMode = static_cast<content_mode_t>((std::clamp)(
                 GetPrivateProfileIntA(section.c_str(), "ContentMode",
-                    static_cast<UINT>(content_mode_t::WINDOW_CAPTURE), path.c_str()),
+                    static_cast<UINT>(content_mode_t::INTEGRATED_MEDIA), path.c_str()),
                 0U, static_cast<UINT>(content_mode_t::NATIVE_DIRECT_MEDIA)));
             screen.hotkeyTarget = GetPrivateProfileIntA(
                 section.c_str(), "HotkeyTarget", 0, path.c_str()) != 0;
@@ -486,7 +395,7 @@ namespace settings {
                     path, section.c_str(), "EngineOffBrightness", 0.35f),
                 0.05f, 1.0f);
             screen.adaptiveAudioEnabled = GetPrivateProfileIntA(
-                section.c_str(), "AdaptiveAudioEnabled", 0, path.c_str()) != 0;
+                section.c_str(), "AdaptiveAudioEnabled", 1, path.c_str()) != 0;
             screen.adaptiveAudioInteriorVolume = (std::clamp)(
                 read_float(
                     path, section.c_str(),
@@ -499,16 +408,16 @@ namespace settings {
                 read_float(path, section.c_str(), "AdaptiveAudioSpeakerAzimuth", 0.0f),
                 -180.0f, 180.0f);
             screen.adaptiveAudioFacingAwayVolume = (std::clamp)(
-                read_float(path, section.c_str(), "AdaptiveAudioFacingAwayVolume", 0.05f),
+                read_float(path, section.c_str(), "AdaptiveAudioFacingAwayVolume", 0.0f),
                 0.0f, 1.0f);
             screen.adaptiveAudioOutsideDistance = (std::clamp)(
-                read_float(path, section.c_str(), "AdaptiveAudioOutsideDistance", 0.85f),
+                read_float(path, section.c_str(), "AdaptiveAudioOutsideDistance", 0.25f),
                 0.25f, 5.0f);
             screen.adaptiveAudioOutsideVolume = (std::clamp)(
                 read_float(path, section.c_str(), "AdaptiveAudioOutsideVolume", 0.0f),
                 0.0f, 1.0f);
             screen.adaptiveAudioMenuVolume = (std::clamp)(
-                read_float(path, section.c_str(), "AdaptiveAudioMenuVolume", 0.50f),
+                read_float(path, section.c_str(), "AdaptiveAudioMenuVolume", 0.15f),
                 0.0f, 1.0f);
             screen.adaptiveAudioExternalDistanceEnabled =
                 GetPrivateProfileIntA(
@@ -520,21 +429,21 @@ namespace settings {
                     read_float(
                         path, section.c_str(),
                         "AdaptiveAudioExternalNearVolume",
-                        0.35f),
+                        1.0f),
                     0.0f, 1.0f);
             screen.adaptiveAudioExternalNearCutoff =
                 (std::clamp)(
                     read_float(
                         path, section.c_str(),
                         "AdaptiveAudioExternalNearCutoff",
-                        1200.0f),
+                        144.0f),
                     20.0f, 20000.0f);
             screen.adaptiveAudioExternalFullVolumeDistance =
                 (std::clamp)(
                     read_float(
                         path, section.c_str(),
                         "AdaptiveAudioExternalFullVolumeDistance",
-                        1.5f),
+                        0.0f),
                     0.0f, 25.0f);
             screen.adaptiveAudioExternalMuteDistance =
                 (std::clamp)(
@@ -553,127 +462,8 @@ namespace settings {
                     read_float(
                         path, section.c_str(),
                         "AdaptiveAudioExternalMinimumCutoff",
-                        120.0f),
+                        20.0f),
                     20.0f, 8000.0f);
-            screen.trafficRadioEnabled = GetPrivateProfileIntA(
-                section.c_str(), "TrafficRadioEnabled", 0,
-                path.c_str()) != 0;
-            screen.trafficRadioVehicleDensity = (std::clamp)(
-                read_float(
-                    path, section.c_str(),
-                    "TrafficRadioVehicleDensity", 0.50f),
-                0.0f, 1.0f);
-            screen.trafficRadioMaximumVolume = (std::clamp)(
-                read_float(
-                    path, section.c_str(),
-                    "TrafficRadioMaximumVolume", 0.20f),
-                0.0f, 1.0f);
-            screen.trafficRadioFullVolumeDistance = (std::clamp)(
-                read_float(
-                    path, section.c_str(),
-                    "TrafficRadioFullVolumeDistance", 2.5f),
-                0.0f, 25.0f);
-            screen.trafficRadioMuteDistance = (std::clamp)(
-                read_float(
-                    path, section.c_str(),
-                    "TrafficRadioMuteDistance", 28.0f),
-                1.0f, 100.0f);
-            screen.trafficRadioNearCutoff = (std::clamp)(
-                read_float(
-                    path, section.c_str(),
-                    "TrafficRadioNearCutoff", 1400.0f),
-                20.0f, 20000.0f);
-            screen.trafficRadioFarCutoff = (std::clamp)(
-                read_float(
-                    path, section.c_str(),
-                    "TrafficRadioFarCutoff", 260.0f),
-                20.0f, screen.trafficRadioNearCutoff);
-            screen.reverseCameraEnabled = GetPrivateProfileIntA(
-                section.c_str(), "ReverseCameraEnabled", 0, path.c_str()) != 0;
-            screen.reverseCameraMethod =
-                reverse_camera_method_t::WINDOW_CROP;
-            screen.reverseInternalTargetVariant =
-                static_cast<uint8_t>((std::clamp)(
-                    GetPrivateProfileIntA(
-                        section.c_str(),
-                        "ReverseInternalTargetVariant",
-                        1,
-                        path.c_str()),
-                    0U,
-                    4U));
-            screen.reverseCameraKitInstalled =
-                GetPrivateProfileIntA(
-                    section.c_str(), "ReverseCameraKitInstalled",
-                    1, path.c_str()) != 0;
-            screen.reverseTrailerAwareMount =
-                GetPrivateProfileIntA(
-                    section.c_str(), "ReverseTrailerAwareMount",
-                    0, path.c_str()) != 0;
-            screen.reverseFlipHorizontal = GetPrivateProfileIntA(
-                section.c_str(), "ReverseFlipHorizontal",
-                0, path.c_str()) != 0;
-            screen.reverseFlipVertical = GetPrivateProfileIntA(
-                section.c_str(), "ReverseFlipVertical",
-                0, path.c_str()) != 0;
-            screen.reverseMountLateral = (std::clamp)(
-                read_float(path, section.c_str(),
-                    "ReverseMountLateral", 0.0f),
-                -5.0f, 5.0f);
-            screen.reverseMountHeight = (std::clamp)(
-                read_float(path, section.c_str(),
-                    "ReverseMountHeight", 2.6f),
-                -2.0f, 8.0f);
-            screen.reverseMountLongitudinal = (std::clamp)(
-                read_float(path, section.c_str(),
-                    "ReverseMountLongitudinal", -0.35f),
-                -8.0f, 8.0f);
-            screen.reverseMountYaw = (std::clamp)(
-                read_float(path, section.c_str(),
-                    "ReverseMountYaw", 180.0f),
-                -360.0f, 360.0f);
-            screen.reverseMountPitch = (std::clamp)(
-                read_float(path, section.c_str(),
-                    "ReverseMountPitch", -8.0f),
-                -89.0f, 89.0f);
-            screen.reverseZeroForwardImpact = GetPrivateProfileIntA(
-                section.c_str(), "ReverseZeroForwardImpact", 1, path.c_str()) != 0;
-            screen.reversePerformanceProfile =
-                static_cast<reverse_performance_profile_t>((std::clamp)(
-                    GetPrivateProfileIntA(
-                        section.c_str(), "ReversePerformanceProfile",
-                        static_cast<UINT>(
-                            reverse_performance_profile_t::BALANCED),
-                        path.c_str()),
-                    0U,
-                    static_cast<UINT>(
-                        reverse_performance_profile_t::ULTRA)));
-            screen.reverseCaptureWidth = (std::clamp)(
-                GetPrivateProfileIntA(
-                    section.c_str(), "ReverseCaptureWidth",
-                    640, path.c_str()),
-                256U, 1920U);
-            screen.reverseCaptureHeight = (std::clamp)(
-                GetPrivateProfileIntA(
-                    section.c_str(), "ReverseCaptureHeight",
-                    360, path.c_str()),
-                144U, 1080U);
-            screen.reverseFramerate = static_cast<uint8_t>((std::clamp)(
-                GetPrivateProfileIntA(section.c_str(), "ReverseFramerate", 15, path.c_str()),
-                5U, 60U));
-            apply_reverse_performance_profile(screen);
-            screen.reverseCropLeft = (std::clamp)(
-                read_float(path, section.c_str(), "ReverseCropLeft", 0.30f),
-                0.0f, 0.98f);
-            screen.reverseCropTop = (std::clamp)(
-                read_float(path, section.c_str(), "ReverseCropTop", 0.02f),
-                0.0f, 0.98f);
-            screen.reverseCropWidth = (std::clamp)(
-                read_float(path, section.c_str(), "ReverseCropWidth", 0.40f),
-                0.02f, 1.0f);
-            screen.reverseCropHeight = (std::clamp)(
-                read_float(path, section.c_str(), "ReverseCropHeight", 0.22f),
-                0.02f, 1.0f);
-
             if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA &&
                 !screen.mediaUrl.empty())
             {
@@ -682,9 +472,7 @@ namespace settings {
                     screen.mediaUrl, screen.framerate,
                     screen.targetLiveTextureWidth,
                     screen.targetLiveTextureHeight,
-                    screen.mediaService == media_service_t::SPOTIFY &&
-                        screen.spotifyPlaybackMode ==
-                            spotify_playback_mode_t::FULL_WEB_PLAYER);
+                    screen.mediaService == media_service_t::SPOTIFY);
                 g_screen_source_creation_in_progress = false;
             }
             else if (screen.contentMode == content_mode_t::NATIVE_DIRECT_MEDIA &&
@@ -726,42 +514,14 @@ namespace settings {
                     screen.effectiveBrightness);
             }
 
-            if (screen.reverseCameraEnabled &&
-                screen.reverseCameraMethod ==
-                    reverse_camera_method_t::WINDOW_CROP &&
-                (!screen.reverseZeroForwardImpact ||
-                    g_reverse_active.load()))
-            {
-                g_screen_source_creation_in_progress = true;
-                screen.reverseLastStartAttemptTick = GetTickCount64();
-                screen.reverseSource = sources::CreateReverseCameraSource(
-                    screen.reverseFramerate,
-                    screen.reverseCaptureWidth,
-                    screen.reverseCaptureHeight,
-                    screen.reverseCropLeft,
-                    screen.reverseCropTop,
-                    screen.reverseCropWidth,
-                    screen.reverseCropHeight);
-                g_screen_source_creation_in_progress = false;
-                if (screen.reverseSource)
-                    screen.reverseSource->SetPaused(
-                        !g_reverse_active.load());
-            }
-
             loaded.push_back(std::move(screen));
         }
 
         const auto loadedCount = loaded.size();
-		const bool internalParkRequested = false;
         {
             std::lock_guard<std::mutex> lock(g_screens_mutex);
             g_screens = std::move(loaded);
         }
-        dx11::internal_render_probe::
-            set_park_activation_requested(
-                internalParkRequested);
-        dx11::internal_render_probe::
-            set_park_render_requested(false);
         scs_log(0, "[Settings] Loaded %u saved screen(s)", static_cast<unsigned>(loadedCount));
         return true;
     }
@@ -773,7 +533,7 @@ namespace settings {
         DeleteFileA(temporaryPath.c_str());
 
         std::lock_guard<std::mutex> lock(g_screens_mutex);
-        write_number(temporaryPath, "General", "Version", 16);
+        write_number(temporaryPath, "General", "Version", 40);
         write_number(temporaryPath, "General", "ScreenCount", static_cast<uint32_t>(g_screens.size()));
 
         for (size_t hotkeyIndex = 0; hotkeyIndex < g_media_hotkeys.size(); ++hotkeyIndex)
@@ -872,78 +632,12 @@ namespace settings {
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalMuteDistance", screen.adaptiveAudioExternalMuteDistance);
             write_number(temporaryPath, section.c_str(), "AdaptiveAudioExternalLowPassEnabled", screen.adaptiveAudioExternalLowPassEnabled ? 1 : 0);
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalMinimumCutoff", screen.adaptiveAudioExternalMinimumCutoff);
-            write_number(temporaryPath, section.c_str(), "TrafficRadioEnabled", screen.trafficRadioEnabled ? 1 : 0);
-            write_float(temporaryPath, section.c_str(), "TrafficRadioVehicleDensity", screen.trafficRadioVehicleDensity);
-            write_float(temporaryPath, section.c_str(), "TrafficRadioMaximumVolume", screen.trafficRadioMaximumVolume);
-            write_float(temporaryPath, section.c_str(), "TrafficRadioFullVolumeDistance", screen.trafficRadioFullVolumeDistance);
-            write_float(temporaryPath, section.c_str(), "TrafficRadioMuteDistance", screen.trafficRadioMuteDistance);
-            write_float(temporaryPath, section.c_str(), "TrafficRadioNearCutoff", screen.trafficRadioNearCutoff);
-            write_float(temporaryPath, section.c_str(), "TrafficRadioFarCutoff", screen.trafficRadioFarCutoff);
-            write_number(temporaryPath, section.c_str(), "ReverseCameraEnabled", screen.reverseCameraEnabled ? 1 : 0);
-            write_number(
-                temporaryPath, section.c_str(),
-                "ReverseCameraMethod",
-                static_cast<uint32_t>(
-                    screen.reverseCameraMethod));
-            write_number(
-                temporaryPath, section.c_str(),
-                "ReverseInternalTargetVariant",
-                screen.reverseInternalTargetVariant);
-            write_number(temporaryPath, section.c_str(),
-                "ReverseCameraKitInstalled",
-                screen.reverseCameraKitInstalled ? 1 : 0);
-            write_number(temporaryPath, section.c_str(),
-                "ReverseTrailerAwareMount",
-                screen.reverseTrailerAwareMount ? 1 : 0);
-            write_number(temporaryPath, section.c_str(),
-                "ReverseFlipHorizontal",
-                screen.reverseFlipHorizontal ? 1 : 0);
-            write_number(temporaryPath, section.c_str(),
-                "ReverseFlipVertical",
-                screen.reverseFlipVertical ? 1 : 0);
-            write_float(temporaryPath, section.c_str(),
-                "ReverseMountLateral", screen.reverseMountLateral);
-            write_float(temporaryPath, section.c_str(),
-                "ReverseMountHeight", screen.reverseMountHeight);
-            write_float(temporaryPath, section.c_str(),
-                "ReverseMountLongitudinal",
-                screen.reverseMountLongitudinal);
-            write_float(temporaryPath, section.c_str(),
-                "ReverseMountYaw", screen.reverseMountYaw);
-            write_float(temporaryPath, section.c_str(),
-                "ReverseMountPitch", screen.reverseMountPitch);
-            write_number(temporaryPath, section.c_str(), "ReverseZeroForwardImpact", screen.reverseZeroForwardImpact ? 1 : 0);
-            write_number(
-                temporaryPath, section.c_str(),
-                "ReversePerformanceProfile",
-                static_cast<uint32_t>(
-                    screen.reversePerformanceProfile));
-            write_number(temporaryPath, section.c_str(), "ReverseCaptureWidth", screen.reverseCaptureWidth);
-            write_number(temporaryPath, section.c_str(), "ReverseCaptureHeight", screen.reverseCaptureHeight);
-            write_number(temporaryPath, section.c_str(), "ReverseFramerate", screen.reverseFramerate);
-            write_float(temporaryPath, section.c_str(), "ReverseCropLeft", screen.reverseCropLeft);
-            write_float(temporaryPath, section.c_str(), "ReverseCropTop", screen.reverseCropTop);
-            write_float(temporaryPath, section.c_str(), "ReverseCropWidth", screen.reverseCropWidth);
-            write_float(temporaryPath, section.c_str(), "ReverseCropHeight", screen.reverseCropHeight);
             WritePrivateProfileStringA(section.c_str(), "SourceApplication", screen.source_application_name.c_str(), temporaryPath.c_str());
             WritePrivateProfileStringA(section.c_str(), "SourceTitle", screen.source_application_display_name.c_str(), temporaryPath.c_str());
             WritePrivateProfileStringA(section.c_str(), "MediaUrl", screen.mediaUrl.c_str(), temporaryPath.c_str());
             write_number(
                 temporaryPath, section.c_str(), "MediaService",
                 static_cast<uint32_t>(screen.mediaService));
-            write_number(
-                temporaryPath, section.c_str(), "SpotifyPlaybackMode",
-                static_cast<uint32_t>(screen.spotifyPlaybackMode));
-            write_number(
-                temporaryPath, section.c_str(), "SelectedYouTubeUrl",
-                screen.selectedYoutubeUrl);
-            write_number(
-                temporaryPath, section.c_str(), "SelectedSpotifyUrl",
-                screen.selectedSpotifyUrl);
-            write_url_list(
-                temporaryPath, section, "YouTubeUrl", screen.youtubeUrls);
-            write_url_list(
-                temporaryPath, section, "SpotifyUrl", screen.spotifyUrls);
         }
 
         WritePrivateProfileStringA(nullptr, nullptr, nullptr, temporaryPath.c_str());

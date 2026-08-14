@@ -64,17 +64,17 @@ struct gamepad_binding_t
 };
 
 inline std::array<hotkey_binding_t, 6> g_media_hotkeys{ {
-    { VK_MEDIA_PLAY_PAUSE, false, false, false },
-    { VK_MEDIA_NEXT_TRACK, false, false, false },
-    { VK_MEDIA_PREV_TRACK, false, false, false },
-    { VK_VOLUME_MUTE, false, false, false },
-    { VK_VOLUME_UP, false, false, false },
-    { VK_VOLUME_DOWN, false, false, false }
+    { VK_OEM_6, false, false, false },
+    { VK_OEM_4, false, false, false },
+    { VK_OEM_5, false, false, false },
+    { VK_OEM_MINUS, false, false, false },
+    { VK_OEM_2, false, false, false },
+    { VK_OEM_PERIOD, false, false, false }
 } };
 
 inline bool g_is_binding_hotkey{};
 
-inline bool g_gamepad_hotkeys_enabled{};
+inline bool g_gamepad_hotkeys_enabled{ true };
 // -1 automatically uses the first connected controller; 0-3 pins one.
 inline int g_gamepad_controller_index = -1;
 inline float g_gamepad_axis_threshold = 0.65f;

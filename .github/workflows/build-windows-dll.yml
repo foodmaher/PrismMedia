@@ -1,136 +1,52 @@
-name: Build Windows DLL
+name: Build Windows 4.0.0
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build x64 Release
     runs-on: windows-2022
-
     steps:
-      - name: Download source
-        uses: actions/checkout@v4
-
-      - name: Configure MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Verify bundled native libraries
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Verify bundled libraries
         shell: pwsh
         run: |
-          $Libraries = @{
-              "Lib\ImGuiR.lib" = 7000000
-              "Lib\ImGuiD.lib" = 8000000
+          foreach ($File in @('Lib\ImGuiR.lib','Lib\ImGuiD.lib','Lib\minhook.x64.lib')) {
+            if (-not (Test-Path $File)) { throw "Missing required library: $File" }
           }
-
-          foreach ($Entry in $Libraries.GetEnumerator()) {
-              if (-not (Test-Path $Entry.Key)) {
-                  throw "Required native library is missing: $($Entry.Key)"
-              }
-
-              $Size = (Get-Item $Entry.Key).Length
-              if ($Size -lt $Entry.Value) {
-                  throw "$($Entry.Key) is incomplete ($Size bytes). Replace it from the full source package before building."
-              }
-          }
-
-      - name: Build plugin
+      - name: Build x64 Release
         shell: pwsh
-        run: >
-          msbuild PrismTextureStreamerFB.sln
-          /m
-          /restore
-          /t:Build
-          /p:Configuration=Release
-          /p:Platform=x64
-
-      - name: Verify plugin output
+        run: msbuild PrismTextureStreamerFB.sln /m /restore /t:Build /p:Configuration=Release /p:Platform=x64
+      - name: Assemble 4.0.0 package
         shell: pwsh
         run: |
-          $Dll = "x64\Release\PrismTextureStreamerFB.dll"
-          $Bridge = "x64\Release\PrismCameraBridge.dll"
-          if (-not (Test-Path $Dll)) {
-              throw "Expected DLL was not produced: $Dll"
-          }
-          if (-not (Test-Path $Bridge)) {
-              throw "Expected SPF companion was not produced: $Bridge"
-          }
-          $Monitor = "PrismCameraMonitor\bin\x64\Release\net48\PrismCameraMonitor.exe"
-          if (-not (Test-Path $Monitor)) {
-              throw "Expected Camera Lab monitor was not produced: $Monitor"
-          }
-
-          Get-Item $Dll
-          Get-FileHash -Algorithm SHA256 $Dll
-          Get-Item $Bridge
-          Get-FileHash -Algorithm SHA256 $Bridge
-          Get-Item $Monitor
-          Get-FileHash -Algorithm SHA256 $Monitor
-
-      - name: Assemble install package
-        shell: pwsh
-        run: |
-          $Package = "package"
+          $Package = 'package'
           $Runtime = "$Package\PrismTextureStreamerFB"
-          $Docs = "$Runtime\docs"
-          $Client = "PrismMediaClient\bin\x64\Release\net48"
-          $Monitor = "PrismCameraMonitor\bin\x64\Release\net48"
-          if (-not (Test-Path "$Client\PrismMediaClient.exe")) {
-              throw "PrismMediaClient.exe was not produced in $Client"
+          $Client = 'PrismMediaClient\bin\x64\Release\net48'
+          foreach ($File in @('x64\Release\PrismTextureStreamerFB.dll','x64\Release\PrismCameraBridge.dll',"$Client\PrismMediaClient.exe")) {
+            if (-not (Test-Path $File)) { throw "Missing build output: $File" }
           }
-          if (-not (Test-Path "$Monitor\PrismCameraMonitor.exe")) {
-              throw "PrismCameraMonitor.exe was not produced in $Monitor"
-          }
-
           New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
-          New-Item -ItemType Directory -Path $Docs -Force | Out-Null
-          Copy-Item "x64\Release\PrismTextureStreamerFB.dll" $Package
+          Copy-Item 'x64\Release\PrismTextureStreamerFB.dll' $Package
           Copy-Item "$Client\*" $Runtime -Recurse
-          Copy-Item "$Monitor\*" $Runtime -Recurse
-          Get-ChildItem $Runtime -Recurse -File |
-              Where-Object { $_.Extension -in '.pdb', '.xml' } |
-              Remove-Item -Force
-          Copy-Item "PERFORMANCE-NOTES.md" $Docs
-          Copy-Item "V3.3-DYNAMIC-OUTSIDE-AUDIO.md" $Docs
-          Copy-Item "V3.6-TELEMETRY-ENVIRONMENT.md" $Docs
-          Copy-Item "V3.7-PLAYLIST-CORE-BALANCE.md" $Docs
-          Copy-Item "V3.8-SPOTIFY-GAMEPAD-DIAGNOSTICS.md" $Docs
-          Copy-Item "V3.9-SPOTIFY-SESSION-BACKUPS.md" $Docs
-          Copy-Item "V3.10-VISUAL-AUDIO-INPUT.md" $Docs
-          Copy-Item "V3.11-SPF-TRAFFIC-RADIO.md" $Docs
-          Copy-Item "GPU-COMMAND-TRACE-TEST.md" $Docs
-
-          $SpfBridge = "$Runtime\SPF-OPTIONAL\PrismCameraBridge"
-          New-Item -ItemType Directory -Path $SpfBridge -Force |
-              Out-Null
-          Copy-Item "x64\Release\PrismCameraBridge.dll" $SpfBridge
-          Copy-Item "SPF-BRIDGE-INSTALL.txt" "$Runtime\SPF-OPTIONAL"
-
+          Get-ChildItem $Runtime -Recurse -File | Where-Object { $_.Extension -in '.pdb','.xml' } | Remove-Item -Force
+          $Bridge = "$Runtime\SPF-OPTIONAL\PrismCameraBridge"
+          New-Item -ItemType Directory -Path $Bridge -Force | Out-Null
+          Copy-Item 'x64\Release\PrismCameraBridge.dll' $Bridge
+          Copy-Item 'SPF-BRIDGE-INSTALL.txt' "$Runtime\SPF-OPTIONAL"
+          Copy-Item 'config-recommended.ini' $Runtime
+          Copy-Item 'PERFORMANCE-NOTES.md' $Runtime
+          Copy-Item 'README.md' $Package
           @"
-          PrismTextureStreamerFB 3.11.25 GPU Command Trace
-
-          Copy PrismTextureStreamerFB.dll AND the PrismTextureStreamerFB
-          folder into:
+          PrismTextureStreamerFB 4.0.0
+          Copy the DLL and PrismTextureStreamerFB folder to:
           <ETS2 or ATS>\bin\win_x64\plugins
-
-          The DLL must remain directly in plugins so the game can load it.
-          All helper files are organized in the folder. Open the menu with
-          Ctrl+F8.
-
-          Camera Lab launches PrismCameraMonitor.exe from the helper folder.
-          The legacy internal-camera runtime is removed. The trace contains
-          API metadata only and never replaces GPS media.
-
-          Read PrismTextureStreamerFB\SPF-OPTIONAL\SPF-BRIDGE-INSTALL.txt
-          only if you want exact external-camera distance audio.
+          Open the UI with Ctrl+F8.
           "@ | Set-Content "$Package\INSTALL.txt"
-
-          Get-ChildItem $Package -Recurse
-
-      - name: Upload finished package
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-3.11.25-gpu-command-trace
+          name: PrismTextureStreamerFB-4.0.0
           path: package
           if-no-files-found: error
           retention-days: 30

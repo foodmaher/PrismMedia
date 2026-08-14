@@ -11,6 +11,7 @@ namespace sources {
 
     bool IsMediaClientInstalled();
     bool SetMediaClientDucking(float gain);
+    void ShutdownMediaClient();
     std::unique_ptr<IContentSource> CreateMediaClientSource(
         const std::string& media_url,
         uint8_t framerate = 30,

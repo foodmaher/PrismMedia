@@ -3,7 +3,6 @@
 
 #include "present.h"
 #include "CreateTexture2D.h"
-#include "internal_render_probe.h"
 
 #pragma comment(lib, "d3d11.lib")
 
@@ -15,10 +14,6 @@ namespace dx11 {
 		if (!present::init())
 			return false;
 
-		// The internal park-camera test is optional and guarded to one exact
-		// ETS2 executable. A mismatch never prevents the plugin loading.
-		internal_render_probe::init();
-
 		if (!create_texture_2d::init())
 			return false;
 
@@ -27,7 +22,6 @@ namespace dx11 {
 
 	inline void shutdown()
 	{
-		internal_render_probe::shutdown();
 		present::shutdown();
 		// create_texture_2d::shutdown();
 	}

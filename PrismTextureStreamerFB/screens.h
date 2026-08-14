@@ -58,6 +58,12 @@ struct screen_t
 	std::string source_application_display_name;
 	std::string mediaUrl;
 	media_service_t mediaService = media_service_t::YOUTUBE;
+	// Lightweight saved-link libraries. These store URLs only; playback still
+	// uses one live source, so additional playlists have no idle CPU/GPU cost.
+	std::vector<std::string> youtubeUrls;
+	std::vector<std::string> spotifyUrls;
+	uint32_t selectedYoutubeUrl{};
+	uint32_t selectedSpotifyUrl{};
 	std::unique_ptr<IContentSource> source;
 	std::vector<uint8_t> frameScratch;
 	uint32_t frameScratchWidth{};

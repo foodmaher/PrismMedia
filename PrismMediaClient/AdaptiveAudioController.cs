@@ -89,6 +89,10 @@ namespace PrismMediaClient
             if (Math.Abs(transportGain - next) < 0.0005f)
                 return;
             transportGain = next;
+            // Engine-off and Pause/Freeze must silence immediately. Recovery
+            // is still allowed to follow the normal smooth audio curve.
+            if (!audible)
+                appliedGain = 0.0f;
             applyPending = true;
         }
 

@@ -13,12 +13,15 @@ changing game graphics if GPU frame time is already near its limit.
 Adaptive audio runs at 50 Hz in the helper. Gain and pan converge over roughly
 650 ms, and Web Audio low-pass filters use the same 220 ms time constant. This
 avoids audible discontinuities while remaining far below one millisecond of CPU
-work per update on typical systems.
+work per update on typical systems. Engine-off and Pause/Freeze bypass the
+fade in the downward direction so playback becomes silent immediately; the
+smooth curve is retained when audio resumes.
 
-Automatic brightness samples game lighting asynchronously and only while a
-screen requests it. Media brightness is normally handled in WebView2’s GPU
-compositor; other sources use the existing CPU fallback. The output follows a
-phone-like asymmetric curve: about 2.5 seconds to brighten and 4 seconds to dim.
+Automatic brightness samples game lighting asynchronously at half the main GPS
+display rate and only while a screen requests it. Media brightness is normally
+handled in WebView2’s GPU compositor; other sources use the existing CPU
+fallback. The output follows a phone-like asymmetric curve: about 2.5 seconds
+to brighten and 4 seconds to dim.
 
 The optional SPF bridge now publishes only camera, truck, and trailer placement.
 AI traffic enumeration and the traffic-radio helper were removed, reducing

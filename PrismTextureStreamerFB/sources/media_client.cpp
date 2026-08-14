@@ -174,8 +174,10 @@ namespace {
     public:
         explicit MediaClientSource(
             std::unique_ptr<IContentSource> capture,
-            bool fullSpotifyWeb)
+            bool fullSpotifyWeb,
+            uint8_t framerate)
             : m_capture(std::move(capture)),
+              m_framerate((std::max)(static_cast<uint8_t>(1), framerate)),
               m_fullSpotifyWeb(fullSpotifyWeb)
         {
         }
@@ -194,13 +196,14 @@ namespace {
         uint32_t GetHeight() const override { return m_capture->GetHeight(); }
         void SetFramerate(uint8_t framerate) override
         {
+            m_framerate = (std::max)(static_cast<uint8_t>(1), framerate);
             m_capture->SetFramerate(framerate);
         }
         void SetPaused(bool paused) override
         {
             const bool changed = m_userCapturePaused.exchange(paused) != paused;
             if (changed)
-                send_payload(paused ? "freeze|1" : "freeze|0");
+                send_payload(paused ? "freeze|1" : "freeze|0", 60);
             m_capture->SetPaused(
                 m_userCapturePaused.load() ||
                 !m_vehiclePowered.load());
@@ -260,7 +263,8 @@ namespace {
         bool LoadMedia(const std::string& url) override
         {
             const bool sent = send_payload(
-                (m_fullSpotifyWeb ? "loadspotifyweb|" : "load|") + url);
+                (m_fullSpotifyWeb ? "loadspotifyweb|" : "load|") + url,
+                120);
             diagnostic_log::writef(
                 "media", "%s media load request: %s",
                 m_fullSpotifyWeb ? "Spotify Web" : "YouTube/direct",
@@ -287,7 +291,9 @@ namespace {
             case media_command_t::VOLUME_UP: name = "volumeup"; break;
             case media_command_t::VOLUME_DOWN: name = "volumedown"; break;
             }
-            const bool sent = name && send_payload(name);
+            // Never let a temporarily busy WebView stall the game/UI thread.
+            // The helper copies and serializes accepted commands itself.
+            const bool sent = name && send_payload(name, 35);
             if (name)
             {
                 diagnostic_log::writef(
@@ -338,12 +344,25 @@ namespace {
             if (std::fabs(brightness - m_lastBrightness) < 0.001f)
                 return;
 
+            const uint64_t now = GetTickCount64();
+            const uint32_t brightnessHz = (std::max)(
+                1U, static_cast<uint32_t>(m_framerate.load()) / 2U);
+            const uint64_t interval = (std::max)(
+                1ULL, 1000ULL / static_cast<uint64_t>(brightnessHz));
+            const bool manualSizedJump =
+                std::fabs(brightness - m_lastBrightness) >= 0.02f;
+            if (!manualSizedJump && m_lastBrightnessSendTick != 0 &&
+                now >= m_lastBrightnessSendTick &&
+                now - m_lastBrightnessSendTick < interval)
+                return;
+
             char payload[48]{};
             std::snprintf(
                 payload, sizeof(payload), "brightness|%.4f", brightness);
             if (send_payload(payload, 30))
             {
                 m_lastBrightness = brightness;
+                m_lastBrightnessSendTick = now;
                 if (m_userCapturePaused.load() ||
                     !m_vehiclePowered.load())
                 {
@@ -410,6 +429,7 @@ namespace {
         }
 
         std::unique_ptr<IContentSource> m_capture;
+        std::atomic<uint8_t> m_framerate{ 60 };
         std::atomic<bool> m_userCapturePaused{};
         std::atomic<bool> m_vehiclePowered{ true };
         bool m_spatialEnabled{};
@@ -418,6 +438,7 @@ namespace {
         float m_lastLowpassHz{ 20000.0f };
         uint64_t m_lastSpatialSendTick{};
         float m_lastBrightness{ -1.0f };
+        uint64_t m_lastBrightnessSendTick{};
         std::atomic<bool> m_brightnessRefreshPending{};
         std::atomic<uint64_t> m_brightnessRefreshRequestedTick{};
         bool m_fullSpotifyWeb{};
@@ -474,11 +495,11 @@ namespace sources {
             // visible; it queues the URL until WebView2 has initialized.
             send_payload(
                 (full_spotify_web ? "loadspotifyweb|" : "load|") +
-                media_url);
+                media_url, 120);
         }
         send_payload(
             "resize|" + std::to_string(output_width) + "x" +
-            std::to_string(output_height));
+            std::to_string(output_height), 80);
 
         auto capture = CreateWgcWindowSource(
             kMediaClientExecutable, kMediaClientWindowTitle,
@@ -486,6 +507,6 @@ namespace sources {
         if (!capture)
             return nullptr;
         return std::make_unique<MediaClientSource>(
-            std::move(capture), full_spotify_web);
+            std::move(capture), full_spotify_web, framerate);
     }
 }

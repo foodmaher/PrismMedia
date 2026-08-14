@@ -62,6 +62,9 @@ namespace PrismMediaClient
         private readonly WebView2 webView = new WebView2();
         private readonly Queue<string> pendingCommands =
             new Queue<string>();
+        private readonly Queue<string> commandQueue =
+            new Queue<string>();
+        private bool commandPumpActive;
         private readonly AdaptiveAudioController adaptiveAudio =
             new AdaptiveAudioController();
         private MediaLowPassController lowPass;
@@ -192,6 +195,15 @@ namespace PrismMediaClient
                     try
                     {
                         string value = eventArgs.TryGetWebMessageAsString();
+                        if (value.StartsWith(
+                            "transport|", StringComparison.Ordinal))
+                        {
+                            bool playing = value.EndsWith(
+                                "|1", StringComparison.Ordinal);
+                            adaptiveAudio.SetTransportGain(
+                                playing && vehiclePowered && !mediaFrozen);
+                            return;
+                        }
                         if (!value.StartsWith(
                             "log|", StringComparison.Ordinal))
                             return;
@@ -305,29 +317,78 @@ namespace PrismMediaClient
                     byte[] bytes = new byte[data.ByteCount];
                     Marshal.Copy(data.Data, bytes, 0, bytes.Length);
                     string command = Encoding.UTF8.GetString(bytes).TrimEnd('\0');
-                    BeginInvoke(new Action(async () =>
-                    {
-                        bool immediate = command.StartsWith(
-                                "parent|", StringComparison.Ordinal) ||
-                            string.Equals(command, "shutdown",
-                                StringComparison.Ordinal);
-                        if (immediate || ready)
-                            await ApplyCommandAsync(command);
-                        else if (string.Equals(
-                            command, "initialize",
-                            StringComparison.Ordinal))
-                            await InitializePlayerAsync();
-                        else
-                        {
-                            pendingCommands.Enqueue(command);
-                            await InitializePlayerAsync();
-                        }
-                    }));
+                    // Keep WebView commands ordered. Starting one async script
+                    // per key press allowed rapid transport input to overlap.
+                    BeginInvoke(new Action(() => QueueCommand(command)));
                     message.Result = new IntPtr(1);
                     return;
                 }
             }
             base.WndProc(ref message);
+        }
+
+        private void QueueCommand(string command)
+        {
+            if (string.Equals(command, "shutdown", StringComparison.Ordinal))
+            {
+                // Game teardown wins over any queued WebView work. The helper
+                // owns no user document state that needs a slow flush here.
+                commandQueue.Clear();
+                pendingCommands.Clear();
+                Close();
+                return;
+            }
+            // Consecutive brightness updates collapse to the newest target so
+            // they cannot delay Play, Next, Previous, or volume commands.
+            if (command.StartsWith("brightness|", StringComparison.Ordinal) &&
+                commandQueue.Count > 0)
+            {
+                string[] queued = commandQueue.ToArray();
+                if (queued[queued.Length - 1].StartsWith(
+                    "brightness|", StringComparison.Ordinal))
+                {
+                    commandQueue.Clear();
+                    for (int index = 0; index < queued.Length - 1; ++index)
+                        commandQueue.Enqueue(queued[index]);
+                }
+            }
+            commandQueue.Enqueue(command);
+            if (!commandPumpActive)
+                _ = DrainCommandQueueAsync();
+        }
+
+        private async Task DrainCommandQueueAsync()
+        {
+            if (commandPumpActive)
+                return;
+            commandPumpActive = true;
+            try
+            {
+                while (commandQueue.Count > 0)
+                {
+                    string command = commandQueue.Dequeue();
+                    bool immediate = command.StartsWith(
+                            "parent|", StringComparison.Ordinal) ||
+                        string.Equals(command, "shutdown",
+                            StringComparison.Ordinal);
+                    if (immediate || ready)
+                        await ApplyCommandAsync(command);
+                    else if (string.Equals(
+                        command, "initialize", StringComparison.Ordinal))
+                        await InitializePlayerAsync();
+                    else
+                    {
+                        pendingCommands.Enqueue(command);
+                        await InitializePlayerAsync();
+                    }
+                }
+            }
+            finally
+            {
+                commandPumpActive = false;
+                if (commandQueue.Count > 0)
+                    _ = DrainCommandQueueAsync();
+            }
         }
 
         private async Task ExecuteCommandAsync(string command)
@@ -835,6 +896,7 @@ namespace PrismMediaClient
                 {
                     userWantsPlayback = !userWantsPlayback;
                     name = "pause";
+                    automaticPlaybackGate = true;
                 }
             }
             else if (name == "play")
@@ -867,6 +929,8 @@ namespace PrismMediaClient
                     else if (name == "playpause")
                         userWantsPlayback = !userWantsPlayback;
                 }
+                adaptiveAudio.SetTransportGain(
+                    userWantsPlayback && vehiclePowered && !mediaFrozen);
                 return;
             }
 
@@ -884,6 +948,17 @@ namespace PrismMediaClient
                 default: return;
             }
             SendMediaKey(key);
+            if (!automaticPlaybackGate)
+            {
+                if (name == "play")
+                    userWantsPlayback = true;
+                else if (name == "pause")
+                    userWantsPlayback = false;
+                else if (name == "playpause")
+                    userWantsPlayback = !userWantsPlayback;
+            }
+            adaptiveAudio.SetTransportGain(
+                userWantsPlayback && vehiclePowered && !mediaFrozen);
             ClientDiagnosticLog.Write(
                 "spotify", "Used Windows media-key fallback for " + name + ".");
         }
@@ -1013,6 +1088,17 @@ namespace PrismMediaClient
                     adaptiveAudio.SetTransportGain(true);
                 else
                     adaptiveAudio.SetTransportGain(false);
+                return;
+            }
+            if (command.StartsWith("freeze|", StringComparison.Ordinal))
+            {
+                mediaFrozen = command.EndsWith("|1", StringComparison.Ordinal);
+                if (fullSpotifyWeb)
+                    await ExecuteFullSpotifyCommandAsync(command);
+                else
+                    await ExecuteCommandAsync(command);
+                adaptiveAudio.SetTransportGain(
+                    !mediaFrozen && vehiclePowered);
                 return;
             }
             if (command.StartsWith("load|", StringComparison.Ordinal) &&

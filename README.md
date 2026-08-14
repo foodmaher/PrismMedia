@@ -13,9 +13,9 @@ or a desktop window onto supported ETS2/ATS truck displays.
   displays, Pause/Freeze, media mute and volume, hotkey target selection,
   performance profiles, scaling modes, backups, adaptive audio tuning, update
   notifications, detailed live performance, and sampled per-core activity.
-- Media URLs load immediately. A YouTube playlist URL is supported as one live
-  source, but the old saved multi-playlist library and all bundled personal URLs
-  are removed.
+- Media URLs load immediately. Lightweight saved-link libraries are available
+  separately for YouTube and Spotify, while only the selected source runs.
+  Bundled personal URLs remain removed.
 - Spotify now uses only the official full Web Player. The embedded Spotify path
   and its duplicated playback state are removed.
 - Play/Pause is state-neutral in the plugin, while actual browser media events

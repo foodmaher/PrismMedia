@@ -7,6 +7,8 @@
 #include <atomic>
 #include <cmath>
 #include <cfloat>
+#include <cstdio>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
@@ -81,9 +83,15 @@ namespace
     bool slider_percent(const char* label, float& normalized,
         float minimumPercent = 0.0f, float maximumPercent = 100.0f)
     {
+        ImGui::PushID(label);
+        ImGui::TextDisabled("%s", label);
         float percent = normalized * 100.0f;
-        if (!ImGui::SliderFloat(label, &percent, minimumPercent,
-            maximumPercent, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
+        ImGui::SetNextItemWidth(-1.0f);
+        const bool changed = ImGui::SliderFloat("##percent", &percent,
+            minimumPercent, maximumPercent, "%.0f%%",
+            ImGuiSliderFlags_AlwaysClamp);
+        ImGui::PopID();
+        if (!changed)
             return false;
         normalized = percent / 100.0f;
         return true;
@@ -203,6 +211,76 @@ namespace
         draw->AddText(ui_font(1), 19.0f, ImVec2(start.x + 70.0f, start.y + 21.0f),
             selected ? kCyan : IM_COL32(230, 237, 243, 255), label);
         return pressed;
+    }
+
+    bool transport_button(const char* id, const char* label, int icon,
+        float width)
+    {
+        ImGui::PushID(id);
+        const ImVec2 start = ImGui::GetCursorScreenPos();
+        const ImVec2 size(width, 48.0f);
+        ImGui::InvisibleButton("##transport", size);
+        const bool clicked = ImGui::IsItemClicked();
+        const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        if (hovered)
+            draw_card_shadow(draw, start,
+                ImVec2(start.x + size.x, start.y + size.y), 10.0f);
+        draw->AddRectFilled(start,
+            ImVec2(start.x + size.x, start.y + size.y),
+            hovered ? IM_COL32(18, 80, 101, 250) : IM_COL32(20, 40, 55, 245),
+            10.0f);
+        draw->AddRect(start,
+            ImVec2(start.x + size.x, start.y + size.y),
+            hovered ? kCyan : kBorder, 10.0f, 0, hovered ? 2.0f : 1.0f);
+        const ImVec2 c(start.x + 25.0f, start.y + 24.0f);
+        const ImU32 colour = hovered ? kCyan : IM_COL32(232, 240, 246, 255);
+        if (icon == 0)
+        {
+            draw->AddTriangleFilled(ImVec2(c.x - 6.0f, c.y - 8.0f),
+                ImVec2(c.x + 6.0f, c.y), ImVec2(c.x - 6.0f, c.y + 8.0f), colour);
+            draw->AddRectFilled(ImVec2(c.x + 9.0f, c.y - 8.0f),
+                ImVec2(c.x + 12.0f, c.y + 8.0f), colour, 1.0f);
+        }
+        else if (icon == 1 || icon == 2)
+        {
+            const float direction = icon == 1 ? -1.0f : 1.0f;
+            draw->AddTriangleFilled(
+                ImVec2(c.x + direction * 7.0f, c.y - 8.0f),
+                ImVec2(c.x - direction * 6.0f, c.y),
+                ImVec2(c.x + direction * 7.0f, c.y + 8.0f), colour);
+            draw->AddLine(
+                ImVec2(c.x + direction * 10.0f, c.y - 8.0f),
+                ImVec2(c.x + direction * 10.0f, c.y + 8.0f), colour, 2.5f);
+        }
+        else
+        {
+            const ImVec2 speaker[] = {
+                ImVec2(c.x - 10.0f, c.y - 5.0f), ImVec2(c.x - 5.0f, c.y - 5.0f),
+                ImVec2(c.x + 1.0f, c.y - 10.0f), ImVec2(c.x + 1.0f, c.y + 10.0f),
+                ImVec2(c.x - 5.0f, c.y + 5.0f), ImVec2(c.x - 10.0f, c.y + 5.0f)
+            };
+            draw->AddConvexPolyFilled(speaker, 6, colour);
+            if (icon == 3)
+            {
+                draw->AddLine(ImVec2(c.x + 6.0f, c.y - 6.0f),
+                    ImVec2(c.x + 14.0f, c.y + 6.0f), colour, 2.0f);
+                draw->AddLine(ImVec2(c.x + 14.0f, c.y - 6.0f),
+                    ImVec2(c.x + 6.0f, c.y + 6.0f), colour, 2.0f);
+            }
+            else
+            {
+                draw->AddLine(ImVec2(c.x + 6.0f, c.y),
+                    ImVec2(c.x + 14.0f, c.y), colour, 2.0f);
+                if (icon == 5)
+                    draw->AddLine(ImVec2(c.x + 10.0f, c.y - 4.0f),
+                        ImVec2(c.x + 10.0f, c.y + 4.0f), colour, 2.0f);
+            }
+        }
+        draw->AddText(ui_font(1), 16.0f,
+            ImVec2(start.x + 48.0f, start.y + 15.0f), colour, label);
+        ImGui::PopID();
+        return clicked;
     }
 
     void draw_status_icon(ImDrawList* draw, int icon, const ImVec2& c, ImU32 colour)
@@ -521,53 +599,136 @@ namespace
         ImGui::Dummy(size);
     }
 
+    bool home_card(const char* id, int icon, const char* title,
+        const char* headline, const char* detail, const char* footer,
+        ImU32 accent, float height)
+    {
+        ImGui::PushID(id);
+        const ImVec2 start = ImGui::GetCursorScreenPos();
+        const ImVec2 size(ImGui::GetContentRegionAvail().x, height);
+        ImGui::InvisibleButton("##home_card", size);
+        const bool clicked = ImGui::IsItemClicked();
+        const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        draw_card_shadow(draw, start,
+            ImVec2(start.x + size.x, start.y + size.y), 14.0f);
+        draw->AddRectFilled(start,
+            ImVec2(start.x + size.x, start.y + size.y),
+            hovered ? IM_COL32(21, 40, 55, 252) : IM_COL32(15, 29, 42, 250),
+            14.0f);
+        draw->AddRectFilled(start,
+            ImVec2(start.x + size.x, start.y + 5.0f), accent,
+            14.0f, ImDrawFlags_RoundCornersTop);
+        draw->AddRect(start,
+            ImVec2(start.x + size.x, start.y + size.y),
+            hovered ? accent : kBorder, 14.0f, 0, hovered ? 2.0f : 1.0f);
+
+        const ImVec2 badgeMin(start.x + 22.0f, start.y + 24.0f);
+        const ImVec2 badgeMax(badgeMin.x + 48.0f, badgeMin.y + 48.0f);
+        draw->AddRectFilled(badgeMin, badgeMax,
+            hovered ? IM_COL32(24, 108, 135, 245) : IM_COL32(30, 50, 67, 245),
+            12.0f);
+        draw_nav_icon(draw, icon,
+            ImVec2(badgeMin.x + 24.0f, badgeMin.y + 24.0f),
+            hovered ? IM_COL32_WHITE : accent);
+        draw->AddText(ui_font(1), 17.0f,
+            ImVec2(start.x + 84.0f, start.y + 26.0f), accent, title);
+        draw->AddText(ui_font(2), 25.0f,
+            ImVec2(start.x + 84.0f, start.y + 50.0f),
+            IM_COL32(240, 246, 250, 255), headline);
+        draw->AddText(ui_font(0), 16.0f,
+            ImVec2(start.x + 22.0f, start.y + 91.0f),
+            IM_COL32(213, 224, 232, 255), detail, nullptr,
+            size.x - 44.0f);
+        draw->AddText(ui_font(0), 15.0f,
+            ImVec2(start.x + 22.0f, start.y + size.y - 31.0f),
+            kMuted, footer);
+        const char* open = "OPEN";
+        const ImVec2 openSize = ui_font(1)->CalcTextSizeA(
+            15.0f, FLT_MAX, 0.0f, open);
+        draw->AddText(ui_font(1), 15.0f,
+            ImVec2(start.x + size.x - openSize.x - 22.0f,
+                start.y + size.y - 31.0f),
+            hovered ? accent : kMuted, open);
+        ImGui::PopID();
+        return clicked;
+    }
+
     void draw_home(screen_t& screen)
     {
         const auto stats = screen.source ? screen.source->GetPerformanceStats() : source_performance_stats_t{};
         const char* screenKind = screen.type == screen_type_t::GPS ? "GPS" :
             (screen.type == screen_type_t::DASHBOARD ? "Dashboard" : "Custom");
-        if (ImGui::BeginTable("home_cards", 2, ImGuiTableFlags_SizingStretchSame))
+        char displayHeadline[64]{};
+        char displayDetail[192]{};
+        char performanceHeadline[64]{};
+        char performanceDetail[192]{};
+        char audioDetail[192]{};
+        char brightnessHeadline[64]{};
+        char brightnessDetail[192]{};
+        std::snprintf(displayHeadline, sizeof(displayHeadline),
+            "%s %d", screenKind, selectedScreen + 1);
+        std::snprintf(displayDetail, sizeof(displayDetail),
+            "%s\n%ux%u at %u FPS",
+            screen.source ? screen.source->GetStatusText().c_str() : "Waiting for source",
+            screen.targetLiveTextureWidth, screen.targetLiveTextureHeight,
+            static_cast<unsigned>(screen.framerate));
+        std::snprintf(performanceHeadline, sizeof(performanceHeadline),
+            "%.1f FPS", ImGui::GetIO().Framerate);
+        std::snprintf(performanceDetail, sizeof(performanceDetail),
+            "Upload %.3f ms | worker %.3f ms\nDelivered %.1f FPS | dropped %llu",
+            screen.uploadCpuMs, stats.workerCpuMs,
+            stats.deliveredFps > 0.0 ? stats.deliveredFps : screen.deliveredFps,
+            static_cast<unsigned long long>(stats.droppedFrames));
+        std::snprintf(audioDetail, sizeof(audioDetail),
+            "Cabin %.0f%% | outside %.0f%%\nEnvironment output %.0f%%",
+            screen.adaptiveAudioInteriorVolume * 100.0f,
+            screen.adaptiveAudioOutsideVolume * 100.0f,
+            g_environment_media_gain.load() * 100.0f);
+        std::snprintf(brightnessHeadline, sizeof(brightnessHeadline),
+            "%.0f%% brightness", screen.effectiveBrightness * 100.0f);
+        std::snprintf(brightnessDetail, sizeof(brightnessDetail),
+            "Automatic adjustment: %s\nEngine: %s",
+            screen.autoBrightnessEnabled ? "On" : "Off",
+            g_engine_enabled.load() ? "running" : "off");
+
+        const float availableHeight = ImGui::GetContentRegionAvail().y;
+        const float cardHeight = (std::max)(
+            170.0f, (availableHeight - 18.0f) * 0.5f);
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(7.0f, 7.0f));
+        if (ImGui::BeginTable("home_cards", 2,
+            ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_PadOuterX))
         {
+            ImGui::TableNextRow(0.0f, cardHeight);
             ImGui::TableNextColumn();
-            ImGui::BeginChild("home_source", ImVec2(0.0f, 142.0f), true);
-            text_with_font(1, ImVec4(0.12f, 0.86f, 0.98f, 1.0f), "ACTIVE DISPLAY");
-            ImGui::PushFont(ui_font(2)); ImGui::Text("%s %d", screenKind, selectedScreen + 1); ImGui::PopFont();
-            ImGui::TextWrapped("%s", screen.source ? screen.source->GetStatusText().c_str() : "Waiting for source");
-            ImGui::TextDisabled("%ux%u @ %u FPS", screen.targetLiveTextureWidth,
-                screen.targetLiveTextureHeight, static_cast<unsigned>(screen.framerate));
-            ImGui::EndChild();
+            if (home_card("home_source", 1, "ACTIVE DISPLAY",
+                displayHeadline, displayDetail, "Source and playlist",
+                kCyan, cardHeight - 14.0f))
+            { selectedPage = 1; panelAnimation = 0.0f; }
 
             ImGui::TableNextColumn();
-            ImGui::BeginChild("home_performance", ImVec2(0.0f, 142.0f), true);
-            text_with_font(1, ImVec4(0.42f, 0.94f, 0.47f, 1.0f), "LIVE PERFORMANCE");
-            ImGui::PushFont(ui_font(2)); ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate); ImGui::PopFont();
-            ImGui::Text("Upload %.3f ms | worker %.3f ms", screen.uploadCpuMs, stats.workerCpuMs);
-            ImGui::TextDisabled("Delivered %.1f FPS | dropped %llu", stats.deliveredFps > 0.0 ? stats.deliveredFps : screen.deliveredFps,
-                static_cast<unsigned long long>(stats.droppedFrames));
-            ImGui::EndChild();
+            if (home_card("home_performance", 5, "LIVE PERFORMANCE",
+                performanceHeadline, performanceDetail, "Detailed metrics",
+                kGreen, cardHeight - 14.0f))
+            { selectedPage = 5; panelAnimation = 0.0f; }
+
+            ImGui::TableNextRow(0.0f, cardHeight);
+            ImGui::TableNextColumn();
+            if (home_card("home_audio", 2, "ADAPTIVE AUDIO",
+                screen.adaptiveAudioEnabled ? "Enabled" : "Disabled",
+                audioDetail, "Cabin and exterior tuning",
+                kBlue, cardHeight - 14.0f))
+            { selectedPage = 2; panelAnimation = 0.0f; }
 
             ImGui::TableNextColumn();
-            ImGui::BeginChild("home_audio", ImVec2(0.0f, 142.0f), true);
-            text_with_font(1, ImVec4(0.12f, 0.86f, 0.98f, 1.0f), "ADAPTIVE AUDIO");
-            ImGui::PushFont(ui_font(2)); ImGui::TextUnformatted(screen.adaptiveAudioEnabled ? "Enabled" : "Disabled"); ImGui::PopFont();
-            ImGui::Text("Cabin %.0f%% | outside %.0f%%", screen.adaptiveAudioInteriorVolume * 100.0f,
-                screen.adaptiveAudioOutsideVolume * 100.0f);
-            ImGui::TextDisabled("Environment output %.0f%%", g_environment_media_gain.load() * 100.0f);
-            ImGui::EndChild();
-
-            ImGui::TableNextColumn();
-            ImGui::BeginChild("home_display", ImVec2(0.0f, 142.0f), true);
-            text_with_font(1, ImVec4(0.12f, 0.86f, 0.98f, 1.0f), "DISPLAY");
-            ImGui::PushFont(ui_font(2)); ImGui::Text("%.0f%% brightness", screen.effectiveBrightness * 100.0f); ImGui::PopFont();
-            ImGui::Text("Automatic adjustment: %s", screen.autoBrightnessEnabled ? "On" : "Off");
-            ImGui::TextDisabled("Engine: %s", g_engine_enabled.load() ? "running" : "off");
-            ImGui::EndChild();
+            if (home_card("home_display", 4, "DISPLAY",
+                brightnessHeadline, brightnessDetail,
+                "Brightness and scaling", IM_COL32(183, 112, 255, 255),
+                cardHeight - 14.0f))
+            { selectedPage = 4; panelAnimation = 0.0f; }
             ImGui::EndTable();
         }
-        ImGui::Dummy(ImVec2(0.0f, 8.0f));
-        if (ImGui::Button("Open media", ImVec2(150.0f, 42.0f))) { selectedPage = 1; panelAnimation = 0.0f; }
-        ImGui::SameLine(); if (ImGui::Button("Tune audio", ImVec2(150.0f, 42.0f))) { selectedPage = 2; panelAnimation = 0.0f; }
-        ImGui::SameLine(); if (ImGui::Button("Live performance", ImVec2(180.0f, 42.0f))) { selectedPage = 5; panelAnimation = 0.0f; }
+        ImGui::PopStyleVar();
     }
 
     bool audio_feature_card(const char* id, const char* title, int icon, bool selected, float width)
@@ -638,7 +799,7 @@ namespace
     void draw_media(screen_t& screen)
     {
         text_with_font(2, ImVec4(0.93f, 0.97f, 0.99f, 1.0f), "MEDIA SOURCE");
-        ImGui::TextDisabled("One live source. YouTube playlist URLs still work; no saved playlist library.");
+        ImGui::TextDisabled("One live source with lightweight saved YouTube and Spotify link libraries.");
         ImGui::Dummy(ImVec2(0.0f, 4.0f)); ImGui::Separator(); ImGui::Dummy(ImVec2(0.0f, 4.0f));
         const char* modes[] = { "Window capture", "Integrated YouTube / Spotify", "Native direct media" };
         int mode = static_cast<int>(screen.contentMode);
@@ -683,10 +844,63 @@ namespace
                 ImGui::TextDisabled("SERVICE");
                 ImGui::SetNextItemWidth(-1.0f);
                 if (ImGui::Combo("##media_service", &service, services, IM_ARRAYSIZE(services)))
-                { screen.mediaService = static_cast<media_service_t>(service); rebuild_source(screen); mark_changed(); }
+                {
+                    screen.mediaService = static_cast<media_service_t>(service);
+                    auto& urls = screen.mediaService == media_service_t::YOUTUBE
+                        ? screen.youtubeUrls : screen.spotifyUrls;
+                    uint32_t& selected = screen.mediaService == media_service_t::YOUTUBE
+                        ? screen.selectedYoutubeUrl : screen.selectedSpotifyUrl;
+                    if (!urls.empty())
+                    {
+                        selected = (std::min)(selected,
+                            static_cast<uint32_t>(urls.size() - 1));
+                        screen.mediaUrl = urls[selected];
+                    }
+                    else
+                        screen.mediaUrl.clear();
+                    rebuild_source(screen);
+                    mark_changed();
+                }
                 explain_last_item("Media service", "YouTube uses the focused player; Spotify always uses the official full web player.", "Low/medium");
                 if (!sources::IsMediaClientInstalled())
                     ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "PrismMediaClient.exe is missing.");
+
+                auto& mediaUrls = screen.mediaService == media_service_t::YOUTUBE
+                    ? screen.youtubeUrls : screen.spotifyUrls;
+                uint32_t& selectedMediaUrl = screen.mediaService == media_service_t::YOUTUBE
+                    ? screen.selectedYoutubeUrl : screen.selectedSpotifyUrl;
+                if (!mediaUrls.empty())
+                    selectedMediaUrl = (std::min)(selectedMediaUrl,
+                        static_cast<uint32_t>(mediaUrls.size() - 1));
+
+                ImGui::Dummy(ImVec2(0.0f, 3.0f));
+                ImGui::TextDisabled("SAVED PLAYLISTS / LINKS");
+                const char* savedPreview = mediaUrls.empty()
+                    ? "No saved links yet"
+                    : mediaUrls[selectedMediaUrl].c_str();
+                ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::BeginCombo("##saved_media", savedPreview))
+                {
+                    for (size_t index = 0; index < mediaUrls.size(); ++index)
+                    {
+                        const std::string label = std::to_string(index + 1) +
+                            ".  " + mediaUrls[index] + "##saved_" +
+                            std::to_string(index);
+                        const bool selected = index == selectedMediaUrl;
+                        if (ImGui::Selectable(label.c_str(), selected))
+                        {
+                            selectedMediaUrl = static_cast<uint32_t>(index);
+                            screen.mediaUrl = mediaUrls[index];
+                            if (!screen.source ||
+                                !screen.source->LoadMedia(screen.mediaUrl))
+                                rebuild_source(screen);
+                            mark_changed();
+                        }
+                        if (selected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
             }
             ImGui::TextDisabled("MEDIA URL OR LOCAL FILE");
             ImGui::SetNextItemWidth(-108.0f);
@@ -703,16 +917,90 @@ namespace
                 mark_changed();
                 if (!loaded && !screen.mediaUrl.empty()) ImGui::OpenPopup("Source unavailable");
             }
+            if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA)
+            {
+                auto& mediaUrls = screen.mediaService == media_service_t::YOUTUBE
+                    ? screen.youtubeUrls : screen.spotifyUrls;
+                uint32_t& selectedMediaUrl = screen.mediaService == media_service_t::YOUTUBE
+                    ? screen.selectedYoutubeUrl : screen.selectedSpotifyUrl;
+                const float libraryButtonWidth =
+                    (ImGui::GetContentRegionAvail().x - 16.0f) / 3.0f;
+                if (ImGui::Button("+ Add link", ImVec2(libraryButtonWidth, 0.0f)) &&
+                    !screen.mediaUrl.empty())
+                {
+                    const auto existing = std::find(
+                        mediaUrls.begin(), mediaUrls.end(), screen.mediaUrl);
+                    if (existing == mediaUrls.end())
+                    {
+                        mediaUrls.push_back(screen.mediaUrl);
+                        selectedMediaUrl = static_cast<uint32_t>(mediaUrls.size() - 1);
+                    }
+                    else
+                        selectedMediaUrl = static_cast<uint32_t>(
+                            std::distance(mediaUrls.begin(), existing));
+                    mark_changed();
+                }
+                explain_last_item("Add saved link", "Stores this URL for quick switching. It does not reload the game or start another background player.");
+                ImGui::SameLine(0.0f, 8.0f);
+                ImGui::BeginDisabled(mediaUrls.empty() || screen.mediaUrl.empty());
+                if (ImGui::Button("Update selected", ImVec2(libraryButtonWidth, 0.0f)))
+                {
+                    selectedMediaUrl = (std::min)(selectedMediaUrl,
+                        static_cast<uint32_t>(mediaUrls.size() - 1));
+                    mediaUrls[selectedMediaUrl] = screen.mediaUrl;
+                    mark_changed();
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine(0.0f, 8.0f);
+                ImGui::BeginDisabled(mediaUrls.empty());
+                if (ImGui::Button("Remove selected", ImVec2(-1.0f, 0.0f)))
+                {
+                    selectedMediaUrl = (std::min)(selectedMediaUrl,
+                        static_cast<uint32_t>(mediaUrls.size() - 1));
+                    mediaUrls.erase(mediaUrls.begin() + selectedMediaUrl);
+                    if (mediaUrls.empty())
+                    {
+                        selectedMediaUrl = 0;
+                        screen.mediaUrl.clear();
+                    }
+                    else
+                    {
+                        selectedMediaUrl = (std::min)(selectedMediaUrl,
+                            static_cast<uint32_t>(mediaUrls.size() - 1));
+                        screen.mediaUrl = mediaUrls[selectedMediaUrl];
+                    }
+                    mark_changed();
+                }
+                ImGui::EndDisabled();
+                ImGui::TextDisabled("%zu saved %s link%s", mediaUrls.size(),
+                    screen.mediaService == media_service_t::YOUTUBE
+                        ? "YouTube" : "Spotify",
+                    mediaUrls.size() == 1 ? "" : "s");
+            }
             if (screen.source && screen.source->SupportsMediaControls())
             {
                 ImGui::Text("Status: %s", screen.source->GetStatusText().c_str());
-                if (ImGui::Button("Play / Pause", ImVec2(124.0f, 0.0f))) dispatch_media_command(screen, media_command_t::PLAY_PAUSE);
+                const float transportGap = 8.0f;
+                const float transportWidth =
+                    (ImGui::GetContentRegionAvail().x - transportGap * 5.0f) / 6.0f;
+                if (transport_button("play_pause", "Play / Pause", 0, transportWidth))
+                    dispatch_media_command(screen, media_command_t::PLAY_PAUSE);
                 explain_last_item("Play / Pause", "Uses a state-neutral transport control, so a stale icon cannot claim the wrong state.");
-                ImGui::SameLine(); if (ImGui::Button("Previous")) dispatch_media_command(screen, media_command_t::PREVIOUS);
-                ImGui::SameLine(); if (ImGui::Button("Next")) dispatch_media_command(screen, media_command_t::NEXT);
-                ImGui::SameLine(); if (ImGui::Button("Mute")) dispatch_media_command(screen, media_command_t::MUTE);
-                ImGui::SameLine(); if (ImGui::Button("Vol -")) dispatch_media_command(screen, media_command_t::VOLUME_DOWN);
-                ImGui::SameLine(); if (ImGui::Button("Vol +")) dispatch_media_command(screen, media_command_t::VOLUME_UP);
+                ImGui::SameLine(0.0f, transportGap);
+                if (transport_button("previous", "Previous", 1, transportWidth))
+                    dispatch_media_command(screen, media_command_t::PREVIOUS);
+                ImGui::SameLine(0.0f, transportGap);
+                if (transport_button("next", "Next", 2, transportWidth))
+                    dispatch_media_command(screen, media_command_t::NEXT);
+                ImGui::SameLine(0.0f, transportGap);
+                if (transport_button("mute", "Mute", 3, transportWidth))
+                    dispatch_media_command(screen, media_command_t::MUTE);
+                ImGui::SameLine(0.0f, transportGap);
+                if (transport_button("volume_down", "Volume -", 4, transportWidth))
+                    dispatch_media_command(screen, media_command_t::VOLUME_DOWN);
+                ImGui::SameLine(0.0f, transportGap);
+                if (transport_button("volume_up", "Volume +", 5, transportWidth))
+                    dispatch_media_command(screen, media_command_t::VOLUME_UP);
 
                 bool hotkeyTarget = screen.hotkeyTarget;
                 if (toggle_switch("Use this screen for media hotkeys", hotkeyTarget))
@@ -904,26 +1192,133 @@ namespace
         }
     }
 
+    void begin_settings_card(const char* id, const char* title,
+        const char* subtitle, float height, ImU32 accent)
+    {
+        const ImVec2 start = ImGui::GetCursorScreenPos();
+        const ImVec2 end(start.x + ImGui::GetContentRegionAvail().x,
+            start.y + height);
+        draw_card_shadow(ImGui::GetWindowDrawList(), start, end, 13.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 16.0f));
+        ImGui::BeginChild(id, ImVec2(0.0f, height), ImGuiChildFlags_Borders,
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::PushFont(ui_font(1));
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(accent), "%s", title);
+        ImGui::PopFont();
+        ImGui::TextDisabled("%s", subtitle);
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    }
+
+    void end_settings_card()
+    {
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+    }
+
     void draw_appearance(screen_t& screen)
     {
-        ImGui::TextColored(ImVec4(0.20f, 0.88f, 0.94f, 1.0f), "DISPLAY CHARACTER");
-        if (slider_percent("Screen brightness", screen.brightness, 10.0f, 200.0f)) { apply_brightness(screen); mark_changed(); }
-        explain_last_item("Brightness", "Changes the streamed image without rebuilding the source.", "Negligible", "Instant + auto-save");
-        if (toggle_switch("Automatic game-light adaptation", screen.autoBrightnessEnabled)) { apply_brightness(screen); mark_changed(); }
-        explain_last_item("Automatic brightness", "Uses a phone-like sensor curve: sunlight brightening settles in about 2.5 seconds and dimming in about 4 seconds, avoiding rapid jumps.", "Negligible", "Smooth live adaptation + auto-save");
-        ImGui::BeginDisabled(!screen.autoBrightnessEnabled);
-        if (slider_percent("Dark-scene multiplier", screen.autoBrightnessDarkMultiplier, 25.0f, 125.0f)) { apply_brightness(screen); mark_changed(); }
-        if (slider_percent("Bright-scene multiplier", screen.autoBrightnessBrightMultiplier, 50.0f, 200.0f)) { apply_brightness(screen); mark_changed(); }
+        const float gap = 14.0f;
+        const float columnWidth = (ImGui::GetContentRegionAvail().x - gap) * 0.5f;
+        if (ImGui::BeginTable("appearance_cards", 2,
+            ImGuiTableFlags_SizingFixedFit))
+        {
+            ImGui::TableSetupColumn("lighting", ImGuiTableColumnFlags_WidthFixed,
+                columnWidth);
+            ImGui::TableSetupColumn("geometry", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableNextColumn();
+            begin_settings_card("appearance_lighting", "ADAPTIVE LIGHTING",
+                "Natural phone-style response without abrupt steps", 360.0f,
+                kCyan);
+            if (slider_percent("Screen brightness", screen.brightness,
+                10.0f, 200.0f))
+            {
+                apply_brightness(screen);
+                mark_changed();
+            }
+            explain_last_item("Brightness", "Sets the base display level and applies immediately when adjusted manually.", "Negligible", "Instant + auto-save");
+            if (toggle_switch("Automatic game-light adaptation",
+                screen.autoBrightnessEnabled))
+            {
+                if (screen.autoBrightnessEnabled)
+                {
+                    screen.effectiveBrightness = screen.brightness;
+                    screen.brightnessLastAdjustmentTick = GetTickCount64();
+                    if (screen.source && screen.source->SupportsSourceBrightness())
+                        screen.source->SetSourceBrightness(screen.effectiveBrightness);
+                }
+                else
+                    apply_brightness(screen);
+                mark_changed();
+            }
+            explain_last_item("Automatic brightness", "Samples game lighting at half the GPS frame rate, then adapts progressively like a phone: about 2.5 seconds to brighten and 4 seconds to dim.", "Negligible", "Smooth live adaptation + auto-save");
+            ImGui::BeginDisabled(!screen.autoBrightnessEnabled);
+            if (slider_percent("Dark-scene multiplier",
+                screen.autoBrightnessDarkMultiplier, 25.0f, 125.0f))
+                mark_changed();
+            if (slider_percent("Bright-scene multiplier",
+                screen.autoBrightnessBrightMultiplier, 50.0f, 200.0f))
+                mark_changed();
+            ImGui::EndDisabled();
+            end_settings_card();
+
+            ImGui::TableNextColumn();
+            begin_settings_card("appearance_geometry", "IMAGE FIT",
+                "Alignment and texture-edge correction", 360.0f,
+                IM_COL32(183, 112, 255, 255));
+            const char* scales[] = { "Stretch", "Fit", "Crop" };
+            int scale = static_cast<int>(screen.scaleMode);
+            ImGui::TextDisabled("SCALING MODE");
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::Combo("##appearance_scaling", &scale, scales,
+                IM_ARRAYSIZE(scales)))
+            {
+                screen.scaleMode = static_cast<scale_mode_t>(scale);
+                screen.hasUploadedFrame = false;
+                mark_changed();
+            }
+            ImGui::Dummy(ImVec2(0.0f, 8.0f));
+            int guard = screen.edgeBleedGuard;
+            ImGui::TextDisabled("EDGE GUARD");
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::SliderInt("##appearance_guard", &guard, 0, 16,
+                "%d px"))
+            {
+                screen.edgeBleedGuard = static_cast<uint8_t>(guard);
+                screen.hasUploadedFrame = false;
+                mark_changed();
+            }
+            ImGui::Dummy(ImVec2(0.0f, 9.0f));
+            if (toggle_switch("Flip vertically", screen.flipVertical))
+            {
+                screen.hasUploadedFrame = false;
+                mark_changed();
+            }
+            ImGui::Separator();
+            ImGui::TextDisabled("OUTPUT");
+            ImGui::Text("%u x %u at %u FPS", screen.targetLiveTextureWidth,
+                screen.targetLiveTextureHeight,
+                static_cast<unsigned>(screen.framerate));
+            ImGui::TextDisabled("Changes apply to the selected display only.");
+            end_settings_card();
+            ImGui::EndTable();
+        }
+
+        ImGui::Dummy(ImVec2(0.0f, 10.0f));
+        begin_settings_card("appearance_sensor", "LIVE LIGHT SENSOR",
+            "Half-rate sampling with continuous visual adaptation", 112.0f,
+            kGreen);
         if (g_game_lighting_valid.load())
-            ImGui::TextDisabled("Game lighting %.0f%% | effective screen %.0f%% | phone-like response 2.5 s / 4 s",
-                g_game_lighting_luminance.load() * 100.0f, screen.effectiveBrightness * 100.0f);
-        else ImGui::TextDisabled("Waiting for the first game-lighting sample...");
-        ImGui::EndDisabled();
-        const char* scales[] = { "Stretch", "Fit", "Crop" }; int scale = static_cast<int>(screen.scaleMode);
-        if (ImGui::Combo("Scaling", &scale, scales, IM_ARRAYSIZE(scales))) { screen.scaleMode = static_cast<scale_mode_t>(scale); screen.hasUploadedFrame = false; mark_changed(); }
-        int guard = screen.edgeBleedGuard;
-        if (ImGui::SliderInt("Edge guard", &guard, 0, 16, "%d px")) { screen.edgeBleedGuard = static_cast<uint8_t>(guard); screen.hasUploadedFrame = false; mark_changed(); }
-        if (toggle_switch("Flip vertically", screen.flipVertical)) { screen.hasUploadedFrame = false; mark_changed(); }
+        {
+            ImGui::Text("Scene %.0f%%   |   Effective display %.0f%%   |   Sensor %u Hz",
+                g_game_lighting_luminance.load() * 100.0f,
+                screen.effectiveBrightness * 100.0f,
+                g_auto_brightness_sample_hz.load());
+            ImGui::ProgressBar((std::clamp)(screen.effectiveBrightness / 2.0f,
+                0.0f, 1.0f), ImVec2(-1.0f, 16.0f), "");
+        }
+        else
+            ImGui::TextDisabled("Waiting for the first game-lighting sample...");
+        end_settings_card();
     }
 
     void release_screen(screen_t& screen)
@@ -1268,7 +1663,9 @@ namespace
                 selectedPage = (std::clamp)(selectedPage, 0, 5);
                 ImGui::SetCursorPos(ImVec2(side, mainTop));
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 17.0f));
-                ImGui::BeginChild("navigation", ImVec2(leftWidth, mainHeight), true);
+                ImGui::BeginChild("navigation", ImVec2(leftWidth, mainHeight),
+                    ImGuiChildFlags_Borders,
+                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
                 ImGui::PushFont(ui_font(1)); ImGui::TextDisabled("ACTIVE DISPLAY"); ImGui::PopFont();
                 const char* activeKind = g_screens[static_cast<size_t>(selectedScreen)].type == screen_type_t::GPS
                     ? "GPS" : (g_screens[static_cast<size_t>(selectedScreen)].type == screen_type_t::DASHBOARD ? "Dashboard" : "Custom");
@@ -1294,7 +1691,7 @@ namespace
                 const char* pages[] = { "Home", "Media", "Audio", "Controls", "Appearance", "System" };
                 for (int i = 0; i < IM_ARRAYSIZE(pages); ++i)
                     if (nav_button(i, pages[i], selectedPage == i)) { selectedPage = i; panelAnimation = 0.0f; }
-                ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 56.0f);
+                ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 68.0f);
                 ImGui::TextColored(ImVec4(0.30f, 0.92f, 0.98f, pulse), "AUTO-SAVE  LIVE");
                 ImGui::TextDisabled("Ctrl+F8 closes the console");
                 ImGui::EndChild(); ImGui::PopStyleVar();
@@ -1312,6 +1709,7 @@ namespace
                 };
                 ImGui::SetCursorPos(ImVec2(side + leftWidth + gap, mainTop));
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.35f + 0.65f * (panelAnimation * panelAnimation * (3.0f - 2.0f * panelAnimation)));
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 14.0f));
                 ImGui::BeginChild("content", ImVec2(centreWidth, mainHeight), false);
                 const float contentBaseX = ImGui::GetCursorPosX();
                 const ImVec2 pageIcon = ImGui::GetCursorScreenPos();
@@ -1328,14 +1726,20 @@ namespace
                 ImGui::TextDisabled("%s", subtitles[selectedPage]);
                 ImGui::SetCursorPosX(contentBaseX); ImGui::Dummy(ImVec2(0.0f, 3.0f));
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 18.0f));
-                ImGui::BeginChild("page_card", ImVec2(0.0f, -1.0f), true);
+                const ImGuiWindowFlags pageFlags = selectedPage == 0
+                    ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse
+                    : ImGuiWindowFlags_None;
+                ImGui::BeginChild("page_card", ImVec2(0.0f, -1.0f),
+                    ImGuiChildFlags_Borders, pageFlags);
                 bool removeCurrent = false;
                 switch (selectedPage) { case 0: draw_home(screen); break; case 1: draw_media(screen); break; case 2: draw_audio(screen); break; case 3: draw_controls(); break; case 4: draw_appearance(screen); break; case 5: draw_system(screen, removeCurrent); break; }
-                ImGui::EndChild(); ImGui::PopStyleVar(); ImGui::EndChild(); ImGui::PopStyleVar();
+                ImGui::EndChild(); ImGui::PopStyleVar(); ImGui::EndChild(); ImGui::PopStyleVar(2);
 
                 ImGui::SetCursorPos(ImVec2(side + leftWidth + gap + centreWidth + gap, mainTop));
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(22.0f, 20.0f));
-                ImGui::BeginChild("inspector", ImVec2(rightWidth, mainHeight), true);
+                ImGui::BeginChild("inspector", ImVec2(rightWidth, mainHeight),
+                    ImGuiChildFlags_Borders,
+                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
                 draw_inspector(); ImGui::EndChild(); ImGui::PopStyleVar();
                 if (removeCurrent) { release_screen(screen); g_screens.erase(g_screens.begin() + selectedScreen); selectedScreen = (std::max)(0, selectedScreen - 1); mark_changed(true); }
             }

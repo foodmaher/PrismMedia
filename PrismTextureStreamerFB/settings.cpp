@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "screens.h"
@@ -210,6 +211,51 @@ namespace {
         WritePrivateProfileStringA(section, key, text, path.c_str());
     }
 
+    std::vector<std::string> read_url_list(
+        const std::string& path,
+        const std::string& section,
+        const char* prefix)
+    {
+        std::vector<std::string> result;
+        const std::string countKey = std::string(prefix) + "Count";
+        const UINT count = (std::min)(
+            GetPrivateProfileIntA(
+                section.c_str(), countKey.c_str(), 0, path.c_str()),
+            100U);
+        result.reserve(count);
+        for (UINT index = 0; index < count; ++index)
+        {
+            const std::string key =
+                std::string(prefix) + std::to_string(index);
+            std::string value =
+                read_string(path, section.c_str(), key.c_str());
+            if (!value.empty())
+                result.push_back(std::move(value));
+        }
+        return result;
+    }
+
+    void write_url_list(
+        const std::string& path,
+        const std::string& section,
+        const char* prefix,
+        const std::vector<std::string>& values)
+    {
+        const std::string countKey = std::string(prefix) + "Count";
+        const size_t count = (std::min)(values.size(), size_t{ 100 });
+        write_number(
+            path, section.c_str(), countKey.c_str(),
+            static_cast<uint32_t>(count));
+        for (size_t index = 0; index < count; ++index)
+        {
+            const std::string key =
+                std::string(prefix) + std::to_string(index);
+            WritePrivateProfileStringA(
+                section.c_str(), key.c_str(), values[index].c_str(),
+                path.c_str());
+        }
+    }
+
 }
 
 namespace settings {
@@ -382,6 +428,33 @@ namespace settings {
                     static_cast<UINT>(media_service_t::YOUTUBE),
                     path.c_str()),
                 0U, static_cast<UINT>(media_service_t::SPOTIFY)));
+            screen.youtubeUrls =
+                read_url_list(path, section, "YouTubeUrl");
+            screen.spotifyUrls =
+                read_url_list(path, section, "SpotifyUrl");
+            screen.selectedYoutubeUrl = (std::min)(
+                GetPrivateProfileIntA(
+                    section.c_str(), "SelectedYouTubeUrl", 0,
+                    path.c_str()),
+                screen.youtubeUrls.empty()
+                    ? 0U
+                    : static_cast<UINT>(screen.youtubeUrls.size() - 1));
+            screen.selectedSpotifyUrl = (std::min)(
+                GetPrivateProfileIntA(
+                    section.c_str(), "SelectedSpotifyUrl", 0,
+                    path.c_str()),
+                screen.spotifyUrls.empty()
+                    ? 0U
+                    : static_cast<UINT>(screen.spotifyUrls.size() - 1));
+            // Migrate a single 4.0.0 MediaUrl into the restored library once.
+            if (screen.youtubeUrls.empty() && screen.spotifyUrls.empty() &&
+                !screen.mediaUrl.empty())
+            {
+                if (screen.mediaService == media_service_t::SPOTIFY)
+                    screen.spotifyUrls.push_back(screen.mediaUrl);
+                else
+                    screen.youtubeUrls.push_back(screen.mediaUrl);
+            }
             screen.contentMode = static_cast<content_mode_t>((std::clamp)(
                 GetPrivateProfileIntA(section.c_str(), "ContentMode",
                     static_cast<UINT>(content_mode_t::INTEGRATED_MEDIA), path.c_str()),
@@ -638,6 +711,16 @@ namespace settings {
             write_number(
                 temporaryPath, section.c_str(), "MediaService",
                 static_cast<uint32_t>(screen.mediaService));
+            write_number(
+                temporaryPath, section.c_str(), "SelectedYouTubeUrl",
+                screen.selectedYoutubeUrl);
+            write_number(
+                temporaryPath, section.c_str(), "SelectedSpotifyUrl",
+                screen.selectedSpotifyUrl);
+            write_url_list(
+                temporaryPath, section, "YouTubeUrl", screen.youtubeUrls);
+            write_url_list(
+                temporaryPath, section, "SpotifyUrl", screen.spotifyUrls);
         }
 
         WritePrivateProfileStringA(nullptr, nullptr, nullptr, temporaryPath.c_str());

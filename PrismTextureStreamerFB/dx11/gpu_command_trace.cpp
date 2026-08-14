@@ -40,14 +40,25 @@ namespace
 		copy_region,
 		copy_resource,
 		resolve,
-		execute_command_list
+		execute_command_list,
+		worker_enter,
+		worker_exit,
+		scheduler_enter,
+		scheduler_exit,
+		submit_enter,
+		submit_exit,
+		frame_marker,
+		object_digest,
+		stack_frame,
+		draw_batch,
+		gpu_thread_selected
 	};
 
 #pragma pack(push, 1)
 	struct trace_header
 	{
 		uint32_t magic{0x54554750}; // "PGUT"
-		uint32_t version{1};
+		uint32_t version{2};
 		uint32_t headerBytes{};
 		uint32_t eventBytes{};
 		uint64_t qpcFrequency{};
@@ -70,16 +81,49 @@ namespace
 	};
 #pragma pack(pop)
 
-	constexpr uint32_t kMaximumEvents = 131072;
+	constexpr uint32_t kMaximumEvents = 262144;
+	constexpr uint32_t kDrawBatchSize = 256;
 	std::array<trace_event, kMaximumEvents> g_events{};
 	std::atomic<uint32_t> g_eventCount{};
 	std::atomic<uint64_t> g_dropped{};
 	std::atomic<bool> g_active{};
 	std::atomic<uint32_t> g_writers{};
 	std::atomic<uint64_t> g_endTick{};
+	std::atomic<uint32_t> g_primaryGpuThread{};
+	std::atomic<uint32_t> g_traceGeneration{};
+	std::atomic<bool> g_deepHooksReady{};
 	uint64_t g_startQpc{};
 	uint64_t g_qpcFrequency{};
 	std::mutex g_hookMutex;
+
+	struct draw_batch_state
+	{
+		uint32_t generation{};
+		uint32_t discoveryDraws{};
+		uint32_t draws{};
+		uint32_t indexed{};
+		uint32_t instanced{};
+		uint64_t hash{1469598103934665603ULL};
+		ID3D11DeviceContext* context{};
+		bool targetSeen{};
+		bool targetWithUavs{};
+		uint32_t targetCount{};
+		uint64_t targetFirst{};
+		uint64_t targetSecond{};
+		uint64_t targetDepth{};
+		bool viewportSeen{};
+		uint32_t viewportCount{};
+		uint64_t viewportSize{};
+		uint64_t viewportDepth{};
+		bool constantBuffersSeen{};
+		uint32_t constantStart{};
+		uint32_t constantCount{};
+		uint64_t constantFirst{};
+		uint64_t constantSecond{};
+		uint64_t constantThird{};
+	};
+
+	thread_local draw_batch_state g_drawBatch{};
 
 	using vs_set_constant_buffers_t = void(STDMETHODCALLTYPE*)(
 		ID3D11DeviceContext*, UINT, UINT, ID3D11Buffer* const*);
@@ -149,6 +193,13 @@ namespace
 		return hash;
 	}
 
+	uint64_t mix_hash(uint64_t hash, uint64_t value)
+	{
+		hash ^= value;
+		hash *= 1099511628211ULL;
+		return hash;
+	}
+
 	uint64_t qpc_now()
 	{
 		LARGE_INTEGER value{};
@@ -199,6 +250,77 @@ namespace
 		g_writers.fetch_sub(1, std::memory_order_release);
 	}
 
+	bool primary_gpu_thread()
+	{
+		const uint32_t selected = g_primaryGpuThread.load(
+			std::memory_order_acquire);
+		return selected != 0 && selected == GetCurrentThreadId();
+	}
+
+	void reset_draw_batch_if_needed()
+	{
+		const uint32_t generation = g_traceGeneration.load(
+			std::memory_order_relaxed);
+		if (g_drawBatch.generation == generation)
+			return;
+		g_drawBatch = {};
+		g_drawBatch.generation = generation;
+		g_drawBatch.hash = 1469598103934665603ULL;
+	}
+
+	void flush_draw_batch()
+	{
+		reset_draw_batch_if_needed();
+		if (g_drawBatch.draws == 0 || !primary_gpu_thread())
+			return;
+		record(event_type::draw_batch, g_drawBatch.context,
+			g_drawBatch.draws, g_drawBatch.indexed,
+			g_drawBatch.instanced, g_drawBatch.hash);
+		g_drawBatch.draws = 0;
+		g_drawBatch.indexed = 0;
+		g_drawBatch.instanced = 0;
+		g_drawBatch.hash = 1469598103934665603ULL;
+	}
+
+	void aggregate_draw(ID3D11DeviceContext* context, bool indexed,
+		bool instanced, uint64_t first, uint64_t second, uint64_t third)
+	{
+		if (!g_active.load(std::memory_order_relaxed))
+			return;
+		reset_draw_batch_if_needed();
+		const uint32_t threadId = GetCurrentThreadId();
+		uint32_t selected = g_primaryGpuThread.load(
+			std::memory_order_acquire);
+		if (selected == 0)
+		{
+			if (++g_drawBatch.discoveryDraws < 64)
+				return;
+			uint32_t expected = 0;
+			if (g_primaryGpuThread.compare_exchange_strong(
+				expected, threadId, std::memory_order_acq_rel))
+			{
+				record(event_type::gpu_thread_selected, context, threadId,
+					g_drawBatch.discoveryDraws);
+			}
+			selected = g_primaryGpuThread.load(std::memory_order_acquire);
+		}
+		if (selected != threadId)
+			return;
+		g_drawBatch.context = context;
+		++g_drawBatch.draws;
+		if (indexed)
+			++g_drawBatch.indexed;
+		if (instanced)
+			++g_drawBatch.instanced;
+		g_drawBatch.hash = mix_hash(g_drawBatch.hash,
+			(indexed ? 1ULL : 0ULL) | (instanced ? 2ULL : 0ULL));
+		g_drawBatch.hash = mix_hash(g_drawBatch.hash, first);
+		g_drawBatch.hash = mix_hash(g_drawBatch.hash, second);
+		g_drawBatch.hash = mix_hash(g_drawBatch.hash, third);
+		if (g_drawBatch.draws >= kDrawBatchSize)
+			flush_draw_batch();
+	}
+
 	std::wstring output_directory()
 	{
 		PWSTR documents{};
@@ -235,6 +357,17 @@ namespace
 		case event_type::copy_resource: return "copy_resource";
 		case event_type::resolve: return "resolve";
 		case event_type::execute_command_list: return "execute_command_list";
+		case event_type::worker_enter: return "worker_enter";
+		case event_type::worker_exit: return "worker_exit";
+		case event_type::scheduler_enter: return "scheduler_enter";
+		case event_type::scheduler_exit: return "scheduler_exit";
+		case event_type::submit_enter: return "submit_enter";
+		case event_type::submit_exit: return "submit_exit";
+		case event_type::frame_marker: return "frame_marker";
+		case event_type::object_digest: return "object_digest";
+		case event_type::stack_frame: return "stack_frame";
+		case event_type::draw_batch: return "draw_batch";
+		case event_type::gpu_thread_selected: return "gpu_thread_selected";
 		default: return "unknown";
 		}
 	}
@@ -284,7 +417,7 @@ namespace
 		{
 			std::fprintf(summary,
 				"Prism independent GPU-command trace\r\n"
-				"Format version: 1\r\nEvents: %u\r\nDropped: %llu\r\n"
+				"Format version: 2\r\nEvents: %u\r\nDropped: %llu\r\n"
 				"Binary: PrismIndependentGpuTrace.bin\r\n\r\n",
 				count, static_cast<unsigned long long>(header.droppedEvents));
 			for (uint32_t type = 1; type < totals.size(); ++type)
@@ -302,17 +435,39 @@ namespace
 		ID3D11DeviceContext* context, UINT startSlot, UINT count,
 		ID3D11Buffer* const* buffers)
 	{
-		record(event_type::vs_constant_buffers, context, startSlot, count,
-			count && buffers ? pointer_value(buffers[0]) : 0,
-			count > 1 && buffers ? pointer_value(buffers[1]) : 0,
-			count > 2 && buffers ? pointer_value(buffers[2]) : 0);
+		if (primary_gpu_thread())
+		{
+			reset_draw_batch_if_needed();
+			const uint64_t first = count && buffers
+				? pointer_value(buffers[0]) : 0;
+			const uint64_t second = count > 1 && buffers
+				? pointer_value(buffers[1]) : 0;
+			const uint64_t third = count > 2 && buffers
+				? pointer_value(buffers[2]) : 0;
+			if (!g_drawBatch.constantBuffersSeen ||
+				g_drawBatch.constantStart != startSlot ||
+				g_drawBatch.constantCount != count ||
+				g_drawBatch.constantFirst != first ||
+				g_drawBatch.constantSecond != second ||
+				g_drawBatch.constantThird != third)
+			{
+				record(event_type::vs_constant_buffers, context,
+					startSlot, count, first, second, third);
+				g_drawBatch.constantBuffersSeen = true;
+				g_drawBatch.constantStart = startSlot;
+				g_drawBatch.constantCount = count;
+				g_drawBatch.constantFirst = first;
+				g_drawBatch.constantSecond = second;
+				g_drawBatch.constantThird = third;
+			}
+		}
 		g_originalVsConstantBuffers(context, startSlot, count, buffers);
 	}
 
 	void STDMETHODCALLTYPE hooked_draw_indexed(ID3D11DeviceContext* context,
 		UINT indexCount, UINT startIndex, INT baseVertex)
 	{
-		record(event_type::draw_indexed, context, indexCount, startIndex,
+		aggregate_draw(context, true, false, indexCount, startIndex,
 			static_cast<uint32_t>(baseVertex));
 		g_originalDrawIndexed(context, indexCount, startIndex, baseVertex);
 	}
@@ -320,7 +475,7 @@ namespace
 	void STDMETHODCALLTYPE hooked_draw(ID3D11DeviceContext* context,
 		UINT vertexCount, UINT startVertex)
 	{
-		record(event_type::draw, context, vertexCount, startVertex);
+		aggregate_draw(context, false, false, vertexCount, startVertex, 0);
 		g_originalDraw(context, vertexCount, startVertex);
 	}
 
@@ -328,9 +483,8 @@ namespace
 		ID3D11DeviceContext* context, UINT indexCount, UINT instanceCount,
 		UINT startIndex, INT baseVertex, UINT startInstance)
 	{
-		record(event_type::draw_indexed_instanced, context, indexCount,
-			instanceCount, startIndex, static_cast<uint32_t>(baseVertex),
-			startInstance);
+		aggregate_draw(context, true, true, indexCount, instanceCount,
+			startIndex ^ (static_cast<uint64_t>(startInstance) << 32));
 		g_originalDrawIndexedInstanced(context, indexCount, instanceCount,
 			startIndex, baseVertex, startInstance);
 	}
@@ -339,8 +493,8 @@ namespace
 		UINT vertexCount, UINT instanceCount, UINT startVertex,
 		UINT startInstance)
 	{
-		record(event_type::draw_instanced, context, vertexCount, instanceCount,
-			startVertex, startInstance);
+		aggregate_draw(context, false, true, vertexCount, instanceCount,
+			startVertex ^ (static_cast<uint64_t>(startInstance) << 32));
 		g_originalDrawInstanced(context, vertexCount, instanceCount,
 			startVertex, startInstance);
 	}
@@ -356,7 +510,21 @@ namespace
 			depth = pack_float_pair(viewports[0].MinDepth,
 				viewports[0].MaxDepth);
 		}
-		record(event_type::rs_viewports, context, count, size, depth);
+		if (primary_gpu_thread())
+		{
+			reset_draw_batch_if_needed();
+			if (!g_drawBatch.viewportSeen ||
+				g_drawBatch.viewportCount != count ||
+				g_drawBatch.viewportSize != size ||
+				g_drawBatch.viewportDepth != depth)
+			{
+				record(event_type::rs_viewports, context, count, size, depth);
+				g_drawBatch.viewportSeen = true;
+				g_drawBatch.viewportCount = count;
+				g_drawBatch.viewportSize = size;
+				g_drawBatch.viewportDepth = depth;
+			}
+		}
 		g_originalViewports(context, count, viewports);
 	}
 
@@ -379,9 +547,10 @@ namespace
 			dataHash = bounded_hash(sourceData, byteWidth);
 			buffer->Release();
 		}
-		record(event_type::update_subresource, context,
-			pointer_value(destination), subresource, byteWidth,
-			dataHash, rowPitch);
+		if (primary_gpu_thread())
+			record(event_type::update_subresource, context,
+				pointer_value(destination), subresource, byteWidth,
+				dataHash, rowPitch);
 		g_originalUpdateSubresource(context, destination, subresource, box,
 			sourceData, rowPitch, depthPitch);
 	}
@@ -421,6 +590,8 @@ namespace dx11::gpu_command_trace
 	{
 		if (!context)
 			return false;
+		if (g_deepHooksReady.load(std::memory_order_acquire))
+			return true;
 		void** vtable = *reinterpret_cast<void***>(context);
 		if (!vtable)
 			return false;
@@ -446,7 +617,9 @@ namespace dx11::gpu_command_trace
 		const bool g = install_one(vtable[48],
 			reinterpret_cast<void*>(&hooked_update_subresource),
 			g_originalUpdateSubresource, g_updateSubresourceAddress);
-		return a && b && c && d && e && f && g;
+		const bool ready = a && b && c && d && e && f && g;
+		g_deepHooksReady.store(ready, std::memory_order_release);
+		return ready;
 	}
 
 	void shutdown()
@@ -461,6 +634,7 @@ namespace dx11::gpu_command_trace
 		remove_one(g_drawInstancedAddress);
 		remove_one(g_viewportsAddress);
 		remove_one(g_updateSubresourceAddress);
+		g_deepHooksReady.store(false, std::memory_order_release);
 	}
 
 	void begin(uint32_t durationMilliseconds)
@@ -469,6 +643,8 @@ namespace dx11::gpu_command_trace
 			end();
 		g_eventCount.store(0);
 		g_dropped.store(0);
+		g_primaryGpuThread.store(0);
+		g_traceGeneration.fetch_add(1, std::memory_order_relaxed);
 		LARGE_INTEGER frequency{};
 		QueryPerformanceFrequency(&frequency);
 		g_qpcFrequency = static_cast<uint64_t>(frequency.QuadPart);
@@ -482,6 +658,7 @@ namespace dx11::gpu_command_trace
 
 	void end()
 	{
+		flush_draw_batch();
 		if (!g_active.exchange(false, std::memory_order_acq_rel))
 			return;
 		const uint64_t waitUntil = GetTickCount64() + 100;
@@ -525,21 +702,101 @@ namespace dx11::gpu_command_trace
 			static_cast<uint32_t>(sourceIndex));
 	}
 
+	void mark_worker(bool entering, void* renderer, void* renderContext,
+		void* cameraInput, void* renderRequest)
+	{
+		record(entering ? event_type::worker_enter : event_type::worker_exit,
+			nullptr, pointer_value(renderer), pointer_value(renderContext),
+			pointer_value(cameraInput), pointer_value(renderRequest));
+	}
+
+	void mark_scheduler(bool entering, void* owner, void* request,
+		uint64_t mode, uint64_t fourth)
+	{
+		record(entering ? event_type::scheduler_enter :
+			event_type::scheduler_exit, nullptr, pointer_value(owner),
+			pointer_value(request), mode, fourth);
+	}
+
+	void mark_submit(bool entering, bool pluginSubmit, void* task,
+		void* renderContext, const void* renderCommand)
+	{
+		record(entering ? event_type::submit_enter : event_type::submit_exit,
+			nullptr, pluginSubmit ? 1 : 0, pointer_value(task),
+			pointer_value(renderContext), pointer_value(renderCommand));
+	}
+
+	void mark_frame(uint64_t frameIndex)
+	{
+		flush_draw_batch();
+		record(event_type::frame_marker, nullptr, frameIndex,
+			g_primaryGpuThread.load(std::memory_order_relaxed));
+	}
+
+	void mark_object_digest(path_role role, void* owner,
+		void* renderContext, void* renderCommand, int32_t sourceIndex)
+	{
+		const uint64_t commandHash = bounded_hash(renderCommand, 0xF0);
+		const uint64_t ownerHash = bounded_hash(owner, 0x180);
+		const uint64_t contextHash = bounded_hash(renderContext, 0x100);
+		record(event_type::object_digest,
+			reinterpret_cast<ID3D11DeviceContext*>(renderCommand),
+			static_cast<uint32_t>(role),
+			static_cast<uint32_t>(sourceIndex), commandHash, ownerHash,
+			contextHash);
+	}
+
+	void capture_stack(path_role role, uint32_t framesToSkip)
+	{
+		if (!g_active.load(std::memory_order_relaxed))
+			return;
+		void* frames[16]{};
+		const USHORT count = RtlCaptureStackBackTrace(
+			static_cast<ULONG>(framesToSkip + 1),
+			static_cast<ULONG>(_countof(frames)), frames, nullptr);
+		const uintptr_t moduleBase = reinterpret_cast<uintptr_t>(
+			GetModuleHandleW(nullptr));
+		for (USHORT index = 0; index < count; ++index)
+		{
+			const uintptr_t address = reinterpret_cast<uintptr_t>(frames[index]);
+			const uint64_t rva = moduleBase && address >= moduleBase
+				? static_cast<uint64_t>(address - moduleBase) : UINT64_MAX;
+			record(event_type::stack_frame, nullptr,
+				static_cast<uint32_t>(role), index, rva, address);
+		}
+	}
+
 	void note_render_targets(ID3D11DeviceContext* context, uint32_t count,
 		ID3D11RenderTargetView* const* views,
 		ID3D11DepthStencilView* depthView, bool withUavs)
 	{
-		if (!g_active.load(std::memory_order_relaxed))
+		if (!g_active.load(std::memory_order_relaxed) ||
+			!primary_gpu_thread())
 			return;
+		flush_draw_batch();
 		const uint64_t firstResource = count && views
 			? view_resource_identity(views[0]) : 0;
 		const uint64_t secondResource = count > 1 && views
 			? view_resource_identity(views[1]) : 0;
 		const uint64_t depthResource = view_resource_identity(depthView);
+		reset_draw_batch_if_needed();
+		if (g_drawBatch.targetSeen &&
+			g_drawBatch.targetWithUavs == withUavs &&
+			g_drawBatch.targetCount == count &&
+			g_drawBatch.targetFirst == firstResource &&
+			g_drawBatch.targetSecond == secondResource &&
+			g_drawBatch.targetDepth == depthResource)
+			return;
 		record(withUavs ? event_type::om_render_targets_uav :
 			event_type::om_render_targets, context, count, firstResource,
 			secondResource, depthResource,
 			count && views ? pointer_value(views[0]) : 0);
+		g_drawBatch.targetSeen = true;
+		g_drawBatch.targetWithUavs = withUavs;
+		g_drawBatch.targetCount = count;
+		g_drawBatch.targetFirst = firstResource;
+		g_drawBatch.targetSecond = secondResource;
+		g_drawBatch.targetDepth = depthResource;
 	}
 
 	void note_copy_region(ID3D11DeviceContext* context,
@@ -547,28 +804,33 @@ namespace dx11::gpu_command_trace
 		ID3D11Resource* source, uint32_t sourceSubresource,
 		const D3D11_BOX*)
 	{
-		record(event_type::copy_region, context, pointer_value(destination),
-			destinationSubresource, pointer_value(source), sourceSubresource);
+		if (primary_gpu_thread())
+			record(event_type::copy_region, context,
+				pointer_value(destination), destinationSubresource,
+				pointer_value(source), sourceSubresource);
 	}
 
 	void note_copy_resource(ID3D11DeviceContext* context,
 		ID3D11Resource* destination, ID3D11Resource* source)
 	{
-		record(event_type::copy_resource, context, pointer_value(destination),
-			pointer_value(source));
+		if (primary_gpu_thread())
+			record(event_type::copy_resource, context,
+				pointer_value(destination), pointer_value(source));
 	}
 
 	void note_resolve(ID3D11DeviceContext* context,
 		ID3D11Resource* destination, ID3D11Resource* source, uint32_t format)
 	{
-		record(event_type::resolve, context, pointer_value(destination),
-			pointer_value(source), format);
+		if (primary_gpu_thread())
+			record(event_type::resolve, context, pointer_value(destination),
+				pointer_value(source), format);
 	}
 
 	void note_execute_command_list(ID3D11DeviceContext* context,
 		ID3D11CommandList* commandList)
 	{
-		record(event_type::execute_command_list, context,
-			pointer_value(commandList));
+		if (primary_gpu_thread())
+			record(event_type::execute_command_list, context,
+				pointer_value(commandList));
 	}
 }

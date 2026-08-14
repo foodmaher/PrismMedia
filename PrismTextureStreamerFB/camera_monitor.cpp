@@ -125,7 +125,7 @@ namespace camera_monitor
             prism_camera_monitor::kPluginConnected |
                 prism_camera_monitor::kLegacyCameraPathRemoved,
             "Plugin ready",
-            "GPU-command tracing is ready. The legacy internal-camera "
+            "Prism call-path tracing is ready. The legacy internal-camera "
             "renderer and all GPS diagnostic output paths are removed.");
         return true;
     }

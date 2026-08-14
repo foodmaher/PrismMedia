@@ -1948,10 +1948,10 @@ void on_frame()
 							ImGui::TextColored(
 								ImVec4(0.35f, 0.85f, 0.40f, 1.0f),
 								"Expected impact: none forward; low while reversing");
-									ImGui::TextWrapped(
-										"Window crop remains the stable reverse view. The separate "
-										"Camera Lab observes the new independent Prism3D path and "
-										"records a bounded Prism3D-to-D3D11 command trace without replacing GPS media.");
+							ImGui::TextWrapped(
+								"Window crop remains the stable reverse view. Camera Lab "
+								"compares the native Prism3D worker/submit/dispatch path "
+								"with one separate control task without replacing GPS media.");
 
 							if (ImGui::TreeNode(
 									"Independent Camera Lab"))

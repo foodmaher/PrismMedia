@@ -23,6 +23,7 @@ namespace
 	constexpr uint32_t kSupportedTimeDateStamp = 0x6A426DE5;
 	constexpr uint32_t kSupportedImageSize = 0x0382D000;
 	constexpr uint32_t kExpectedSchedulerRva = 0x00524DB0;
+	constexpr uint32_t kExpectedMirrorWorkerRva = 0x0046CB80;
 	constexpr uint32_t kExpectedRenderDispatchRva = 0x00722020;
 	constexpr uint32_t kExpectedRenderTaskSubmitRva = 0x00722BA0;
 	constexpr uint32_t kCameraTokenTableRva = 0x01D1EB30;
@@ -44,6 +45,10 @@ namespace
 		0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C,
 		0x24, 0x18, 0x48, 0x89, 0x4C, 0x24, 0x08, 0x56
 	};
+	constexpr std::array<uint8_t, 16> kMirrorWorkerSignature = {
+		0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C,
+		0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57
+	};
 
 	struct fingerprint_t
 	{
@@ -59,6 +64,8 @@ namespace
 	using render_dispatch_t = void(__fastcall*)(void*, void*, void*);
 	using render_task_submit_t = void(__fastcall*)(
 		void*, void**, void*, const void*);
+	using mirror_worker_t = void(__fastcall*)(
+		void*, void*, void*, void*);
 	using om_set_render_targets_t = void(STDMETHODCALLTYPE*)(
 		ID3D11DeviceContext*, UINT, ID3D11RenderTargetView* const*,
 		ID3D11DepthStencilView*);
@@ -81,6 +88,8 @@ namespace
 	std::atomic<bool> g_supported{};
 	std::atomic<bool> g_schedulerHookReady{};
 	std::atomic<bool> g_dispatchHookReady{};
+	std::atomic<bool> g_workerHookReady{};
+	std::atomic<bool> g_submitHookReady{};
 	std::atomic<bool> g_contextHooksReady{};
 	std::atomic<bool> g_actualContextSeen{};
 	std::atomic<bool> g_tracing{};
@@ -92,6 +101,14 @@ namespace
 	std::atomic<uint64_t> g_schedulerCalls{};
 	std::atomic<uint64_t> g_observedJobs{};
 	std::atomic<uint64_t> g_submittedProbeJobs{};
+	std::atomic<uint32_t> g_tracedWorkerCalls{};
+	std::atomic<uint32_t> g_tracedSchedulerCalls{};
+	std::atomic<uint32_t> g_tracedSubmitCalls{};
+	std::atomic<bool> g_realControlStackCaptured{};
+	std::atomic<bool> g_nestedProbeStackCaptured{};
+	std::atomic<bool> g_confirmedProbeStackCaptured{};
+	std::atomic<bool> g_workerStackCaptured{};
+	std::atomic<bool> g_submitStackCaptured{};
 	std::atomic<uint64_t> g_frameIndex{};
 	std::atomic<uint64_t> g_traceStartTick{};
 	std::atomic<uint64_t> g_traceEndTick{};
@@ -99,6 +116,7 @@ namespace
 	void* g_schedulerAddress{};
 	void* g_dispatchAddress{};
 	void* g_submitAddress{};
+	void* g_workerAddress{};
 	void* g_omAddress{};
 	void* g_omUavAddress{};
 	void* g_copyRegionAddress{};
@@ -108,6 +126,8 @@ namespace
 	scheduler_t g_originalScheduler{};
 	render_dispatch_t g_originalDispatch{};
 	render_task_submit_t g_submit{};
+	render_task_submit_t g_originalSubmit{};
+	mirror_worker_t g_originalWorker{};
 	om_set_render_targets_t g_originalOm{};
 	om_set_render_targets_uav_t g_originalOmUav{};
 	copy_subresource_region_t g_originalCopyRegion{};
@@ -119,9 +139,9 @@ namespace
 	std::array<uint8_t, 0xF0> g_controlTemplate{};
 	std::atomic<bool> g_templateReady{};
 	std::atomic<bool> g_submitAttempted{};
-	std::atomic<bool> g_submitInProgress{};
 	std::atomic<void*> g_controlRenderContext{};
 	std::atomic<void*> g_probeTask{};
+	thread_local bool g_insidePluginSubmit{};
 
 	fingerprint_t fingerprint_executable()
 	{
@@ -261,7 +281,7 @@ namespace
 			expected, true, std::memory_order_acq_rel))
 			return;
 		void* task{};
-		g_submitInProgress.store(true, std::memory_order_release);
+		g_insidePluginSubmit = true;
 		__try
 		{
 			g_submit(nullptr, &task,
@@ -272,8 +292,8 @@ namespace
 		{
 			task = nullptr;
 		}
+		g_insidePluginSubmit = false;
 		g_probeTask.store(task, std::memory_order_release);
-		g_submitInProgress.store(false, std::memory_order_release);
 		if (task)
 			scs_log(0,
 				"[GPU trace] Separate control job submitted: task=%p.", task);
@@ -287,10 +307,65 @@ namespace
 	{
 		g_schedulerSeen.store(true, std::memory_order_relaxed);
 		g_schedulerCalls.fetch_add(1, std::memory_order_relaxed);
+		const bool traceThis = g_tracing.load(std::memory_order_relaxed) &&
+			g_tracedSchedulerCalls.fetch_add(1, std::memory_order_relaxed) < 256;
+		if (traceThis)
+			dx11::gpu_command_trace::mark_scheduler(
+				true, owner, request, mode, fourth);
 		if (g_templateReady.load(std::memory_order_acquire) &&
 			!g_submitAttempted.load(std::memory_order_acquire))
 			submit_control_job();
-		return g_originalScheduler(owner, request, mode, fourth);
+		const uintptr_t result = g_originalScheduler(
+			owner, request, mode, fourth);
+		if (traceThis)
+			dx11::gpu_command_trace::mark_scheduler(
+				false, owner, request, mode, fourth);
+		return result;
+	}
+
+	void __fastcall hooked_worker(void* renderer, void* renderContext,
+		void* cameraInput, void* renderRequest)
+	{
+		const bool traceThis = g_tracing.load(std::memory_order_relaxed) &&
+			g_tracedWorkerCalls.fetch_add(1, std::memory_order_relaxed) < 128;
+		if (traceThis)
+		{
+			dx11::gpu_command_trace::mark_worker(true, renderer,
+				renderContext, cameraInput, renderRequest);
+			bool expected = false;
+			if (g_workerStackCaptured.compare_exchange_strong(expected, true))
+				dx11::gpu_command_trace::capture_stack(
+					dx11::gpu_command_trace::path_role::mirror_worker, 1);
+		}
+		g_originalWorker(renderer, renderContext, cameraInput, renderRequest);
+		if (traceThis)
+			dx11::gpu_command_trace::mark_worker(false, renderer,
+				renderContext, cameraInput, renderRequest);
+	}
+
+	void __fastcall hooked_submit(void* allocator, void** outputTask,
+		void* renderContext, const void* renderCommand)
+	{
+		const bool pluginSubmit = g_insidePluginSubmit;
+		const bool traceThis = g_tracing.load(std::memory_order_relaxed) &&
+			(pluginSubmit || g_tracedSubmitCalls.fetch_add(
+				1, std::memory_order_relaxed) < 128);
+		if (traceThis)
+		{
+			dx11::gpu_command_trace::mark_submit(true, pluginSubmit,
+				outputTask ? *outputTask : nullptr, renderContext, renderCommand);
+			if (pluginSubmit)
+			{
+				bool expected = false;
+				if (g_submitStackCaptured.compare_exchange_strong(expected, true))
+					dx11::gpu_command_trace::capture_stack(
+						dx11::gpu_command_trace::path_role::plugin_submit, 1);
+			}
+		}
+		g_originalSubmit(allocator, outputTask, renderContext, renderCommand);
+		if (traceThis)
+			dx11::gpu_command_trace::mark_submit(false, pluginSubmit,
+				outputTask ? *outputTask : nullptr, renderContext, renderCommand);
 	}
 
 	void __fastcall hooked_dispatch(void* renderer, void* renderContext,
@@ -298,15 +373,42 @@ namespace
 	{
 		void* owner = renderCommand
 			? static_cast<uint8_t*>(renderCommand) - 0x38 : nullptr;
-		const bool probe = owner &&
-			(owner == g_probeTask.load(std::memory_order_acquire) ||
-				g_submitInProgress.load(std::memory_order_acquire));
+		const bool confirmedProbe = owner &&
+			owner == g_probeTask.load(std::memory_order_acquire);
+		const bool nestedProbe = g_insidePluginSubmit;
+		const bool probe = confirmedProbe || nestedProbe;
 		const int32_t sourceIndex = resolve_source_index(renderCommand);
 		g_observedJobs.fetch_add(1, std::memory_order_relaxed);
 		if (probe)
 			g_submittedProbeJobs.fetch_add(1, std::memory_order_relaxed);
 		dx11::gpu_command_trace::mark_job(true, probe, owner, renderer,
 			renderContext, renderCommand, sourceIndex);
+		dx11::gpu_command_trace::path_role role =
+			dx11::gpu_command_trace::path_role::unknown;
+		std::atomic<bool>* stackFlag{};
+		if (confirmedProbe)
+		{
+			role = dx11::gpu_command_trace::path_role::probe_confirmed_dispatch;
+			stackFlag = &g_confirmedProbeStackCaptured;
+		}
+		else if (nestedProbe)
+		{
+			role = dx11::gpu_command_trace::path_role::probe_nested_dispatch;
+			stackFlag = &g_nestedProbeStackCaptured;
+		}
+		else if (sourceIndex == static_cast<int32_t>(kControlSourceIndex))
+		{
+			role = dx11::gpu_command_trace::path_role::real_control_dispatch;
+			stackFlag = &g_realControlStackCaptured;
+		}
+		if (role != dx11::gpu_command_trace::path_role::unknown)
+		{
+			dx11::gpu_command_trace::mark_object_digest(
+				role, owner, renderContext, renderCommand, sourceIndex);
+			bool expected = false;
+			if (stackFlag && stackFlag->compare_exchange_strong(expected, true))
+				dx11::gpu_command_trace::capture_stack(role, 1);
+		}
 		g_originalDispatch(renderer, renderContext, renderCommand);
 		dx11::gpu_command_trace::mark_job(false, probe, owner, renderer,
 			renderContext, renderCommand, sourceIndex);
@@ -425,6 +527,8 @@ namespace dx11::internal_render_probe
 			fingerprint.detectedRva == kExpectedSchedulerRva &&
 			matches_bytes(kExpectedRenderDispatchRva,
 				kRenderDispatchSignature) &&
+			matches_bytes(kExpectedMirrorWorkerRva,
+				kMirrorWorkerSignature) &&
 			matches_bytes(kExpectedRenderTaskSubmitRva,
 				kRenderTaskSubmitSignature);
 		g_supported.store(supported);
@@ -438,18 +542,25 @@ namespace dx11::internal_render_probe
 				reinterpret_cast<void*>(&hooked_dispatch),
 				g_originalDispatch, g_dispatchAddress);
 			g_dispatchHookReady.store(g_dispatchAddress != nullptr);
-			g_submitAddress = g_executableBase +
+			install_hook(g_executableBase + kExpectedMirrorWorkerRva,
+				reinterpret_cast<void*>(&hooked_worker),
+				g_originalWorker, g_workerAddress);
+			g_workerHookReady.store(g_workerAddress != nullptr);
+			void* submitEntry = g_executableBase +
 				kExpectedRenderTaskSubmitRva;
-			g_submit = reinterpret_cast<render_task_submit_t>(
-				g_submitAddress);
+			install_hook(submitEntry, reinterpret_cast<void*>(&hooked_submit),
+				g_originalSubmit, g_submitAddress);
+			g_submitHookReady.store(g_submitAddress != nullptr);
+			g_submit = reinterpret_cast<render_task_submit_t>(submitEntry);
 		}
 		camera_monitor::publish(
 			prism_camera_monitor::Stage::GpuTraceReady,
 			prism_camera_monitor::kPluginConnected |
 				prism_camera_monitor::kLegacyCameraPathRemoved,
-			"GPU command trace ready",
+			"Prism call-path trace ready",
 			"Legacy internal-camera rendering is not compiled into this "
-			"module. The diagnostic records one non-park control job only.");
+			"module. The diagnostic compares one native control path with "
+			"one separately submitted control task.");
 		scs_log(0,
 			"[GPU trace] executable timestamp=0x%08X image=0x%08X "
 			"matches=%u scheduler-rva=0x%08X supported=%s.",
@@ -471,9 +582,14 @@ namespace dx11::internal_render_probe
 		remove_hook(g_omUavAddress);
 		remove_hook(g_omAddress);
 		remove_hook(g_dispatchAddress);
+		remove_hook(g_workerAddress);
+		remove_hook(g_submitAddress);
 		remove_hook(g_schedulerAddress);
-		g_submitAddress = nullptr;
 		g_submit = nullptr;
+		g_originalSubmit = nullptr;
+		g_originalWorker = nullptr;
+		g_workerHookReady.store(false);
+		g_submitHookReady.store(false);
 		g_contextHooksReady.store(false);
 		g_actualContextSeen.store(false);
 		camera_monitor::shutdown();
@@ -518,6 +634,9 @@ namespace dx11::internal_render_probe
 	void on_present_frame(ID3D11DeviceContext*)
 	{
 		camera_monitor::heartbeat();
+		if (g_tracing.load(std::memory_order_acquire))
+			dx11::gpu_command_trace::mark_frame(
+				g_frameIndex.load(std::memory_order_relaxed));
 		if (camera_monitor::consume_run_request())
 			begin_trace(10);
 		dx11::gpu_command_trace::tick();
@@ -534,7 +653,8 @@ namespace dx11::internal_render_probe
 		if (g_tracing.load())
 			end_trace();
 		if (!g_supported.load() || !g_schedulerHookReady.load() ||
-			!g_dispatchHookReady.load() || !g_contextHooksReady.load())
+			!g_dispatchHookReady.load() || !g_workerHookReady.load() ||
+			!g_submitHookReady.load() || !g_contextHooksReady.load())
 		{
 			camera_monitor::begin_run(
 				"GPU tracing could not start because a required observer "
@@ -552,9 +672,16 @@ namespace dx11::internal_render_probe
 		seconds = (std::clamp)(seconds, 5U, 15U);
 		g_observedJobs.store(0);
 		g_submittedProbeJobs.store(0);
+		g_tracedWorkerCalls.store(0);
+		g_tracedSchedulerCalls.store(0);
+		g_tracedSubmitCalls.store(0);
+		g_realControlStackCaptured.store(false);
+		g_nestedProbeStackCaptured.store(false);
+		g_confirmedProbeStackCaptured.store(false);
+		g_workerStackCaptured.store(false);
+		g_submitStackCaptured.store(false);
 		g_templateReady.store(false);
 		g_submitAttempted.store(false);
-		g_submitInProgress.store(false);
 		g_controlRenderContext.store(nullptr);
 		g_probeTask.store(nullptr);
 		g_controlTemplate.fill(0);
@@ -579,7 +706,7 @@ namespace dx11::internal_render_probe
 			prism_camera_monitor::Stage::CorrelationReady,
 			prism_camera_monitor::kPluginConnected |
 				prism_camera_monitor::kLegacyCameraPathRemoved,
-			"GPU command trace saved",
+			"Prism call-path trace saved",
 			"Send Documents\\ETS2\\PrismIndependentGpuTrace.bin and "
 			"PrismIndependentGpuTrace.txt for analysis.",
 			0, g_observedJobs.load(), g_submittedProbeJobs.load());

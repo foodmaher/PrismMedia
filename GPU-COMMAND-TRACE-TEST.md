@@ -1,4 +1,4 @@
-# GPU command trace test
+# Prism call-path trace test
 
 This build removes the legacy internal-camera runtime from execution. It does
 not install an extra game camera, modify the camera-active mask, capture a park
@@ -6,14 +6,21 @@ texture, perform diagnostic readback, or upload diagnostic pixels to the GPS.
 
 The diagnostic uses an ordinary non-park mirror command only as a control
 template. Prism3D's own submission routine creates a separate task from that
-template. For ten seconds the plugin records the surrounding D3D11 API stream:
+template. For ten seconds the plugin compares the native and submitted paths:
 
-- Prism3D job entry and exit;
+- verified mirror-worker, scheduler, submit-constructor and dispatch boundaries;
+- one bounded call stack for the native control, nested submit and confirmed task;
+- hashes of the command, owner and render-context objects;
+- the exact task pointer returned by the submit constructor;
 - render-target and depth-target bindings;
 - viewports;
 - vertex-shader constant-buffer bindings;
-- draw and instanced-draw calls;
+- compressed draw batches on the primary GPU submission thread;
 - resource updates, copies, resolves, and command-list execution.
+
+Draw calls are aggregated instead of logged individually. This prevents the
+multi-million-event overflow seen in 3.11.25 while retaining frame timing,
+target transitions, draw counts and a sequence hash.
 
 ## Test
 

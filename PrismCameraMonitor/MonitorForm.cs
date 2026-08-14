@@ -76,7 +76,7 @@ namespace PrismCameraMonitor
 
         internal MonitorForm()
         {
-            Text = "Prism GPU Command Trace";
+            Text = "Prism Call-Path Trace";
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(900, 650);
             Size = new Size(1100, 760);
@@ -617,7 +617,7 @@ namespace PrismCameraMonitor
                 string path = Path.Combine(
                     directory, "PrismCameraLabReport.txt");
                 var report = new StringBuilder();
-                report.AppendLine("Prism GPU Command Trace status report");
+                report.AppendLine("Prism Call-Path Trace status report");
                 report.AppendLine("Created: " +
                     DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
                 report.AppendLine("Run: " + lastRunId);

@@ -1,3 +1,3 @@
 #pragma once
 
-inline const char* g_version = "3.11.25-gpu-command-trace-no-legacy-camera";
+inline const char* g_version = "3.11.26-prism-call-path-trace-no-legacy-camera";

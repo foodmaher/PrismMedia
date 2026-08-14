@@ -181,6 +181,8 @@ namespace {
         }
         ~MediaClientSource() override
         {
+            if (m_userCapturePaused.load())
+                send_payload("freeze|0", 30);
             if (m_spatialEnabled)
                 send_payload(
                     "spatial|0|1.0000|0.0000|20000.0", 30);
@@ -196,7 +198,9 @@ namespace {
         }
         void SetPaused(bool paused) override
         {
-            m_userCapturePaused = paused;
+            const bool changed = m_userCapturePaused.exchange(paused) != paused;
+            if (changed)
+                send_payload(paused ? "freeze|1" : "freeze|0");
             m_capture->SetPaused(
                 m_userCapturePaused.load() ||
                 !m_vehiclePowered.load());

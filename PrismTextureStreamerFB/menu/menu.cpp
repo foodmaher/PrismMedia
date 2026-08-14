@@ -42,6 +42,7 @@ namespace
     int hotkeyBindingIndex = -1;
     int selectedScreen{};
     int selectedPage{ 1 };
+    int selectedAudioPanel{ 1 };
     float panelAnimation = 1.0f;
     int restoreRequest = -1;
     bool saveNowRequest{};
@@ -612,14 +613,26 @@ namespace
     {
         const float gap = 12.0f;
         const float width = (ImGui::GetContentRegionAvail().x - gap * 2.0f) / 3.0f;
-        if (audio_feature_card("volume", "VOLUME & BALANCE", 0, false, width))
+        if (audio_feature_card("volume", "VOLUME & BALANCE", 0, selectedAudioPanel == 0, width))
+        {
+            selectedAudioPanel = 0;
+            panelAnimation = 0.0f;
             inspector = { "Volume & balance", "Controls cabin, menu and exterior media levels.", "Very low CPU", "Applies live" };
+        }
         ImGui::SameLine(0.0f, gap);
-        if (audio_feature_card("transition", "CABIN / OUTSIDE", 1, true, width))
+        if (audio_feature_card("transition", "CABIN / OUTSIDE", 1, selectedAudioPanel == 1, width))
+        {
+            selectedAudioPanel = 1;
+            panelAnimation = 0.0f;
             inspector = { "Cabin / outside", "Smoothly blends volume and tone between camera environments.", "Very low CPU", "Applies live" };
+        }
         ImGui::SameLine(0.0f, gap);
-        if (audio_feature_card("filters", "FILTERS", 2, false, width))
+        if (audio_feature_card("filters", "FILTERS", 2, selectedAudioPanel == 2, width))
+        {
+            selectedAudioPanel = 2;
+            panelAnimation = 0.0f;
             inspector = { "Filters", "Controls distance-based low-pass muffling outside the truck.", "Very low CPU", "Applies live" };
+        }
     }
 
     void draw_media(screen_t& screen)
@@ -639,7 +652,7 @@ namespace
             if (screen.source) screen.source->SetPaused(screen.paused);
             mark_changed();
         }
-        explain_last_item("Pause / Freeze", "Keeps the last image and stops plugin frame processing.", "Reduces resource use", "Applies instantly");
+        explain_last_item("Pause / Freeze", "Keeps the last image, pauses media audio/video, and stops plugin frame processing. Unfreezing restores the prior play/pause intent.", "Reduces resource use", "Applies instantly");
 
         if (screen.contentMode == content_mode_t::WINDOW_CAPTURE)
         {
@@ -750,11 +763,14 @@ namespace
     {
         draw_audio_feature_cards();
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
-        draw_wave_preview(screen);
+        if (selectedAudioPanel == 1)
+            draw_wave_preview(screen);
+
         const bool spatialSupported = screen.source && screen.source->SupportsSpatialAudio();
         if (!spatialSupported)
             ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
                 "Adaptive sound is available with the Integrated Media Client.");
+
         ImGui::BeginDisabled(!spatialSupported);
         if (toggle_switch("Adaptive cabin audio", screen.adaptiveAudioEnabled))
         {
@@ -763,28 +779,59 @@ namespace
             mark_changed();
         }
         explain_last_item("Adaptive cabin audio", "Blends gain, stereo position and muffling as the camera moves inside or outside.", "Very low CPU", "Applies live with a 650 ms fade");
+
         ImGui::BeginDisabled(!screen.adaptiveAudioEnabled);
-        if (slider_percent("Cabin volume", screen.adaptiveAudioInteriorVolume)) mark_changed();
-        explain_last_item("Cabin volume", "Full-volume anchor when the camera is inside the truck.");
-        if (slider_percent("Spatial strength", screen.adaptiveAudioStrength)) mark_changed();
-        if (ImGui::SliderFloat("Speaker direction", &screen.adaptiveAudioSpeakerAzimuth, -90.0f, 90.0f, "%.0f deg", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
-        if (slider_percent("Facing-away floor", screen.adaptiveAudioFacingAwayVolume)) mark_changed();
-        if (ImGui::SliderFloat("Outside-cab distance", &screen.adaptiveAudioOutsideDistance, 0.25f, 2.5f, "%.2f m", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
-        if (slider_percent("Minimum volume when far away", screen.adaptiveAudioOutsideVolume)) mark_changed();
-        explain_last_item("Exterior volume", "Target volume outside before distance attenuation.", "Very low CPU", "Smooth 650 ms crossfade");
-        if (slider_percent("Menu volume", screen.adaptiveAudioMenuVolume)) mark_changed();
-        if (toggle_switch("Exterior distance filter", screen.adaptiveAudioExternalDistanceEnabled)) mark_changed();
-        ImGui::BeginDisabled(!screen.adaptiveAudioExternalDistanceEnabled);
-        if (slider_percent("Near exterior volume", screen.adaptiveAudioExternalNearVolume)) mark_changed();
-        if (ImGui::SliderFloat("Near cutoff", &screen.adaptiveAudioExternalNearCutoff, 20.0f, 20000.0f, "%.0f Hz", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) mark_changed();
-        if (ImGui::SliderFloat("Full-volume distance", &screen.adaptiveAudioExternalFullVolumeDistance, 0.0f, 10.0f, "%.1f m", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
-        if (ImGui::SliderFloat("Mute distance", &screen.adaptiveAudioExternalMuteDistance, 2.0f, 50.0f, "%.1f m", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
-        if (toggle_switch("Smooth low-pass", screen.adaptiveAudioExternalLowPassEnabled)) mark_changed();
-        if (ImGui::SliderFloat("Minimum cutoff", &screen.adaptiveAudioExternalMinimumCutoff, 20.0f,
-            (std::max)(20.0f, screen.adaptiveAudioExternalNearCutoff), "%.0f Hz",
-            ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) mark_changed();
-        ImGui::EndDisabled(); ImGui::EndDisabled();
-        if (spatialSupported && screen.adaptiveAudioEnabled)
+
+        if (selectedAudioPanel == 0)
+        {
+            ImGui::TextDisabled("LEVELS AND POSITION");
+            if (slider_percent("Cabin volume", screen.adaptiveAudioInteriorVolume)) mark_changed();
+            explain_last_item("Cabin volume", "Full-volume anchor when the camera is inside the truck.");
+            if (slider_percent("Menu volume", screen.adaptiveAudioMenuVolume)) mark_changed();
+            explain_last_item("Menu volume", "Media level while the game is in menus or before driving.");
+            if (slider_percent("Spatial strength", screen.adaptiveAudioStrength)) mark_changed();
+            explain_last_item("Spatial strength", "Controls how strongly left/right camera position moves the media sound.");
+            if (ImGui::SliderFloat("Speaker direction", &screen.adaptiveAudioSpeakerAzimuth,
+                -90.0f, 90.0f, "%.0f deg", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
+            if (slider_percent("Facing-away floor", screen.adaptiveAudioFacingAwayVolume)) mark_changed();
+        }
+        else if (selectedAudioPanel == 1)
+        {
+            ImGui::TextDisabled("CABIN / OUTSIDE TRANSITION");
+            if (ImGui::SliderFloat("Outside-cab distance", &screen.adaptiveAudioOutsideDistance,
+                0.25f, 2.5f, "%.2f m", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
+            if (slider_percent("Minimum volume when far away", screen.adaptiveAudioOutsideVolume)) mark_changed();
+            explain_last_item("Exterior volume", "Target volume outside before distance attenuation.", "Very low CPU", "Smooth 650 ms crossfade");
+            if (toggle_switch("Exterior distance filter", screen.adaptiveAudioExternalDistanceEnabled)) mark_changed();
+            ImGui::BeginDisabled(!screen.adaptiveAudioExternalDistanceEnabled);
+            if (slider_percent("Near exterior volume", screen.adaptiveAudioExternalNearVolume)) mark_changed();
+            if (ImGui::SliderFloat("Full-volume distance", &screen.adaptiveAudioExternalFullVolumeDistance,
+                0.0f, 10.0f, "%.1f m", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
+            if (ImGui::SliderFloat("Mute distance", &screen.adaptiveAudioExternalMuteDistance,
+                2.0f, 50.0f, "%.1f m", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
+            ImGui::EndDisabled();
+        }
+        else
+        {
+            ImGui::TextDisabled("EXTERIOR TONE FILTER");
+            if (toggle_switch("Exterior distance filter", screen.adaptiveAudioExternalDistanceEnabled)) mark_changed();
+            ImGui::BeginDisabled(!screen.adaptiveAudioExternalDistanceEnabled);
+            if (ImGui::SliderFloat("Near cutoff", &screen.adaptiveAudioExternalNearCutoff,
+                20.0f, 20000.0f, "%.0f Hz",
+                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) mark_changed();
+            if (toggle_switch("Smooth low-pass", screen.adaptiveAudioExternalLowPassEnabled)) mark_changed();
+            ImGui::BeginDisabled(!screen.adaptiveAudioExternalLowPassEnabled);
+            if (ImGui::SliderFloat("Minimum cutoff", &screen.adaptiveAudioExternalMinimumCutoff, 20.0f,
+                (std::max)(20.0f, screen.adaptiveAudioExternalNearCutoff), "%.0f Hz",
+                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) mark_changed();
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
+        }
+
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+
+        if (selectedAudioPanel == 1 && spatialSupported && screen.adaptiveAudioEnabled)
         {
             const bool driving = g_telemetry_driving.load();
             const uint64_t now = GetTickCount64();
@@ -811,22 +858,26 @@ namespace
                 ImGui::TextColored(ImVec4(0.42f, 0.94f, 0.47f, 1.0f),
                     "Detected state: interior camera");
         }
-        ImGui::Separator();
-        std::lock_guard<std::mutex> lock(g_environment_audio_settings_mutex);
-        if (toggle_switch("Protect game sounds", g_environment_audio_settings.enabled)) mark_changed();
-        explain_last_item("Protect game sounds", "Gently ducks media when road and engine activity increase; it adds no external audio.", "Very low CPU");
-        if (slider_percent("Interior reduction", g_environment_audio_settings.interiorEffect)) mark_changed();
-        if (slider_percent("Exterior reduction", g_environment_audio_settings.exteriorEffect)) mark_changed();
-        ImGui::Text("Live: %.1f km/h | road contact %.0f%% | environment %.0f%%",
-            std::fabs(g_truck_speed_mps.load()) * 3.6f,
-            g_environment_grounded_ratio.load() * 100.0f,
-            g_environment_intensity.load() * 100.0f);
-        ImGui::Text("Mode: %s | resulting media volume %.0f%%",
-            !g_telemetry_driving.load() ? "menus / before driving" :
-                (g_environment_interior.load() ? "interior" : "exterior"),
-            g_environment_media_gain.load() * 100.0f);
-        ImGui::TextDisabled("Estimator cost: %.1f us/update | capped at 20 Hz",
-            g_environment_update_cpu_us.load());
+
+        if (selectedAudioPanel == 2)
+        {
+            ImGui::Separator();
+            std::lock_guard<std::mutex> lock(g_environment_audio_settings_mutex);
+            if (toggle_switch("Protect game sounds", g_environment_audio_settings.enabled)) mark_changed();
+            explain_last_item("Protect game sounds", "Gently ducks media when road and engine activity increase; it adds no external audio.", "Very low CPU");
+            if (slider_percent("Interior reduction", g_environment_audio_settings.interiorEffect)) mark_changed();
+            if (slider_percent("Exterior reduction", g_environment_audio_settings.exteriorEffect)) mark_changed();
+            ImGui::Text("Live: %.1f km/h | road contact %.0f%% | environment %.0f%%",
+                std::fabs(g_truck_speed_mps.load()) * 3.6f,
+                g_environment_grounded_ratio.load() * 100.0f,
+                g_environment_intensity.load() * 100.0f);
+            ImGui::Text("Mode: %s | resulting media volume %.0f%%",
+                !g_telemetry_driving.load() ? "menus / before driving" :
+                    (g_environment_interior.load() ? "interior" : "exterior"),
+                g_environment_media_gain.load() * 100.0f);
+            ImGui::TextDisabled("Estimator cost: %.1f us/update | capped at 20 Hz",
+                g_environment_update_cpu_us.load());
+        }
     }
 
     void draw_controls()

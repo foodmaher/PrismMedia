@@ -77,6 +77,7 @@ namespace PrismMediaClient
         private bool fullSpotifyWeb;
         private bool userWantsPlayback = true;
         private bool vehiclePowered = true;
+        private bool mediaFrozen;
         private double desiredBrightness = 1.0;
         private double lastLoggedBrightness = -1.0;
         private DateTime lastBrightnessLogUtc = DateTime.MinValue;
@@ -813,15 +814,24 @@ namespace PrismMediaClient
             int separator = command.IndexOf('|');
             string name = separator < 0 ? command : command.Substring(0, separator);
             string argument = separator < 0 ? "" : command.Substring(separator + 1);
+            bool automaticPlaybackGate =
+                name == "vehiclepower" || name == "freeze";
 
             if (name == "vehiclepower")
             {
                 vehiclePowered = argument == "1";
-                name = vehiclePowered && userWantsPlayback ? "play" : "pause";
+                name = vehiclePowered && userWantsPlayback && !mediaFrozen
+                    ? "play" : "pause";
+            }
+            else if (name == "freeze")
+            {
+                mediaFrozen = argument == "1";
+                name = !mediaFrozen && vehiclePowered && userWantsPlayback
+                    ? "play" : "pause";
             }
             else if (name == "playpause")
             {
-                if (!vehiclePowered)
+                if (!vehiclePowered || mediaFrozen)
                 {
                     userWantsPlayback = !userWantsPlayback;
                     name = "pause";
@@ -830,7 +840,7 @@ namespace PrismMediaClient
             else if (name == "play")
             {
                 userWantsPlayback = true;
-                if (!vehiclePowered)
+                if (!vehiclePowered || mediaFrozen)
                     name = "pause";
             }
             else if (name == "pause")
@@ -848,10 +858,15 @@ namespace PrismMediaClient
             }
             if (handled != 0)
             {
-                if (handled == 2)
-                    userWantsPlayback = false;
-                else if (handled == 3)
-                    userWantsPlayback = true;
+                if (!automaticPlaybackGate)
+                {
+                    if (handled == 2)
+                        userWantsPlayback = false;
+                    else if (handled == 3)
+                        userWantsPlayback = true;
+                    else if (name == "playpause")
+                        userWantsPlayback = !userWantsPlayback;
+                }
                 return;
             }
 

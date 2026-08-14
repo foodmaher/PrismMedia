@@ -1,6 +1,8 @@
 #include "dx11.h"
 #include "../telemetry_state.h"
 #include "../thread_scheduling.h"
+#include "../hotkeys.h"
+#include "../menu/menu.h"
 #include "../win32/win32.h"
 #include <MinHook/MinHook.h>
 #include "../scs_logging.h"
@@ -388,6 +390,7 @@ HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    submit_imgui_gamepad_navigation(Gui::is_visible());
     ImGui::NewFrame();
 
     if (!pending_callbacks.empty()) {

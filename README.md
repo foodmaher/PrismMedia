@@ -8,7 +8,8 @@ or a desktop window onto supported ETS2/ATS truck displays.
 - New hybrid dashboard UI with a Home overview, custom vector icons, elevated
   cards and simulated soft shadows, animated audio waves, mouse/gamepad
   navigation, auto-save, smooth page transitions, and a live option-effect
-  inspector.
+  inspector. The console auto-centres for the active game resolution, can be
+  moved or resized, and reflows its navigation for shorter displays.
 - The complete retained control set remains available: GPS/Dashboard/Custom
   displays, Pause/Freeze, media mute and volume, hotkey target selection,
   performance profiles, scaling modes, backups, adaptive audio tuning, update
@@ -20,6 +21,9 @@ or a desktop window onto supported ETS2/ATS truck displays.
   and its duplicated playback state are removed.
 - Play/Pause is state-neutral in the plugin, while actual browser media events
   resynchronize playback intent to prevent a stale pause indicator.
+- Controller navigation now uses the plugin's XInput/Steam/WinMM fallback:
+  D-pad or left stick moves, A activates, and LB/RB changes pages. Media chords
+  are suppressed while the menu owns the controller.
 - Adaptive gain, stereo pan, and low-pass changes use a 650 ms crossfade so
   cabin/exterior camera transitions do not produce an abrupt “DJ” effect.
 - Engine-off playback pauses immediately with no fade; engine-start can still
@@ -29,7 +33,8 @@ or a desktop window onto supported ETS2/ATS truck displays.
 - Normal options apply live and auto-save. Game texture identity changes and
   restored backups are the only actions that expose a texture reload button.
 - The media helper receives its shutdown request at the beginning of game
-  teardown for faster, cleaner exit.
+  teardown for faster, cleaner exit, and silent startup uses a tool-window style
+  so the helper does not create a taskbar button.
 - Reverse camera, Camera Lab/GPU tracing, AI traffic radio, the diagnostic
   viewer, and their accessory/runtime code are completely removed.
 

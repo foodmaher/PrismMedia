@@ -28,4 +28,6 @@ AI traffic enumeration and the traffic-radio helper were removed, reducing
 shared-memory size and eliminating that periodic vehicle scan.
 
 The UI animates only while open. Auto-save is debounced after interaction, so
-sliders do not write the configuration on every frame.
+sliders do not write the configuration on every frame. Controller polling for
+ImGui navigation also runs only while the console is visible; media hotkeys keep
+their existing low-frequency background path.

@@ -100,4 +100,5 @@ bool dispatch_media_command(
     screen_t& screen,
     media_command_t command);
 void process_media_hotkeys(bool menu_visible);
+void submit_imgui_gamepad_navigation(bool menu_visible);
 bool consume_gamepad_menu_toggle_request();

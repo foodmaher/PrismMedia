@@ -22,6 +22,7 @@ namespace PrismMediaClient
             "https://prism.local/player.html";
         private const int GwlExStyle = -20;
         private const int WsExNoActivate = 0x08000000;
+        private const int WsExToolWindow = 0x00000080;
         private const uint KeyEventKeyUp = 0x0002;
         private const uint ThreadSetInformation = 0x0020;
         private const int SpotifySessionFormatVersion = 1;
@@ -150,7 +151,7 @@ namespace PrismMediaClient
             {
                 CreateParams parameters = base.CreateParams;
                 if (silentStart)
-                    parameters.ExStyle |= WsExNoActivate;
+                    parameters.ExStyle |= WsExNoActivate | WsExToolWindow;
                 return parameters;
             }
         }
@@ -716,7 +717,8 @@ namespace PrismMediaClient
             int style = GetWindowLong(Handle, GwlExStyle);
             if (interactive)
             {
-                SetWindowLong(Handle, GwlExStyle, style & ~WsExNoActivate);
+                SetWindowLong(Handle, GwlExStyle,
+                    style & ~(WsExNoActivate | WsExToolWindow));
                 FormBorderStyle = FormBorderStyle.Sizable;
                 ShowInTaskbar = true;
                 WindowState = FormWindowState.Normal;
@@ -730,7 +732,8 @@ namespace PrismMediaClient
             {
                 FormBorderStyle = FormBorderStyle.None;
                 ShowInTaskbar = false;
-                SetWindowLong(Handle, GwlExStyle, style | WsExNoActivate);
+                SetWindowLong(Handle, GwlExStyle,
+                    style | WsExNoActivate | WsExToolWindow);
                 ClientDiagnosticLog.Write(
                     "spotify", "Spotify helper returned to silent mode.");
             }

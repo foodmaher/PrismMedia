@@ -46,6 +46,8 @@ namespace
     int selectedPage{ 1 };
     int selectedAudioPanel{ 1 };
     float panelAnimation = 1.0f;
+    uint64_t menuOpenedTick{};
+    bool menuNeedsFocus{};
     int restoreRequest = -1;
     bool saveNowRequest{};
     std::string restoreStatus;
@@ -95,6 +97,19 @@ namespace
             return false;
         normalized = percent / 100.0f;
         return true;
+    }
+
+    bool slider_value(const char* label, float& value, float minimum,
+        float maximum, const char* format,
+        ImGuiSliderFlags flags = ImGuiSliderFlags_AlwaysClamp)
+    {
+        ImGui::PushID(label);
+        ImGui::TextDisabled("%s", label);
+        ImGui::SetNextItemWidth(-1.0f);
+        const bool changed = ImGui::SliderFloat(
+            "##value", &value, minimum, maximum, format, flags);
+        ImGui::PopID();
+        return changed;
     }
 
     bool toggle_switch(const char* label, bool& value)
@@ -183,12 +198,15 @@ namespace
         }
     }
 
-    bool nav_button(int icon, const char* label, bool selected)
+    bool nav_button(int icon, const char* label, bool selected,
+        float height = 62.0f)
     {
         const ImVec2 start = ImGui::GetCursorScreenPos();
-        const ImVec2 size(ImGui::GetContentRegionAvail().x, 62.0f);
-        ImGui::InvisibleButton(label, size);
-        const bool pressed = ImGui::IsItemClicked();
+        const ImVec2 size(ImGui::GetContentRegionAvail().x, height);
+        const bool activated = ImGui::InvisibleButton(label, size);
+        if (selected)
+            ImGui::SetItemDefaultFocus();
+        const bool pressed = activated;
         const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         ImDrawList* draw = ImGui::GetWindowDrawList();
         if (selected || hovered)
@@ -202,13 +220,15 @@ namespace
             draw->AddRectFilled(start, ImVec2(start.x + 4.0f, start.y + size.y), kCyan, 3.0f);
             draw->AddRect(start, ImVec2(start.x + size.x, start.y + size.y), IM_COL32(45, 207, 235, 100), 10.0f);
         }
-        const ImVec2 badgeMin(start.x + 18.0f, start.y + 14.0f);
-        const ImVec2 badgeMax(start.x + 54.0f, start.y + 50.0f);
+        const float centreY = start.y + height * 0.5f;
+        const ImVec2 badgeMin(start.x + 18.0f, centreY - 18.0f);
+        const ImVec2 badgeMax(start.x + 54.0f, centreY + 18.0f);
         draw->AddRectFilled(badgeMin, badgeMax,
             selected ? IM_COL32(18, 176, 209, 230) : IM_COL32(39, 52, 66, 230), 8.0f);
-        draw_nav_icon(draw, icon, ImVec2(start.x + 36.0f, start.y + 32.0f),
+        draw_nav_icon(draw, icon, ImVec2(start.x + 36.0f, centreY),
             selected ? IM_COL32_WHITE : kMuted);
-        draw->AddText(ui_font(1), 19.0f, ImVec2(start.x + 70.0f, start.y + 21.0f),
+        draw->AddText(ui_font(1), 19.0f,
+            ImVec2(start.x + 70.0f, centreY - 10.0f),
             selected ? kCyan : IM_COL32(230, 237, 243, 255), label);
         return pressed;
     }
@@ -219,8 +239,7 @@ namespace
         ImGui::PushID(id);
         const ImVec2 start = ImGui::GetCursorScreenPos();
         const ImVec2 size(width, 48.0f);
-        ImGui::InvisibleButton("##transport", size);
-        const bool clicked = ImGui::IsItemClicked();
+        const bool clicked = ImGui::InvisibleButton("##transport", size);
         const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         ImDrawList* draw = ImGui::GetWindowDrawList();
         if (hovered)
@@ -439,7 +458,12 @@ namespace
 
     void set_visible(bool visible)
     {
-        menuVisible = visible;
+        const bool wasVisible = menuVisible.exchange(visible);
+        if (visible && !wasVisible)
+        {
+            menuOpenedTick = GetTickCount64();
+            menuNeedsFocus = true;
+        }
         if (!visible) { hotkeyBindingIndex = -1; g_is_binding_hotkey = false; }
         dinput8::set_mouse(visible);
         if (!ImGui::GetCurrentContext()) return;
@@ -448,10 +472,12 @@ namespace
         {
             io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
             io.MouseDrawCursor = true;
+            io.ConfigNavCursorVisibleAlways = true;
         }
         else
         {
             io.MouseDrawCursor = false;
+            io.ConfigNavCursorVisibleAlways = false;
             io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
             ::SetCursor(nullptr);
         }
@@ -570,14 +596,14 @@ namespace
         }
         const float bridgeLeft = origin.x + size.x * 0.41f;
         const float bridgeRight = origin.x + size.x * 0.59f;
-        draw->AddBezierCubic(ImVec2(bridgeLeft, midY - 7.0f),
-            ImVec2(origin.x + size.x * 0.47f, midY - 7.0f),
-            ImVec2(origin.x + size.x * 0.53f, midY + 20.0f),
-            ImVec2(bridgeRight, midY + 20.0f), kBlue, 3.0f);
-        draw->AddBezierCubic(ImVec2(bridgeLeft, midY + 20.0f),
-            ImVec2(origin.x + size.x * 0.47f, midY + 20.0f),
-            ImVec2(origin.x + size.x * 0.53f, midY - 7.0f),
-            ImVec2(bridgeRight, midY - 7.0f), IM_COL32(42, 216, 172, 255), 3.0f);
+        const float centreX = origin.x + size.x * 0.5f;
+        // Keep the cabin/outside transition readable without the old X shape.
+        draw->AddLine(ImVec2(bridgeLeft, midY + 7.0f),
+            ImVec2(centreX - 8.0f, midY + 7.0f), kBlue, 3.0f);
+        draw->AddLine(ImVec2(centreX + 8.0f, midY + 7.0f),
+            ImVec2(bridgeRight, midY + 7.0f),
+            IM_COL32(42, 216, 172, 255), 3.0f);
+        draw->AddCircleFilled(ImVec2(centreX, midY + 7.0f), 4.0f, kCyan);
         draw->AddLine(ImVec2(origin.x + size.x * 0.5f, origin.y + 83.0f),
             ImVec2(origin.x + size.x * 0.5f, origin.y + 181.0f), IM_COL32(191, 211, 225, 115), 1.0f);
         draw->AddText(ui_font(2), 24.0f, ImVec2(origin.x + 22.0f, origin.y + 18.0f),
@@ -606,8 +632,7 @@ namespace
         ImGui::PushID(id);
         const ImVec2 start = ImGui::GetCursorScreenPos();
         const ImVec2 size(ImGui::GetContentRegionAvail().x, height);
-        ImGui::InvisibleButton("##home_card", size);
-        const bool clicked = ImGui::IsItemClicked();
+        const bool clicked = ImGui::InvisibleButton("##home_card", size);
         const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         ImDrawList* draw = ImGui::GetWindowDrawList();
         draw_card_shadow(draw, start,
@@ -736,8 +761,7 @@ namespace
         ImGui::PushID(id);
         const ImVec2 start = ImGui::GetCursorScreenPos();
         const ImVec2 size(width, 126.0f);
-        ImGui::InvisibleButton("##audio_feature", size);
-        const bool clicked = ImGui::IsItemClicked();
+        const bool clicked = ImGui::InvisibleButton("##audio_feature", size);
         const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         ImDrawList* draw = ImGui::GetWindowDrawList();
         draw_card_shadow(draw, start, ImVec2(start.x + size.x, start.y + size.y), 12.0f);
@@ -1079,24 +1103,28 @@ namespace
             explain_last_item("Menu volume", "Media level while the game is in menus or before driving.");
             if (slider_percent("Spatial strength", screen.adaptiveAudioStrength)) mark_changed();
             explain_last_item("Spatial strength", "Controls how strongly left/right camera position moves the media sound.");
-            if (ImGui::SliderFloat("Speaker direction", &screen.adaptiveAudioSpeakerAzimuth,
-                -90.0f, 90.0f, "%.0f deg", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
+            if (slider_value("Speaker direction",
+                screen.adaptiveAudioSpeakerAzimuth,
+                -90.0f, 90.0f, "%.0f deg")) mark_changed();
             if (slider_percent("Facing-away floor", screen.adaptiveAudioFacingAwayVolume)) mark_changed();
         }
         else if (selectedAudioPanel == 1)
         {
             ImGui::TextDisabled("CABIN / OUTSIDE TRANSITION");
-            if (ImGui::SliderFloat("Outside-cab distance", &screen.adaptiveAudioOutsideDistance,
-                0.25f, 2.5f, "%.2f m", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
+            if (slider_value("Outside-cab distance",
+                screen.adaptiveAudioOutsideDistance,
+                0.25f, 2.5f, "%.2f m")) mark_changed();
             if (slider_percent("Minimum volume when far away", screen.adaptiveAudioOutsideVolume)) mark_changed();
             explain_last_item("Exterior volume", "Target volume outside before distance attenuation.", "Very low CPU", "Smooth 650 ms crossfade");
             if (toggle_switch("Exterior distance filter", screen.adaptiveAudioExternalDistanceEnabled)) mark_changed();
             ImGui::BeginDisabled(!screen.adaptiveAudioExternalDistanceEnabled);
             if (slider_percent("Near exterior volume", screen.adaptiveAudioExternalNearVolume)) mark_changed();
-            if (ImGui::SliderFloat("Full-volume distance", &screen.adaptiveAudioExternalFullVolumeDistance,
-                0.0f, 10.0f, "%.1f m", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
-            if (ImGui::SliderFloat("Mute distance", &screen.adaptiveAudioExternalMuteDistance,
-                2.0f, 50.0f, "%.1f m", ImGuiSliderFlags_AlwaysClamp)) mark_changed();
+            if (slider_value("Full-volume distance",
+                screen.adaptiveAudioExternalFullVolumeDistance,
+                0.0f, 10.0f, "%.1f m")) mark_changed();
+            if (slider_value("Mute distance",
+                screen.adaptiveAudioExternalMuteDistance,
+                2.0f, 50.0f, "%.1f m")) mark_changed();
             ImGui::EndDisabled();
         }
         else
@@ -1104,14 +1132,19 @@ namespace
             ImGui::TextDisabled("EXTERIOR TONE FILTER");
             if (toggle_switch("Exterior distance filter", screen.adaptiveAudioExternalDistanceEnabled)) mark_changed();
             ImGui::BeginDisabled(!screen.adaptiveAudioExternalDistanceEnabled);
-            if (ImGui::SliderFloat("Near cutoff", &screen.adaptiveAudioExternalNearCutoff,
+            if (slider_value("Near cutoff",
+                screen.adaptiveAudioExternalNearCutoff,
                 20.0f, 20000.0f, "%.0f Hz",
-                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) mark_changed();
+                ImGuiSliderFlags_Logarithmic |
+                ImGuiSliderFlags_AlwaysClamp)) mark_changed();
             if (toggle_switch("Smooth low-pass", screen.adaptiveAudioExternalLowPassEnabled)) mark_changed();
             ImGui::BeginDisabled(!screen.adaptiveAudioExternalLowPassEnabled);
-            if (ImGui::SliderFloat("Minimum cutoff", &screen.adaptiveAudioExternalMinimumCutoff, 20.0f,
-                (std::max)(20.0f, screen.adaptiveAudioExternalNearCutoff), "%.0f Hz",
-                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) mark_changed();
+            if (slider_value("Minimum cutoff",
+                screen.adaptiveAudioExternalMinimumCutoff, 20.0f,
+                (std::max)(20.0f,
+                    screen.adaptiveAudioExternalNearCutoff), "%.0f Hz",
+                ImGuiSliderFlags_Logarithmic |
+                ImGuiSliderFlags_AlwaysClamp)) mark_changed();
             ImGui::EndDisabled();
             ImGui::EndDisabled();
         }
@@ -1171,12 +1204,14 @@ namespace
     void draw_controls()
     {
         ImGui::TextColored(ImVec4(0.20f, 0.88f, 0.94f, 1.0f), "MOUSE + GAMEPAD");
-        ImGui::TextWrapped("Every card is keyboard/gamepad navigable. D-pad or stick moves; A activates.");
+        ImGui::TextWrapped("D-pad or left stick moves, A activates, and LB/RB changes pages. Hold X for ImGui window move/resize mode.");
         if (toggle_switch("Enable gamepad controls", g_gamepad_hotkeys_enabled)) mark_changed();
         const char* controllers[] = { "Automatic", "Controller 1", "Controller 2", "Controller 3", "Controller 4" };
         int controller = g_gamepad_controller_index + 1;
         if (ImGui::Combo("Controller", &controller, controllers, IM_ARRAYSIZE(controllers))) { g_gamepad_controller_index = controller - 1; mark_changed(); }
-        if (ImGui::SliderFloat("Stick threshold", &g_gamepad_axis_threshold, 0.20f, 0.95f, "%.2f")) mark_changed();
+        if (slider_value("Media-binding stick threshold",
+            g_gamepad_axis_threshold, 0.20f, 0.95f, "%.2f"))
+            mark_changed();
         if (edit_gamepad_binding("Plugin menu", 9000, g_gamepad_menu_hotkey)) mark_changed();
         ImGui::Separator(); ImGui::TextUnformatted("Media bindings");
         for (int i = 0; i < static_cast<int>(g_media_gamepad_hotkeys.size()); ++i)
@@ -1549,8 +1584,31 @@ namespace
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         const ImVec2 wanted((std::min)(1680.0f, viewport->WorkSize.x - 28.0f),
             (std::min)(930.0f, viewport->WorkSize.y - 28.0f));
-        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f, viewport->WorkPos.y + viewport->WorkSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(wanted, ImGuiCond_Always);
+        static ImVec2 previousWorkSize{};
+        const bool resolutionChanged = previousWorkSize.x <= 0.0f ||
+            std::fabs(previousWorkSize.x - viewport->WorkSize.x) > 1.0f ||
+            std::fabs(previousWorkSize.y - viewport->WorkSize.y) > 1.0f;
+        if (resolutionChanged)
+        {
+            ImGui::SetNextWindowPos(
+                ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                    viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
+                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(wanted, ImGuiCond_Always);
+            previousWorkSize = viewport->WorkSize;
+        }
+        const ImVec2 minimumSize(
+            (std::min)(1040.0f, viewport->WorkSize.x - 16.0f),
+            (std::min)(680.0f, viewport->WorkSize.y - 16.0f));
+        const ImVec2 maximumSize(
+            (std::max)(minimumSize.x, viewport->WorkSize.x - 8.0f),
+            (std::max)(minimumSize.y, viewport->WorkSize.y - 8.0f));
+        ImGui::SetNextWindowSizeConstraints(minimumSize, maximumSize);
+        if (menuNeedsFocus)
+        {
+            ImGui::SetNextWindowFocus();
+            menuNeedsFocus = false;
+        }
         ImGuiStyle oldStyle = ImGui::GetStyle();
         ImGuiStyle& style = ImGui::GetStyle();
         style.WindowPadding = ImVec2(0.0f, 0.0f);
@@ -1577,12 +1635,25 @@ namespace
         style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.40f, 0.98f, 0.70f, 1.0f);
         style.Colors[ImGuiCol_NavHighlight] = ImVec4(0.10f, 0.86f, 0.96f, 1.0f);
         bool earlyExit = false;
-        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar |
             ImGuiWindowFlags_NoBackground;
         if (ImGui::Begin("##PrismMediaConsole", nullptr, flags))
         {
+            if (GetTickCount64() >= menuOpenedTick + 180)
+            {
+                if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false))
+                {
+                    selectedPage = (selectedPage + 5) % 6;
+                    panelAnimation = 0.0f;
+                }
+                if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false))
+                {
+                    selectedPage = (selectedPage + 1) % 6;
+                    panelAnimation = 0.0f;
+                }
+            }
             const ImVec2 windowPos = ImGui::GetWindowPos();
             const ImVec2 windowSize = ImGui::GetWindowSize();
             const float headerHeight = 106.0f;
@@ -1608,6 +1679,12 @@ namespace
                 IM_COL32(8, 18, 27, 252), 22.0f, ImDrawFlags_RoundCornersBottom);
             shell->AddLine(ImVec2(windowPos.x, windowPos.y + windowSize.y - footerHeight),
                 ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y - footerHeight), IM_COL32(45, 69, 86, 190));
+            const ImVec2 grip(windowPos.x + windowSize.x - 15.0f,
+                windowPos.y + windowSize.y - 15.0f);
+            shell->AddLine(ImVec2(grip.x - 12.0f, grip.y + 8.0f),
+                ImVec2(grip.x + 8.0f, grip.y - 12.0f), kCyan, 2.0f);
+            shell->AddLine(ImVec2(grip.x - 5.0f, grip.y + 8.0f),
+                ImVec2(grip.x + 8.0f, grip.y - 5.0f), kCyan, 2.0f);
             const ImVec2 navMin(windowPos.x + side, windowPos.y + mainTop);
             const ImVec2 navMax(navMin.x + leftWidth, navMin.y + mainHeight);
             const ImVec2 contentMin(navMax.x + gap, navMin.y);
@@ -1624,7 +1701,8 @@ namespace
             ImGui::SameLine(0.0f, 10.0f); ImGui::PushFont(ui_font(3));
             ImGui::TextColored(ImVec4(0.12f, 0.86f, 0.96f, 1.0f), "4.0"); ImGui::PopFont();
             ImGui::SetCursorPos(ImVec2(33.0f, 61.0f));
-            ImGui::TextColored(ImVec4(0.56f, 0.66f, 0.72f, 1.0f), "Console Focus  |  Changes save automatically");
+            ImGui::TextColored(ImVec4(0.56f, 0.66f, 0.72f, 1.0f),
+                "Drag to move  |  Resize from a corner  |  Changes save automatically");
 
             std::lock_guard<std::mutex> lock(g_screens_mutex);
             screen_t* statusScreen = nullptr;
@@ -1689,8 +1767,12 @@ namespace
                 if (ImGui::Button("+ Custom", ImVec2(-1.0f, 36.0f))) add_screen(screen_type_t::CUSTOM);
                 ImGui::Dummy(ImVec2(0.0f, 5.0f)); ImGui::Separator(); ImGui::Dummy(ImVec2(0.0f, 5.0f));
                 const char* pages[] = { "Home", "Media", "Audio", "Controls", "Appearance", "System" };
+                const float navButtonHeight = (std::clamp)(
+                    (mainHeight - 210.0f) / 6.0f, 42.0f, 62.0f);
                 for (int i = 0; i < IM_ARRAYSIZE(pages); ++i)
-                    if (nav_button(i, pages[i], selectedPage == i)) { selectedPage = i; panelAnimation = 0.0f; }
+                    if (nav_button(i, pages[i], selectedPage == i,
+                        navButtonHeight))
+                    { selectedPage = i; panelAnimation = 0.0f; }
                 ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 68.0f);
                 ImGui::TextColored(ImVec4(0.30f, 0.92f, 0.98f, pulse), "AUTO-SAVE  LIVE");
                 ImGui::TextDisabled("Ctrl+F8 closes the console");
@@ -1751,7 +1833,7 @@ namespace
             ImGui::SameLine(0.0f, 34.0f); ImGui::TextColored(ImVec4(1.0f, 0.34f, 0.38f, 1.0f), "[B]"); ImGui::SameLine(); ImGui::TextUnformatted("Back");
             ImGui::SameLine(0.0f, 34.0f); ImGui::TextColored(ImVec4(0.30f, 0.76f, 1.0f, 1.0f), "[LB/RB]"); ImGui::SameLine(); ImGui::TextUnformatted("Category");
             ImGui::SameLine(0.0f, 34.0f); ImGui::TextColored(ImVec4(1.0f, 0.84f, 0.23f, 1.0f), "[Y]"); ImGui::SameLine(); ImGui::TextUnformatted("Explain");
-            ImGui::SameLine(0.0f, 34.0f); ImGui::TextDisabled("Mouse click / scroll also supported");
+            ImGui::SameLine(0.0f, 34.0f); ImGui::TextDisabled("D-pad / left stick moves  |  Mouse also supported");
             ImGui::PopFont();
         }
         ImGui::End(); ImGui::GetStyle() = oldStyle; (void)earlyExit;
@@ -1762,7 +1844,9 @@ namespace
         static bool initialized{};
         if (!initialized && ImGui::GetCurrentContext())
         {
-            auto& io = ImGui::GetIO(); io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+            auto& io = ImGui::GetIO();
+            io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+            io.ConfigWindowsMoveFromTitleBarOnly = false;
             set_visible(false); initialized = true;
         }
         static bool held{};

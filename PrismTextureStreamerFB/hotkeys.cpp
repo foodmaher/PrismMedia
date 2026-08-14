@@ -11,6 +11,7 @@
 #include <mutex>
 #include <mmsystem.h>
 #include <Xinput.h>
+#include <ImGui/imgui.h>
 
 size_t media_command_index(media_command_t command)
 {
@@ -524,7 +525,7 @@ namespace {
         return false;
     }
 
-    void process_gamepad_bindings()
+    void process_gamepad_bindings(bool menuVisible)
     {
         static std::array<bool, 6> wasDown{};
         static std::array<uint64_t, 6> pressedAt{};
@@ -604,13 +605,15 @@ namespace {
             const bool volumeCommand =
                 index == media_command_index(media_command_t::VOLUME_UP) ||
                 index == media_command_index(media_command_t::VOLUME_DOWN);
-            bool fire = down && !wasDown[index];
+            // The open menu owns the face buttons, shoulders, D-pad and
+            // sticks. Do not accidentally fire a media chord while navigating.
+            bool fire = !menuVisible && down && !wasDown[index];
             if (fire)
             {
                 pressedAt[index] = now;
                 repeatedAt[index] = now;
             }
-            else if (down && volumeCommand &&
+            else if (!menuVisible && down && volumeCommand &&
                 now >= pressedAt[index] + 450 &&
                 now >= repeatedAt[index] + 150)
             {
@@ -680,7 +683,85 @@ void process_media_hotkeys(bool menu_visible)
         wasDown[i] = down;
     }
 
-    process_gamepad_bindings();
+    process_gamepad_bindings(menu_visible);
+}
+
+void submit_imgui_gamepad_navigation(bool menu_visible)
+{
+    if (!ImGui::GetCurrentContext())
+        return;
+
+    ImGuiIO& io = ImGui::GetIO();
+    if (menu_visible && g_gamepad_hotkeys_enabled)
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    else
+        io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
+    XINPUT_STATE state{};
+    DWORD controller{};
+    gamepad_backend_t backend{};
+    bool usedAutomaticFallback{};
+    const bool connected = menu_visible && g_gamepad_hotkeys_enabled &&
+        read_gamepad(state, controller, backend, usedAutomaticFallback);
+    (void)controller;
+    (void)backend;
+    (void)usedAutomaticFallback;
+
+    static bool submittedActive{};
+    if (!connected && !submittedActive)
+    {
+        io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+        return;
+    }
+    if (connected)
+        io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    else
+        io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+
+    const XINPUT_GAMEPAD& pad = state.Gamepad;
+    const auto button = [&](ImGuiKey key, WORD mask)
+    {
+        io.AddKeyEvent(key, connected && (pad.wButtons & mask) != 0);
+    };
+    const auto analog = [&](ImGuiKey key, float value)
+    {
+        value = (std::clamp)(value, 0.0f, 1.0f);
+        io.AddKeyAnalogEvent(key, connected && value > 0.10f,
+            connected ? value : 0.0f);
+    };
+    const auto stick = [](SHORT value, bool positive)
+    {
+        const float signedValue = static_cast<float>(value) / 32767.0f;
+        const float direction = positive ? signedValue : -signedValue;
+        constexpr float deadzone = 0.20f;
+        return direction <= deadzone ? 0.0f :
+            (direction - deadzone) / (1.0f - deadzone);
+    };
+
+    button(ImGuiKey_GamepadStart, XINPUT_GAMEPAD_START);
+    button(ImGuiKey_GamepadBack, XINPUT_GAMEPAD_BACK);
+    button(ImGuiKey_GamepadFaceLeft, XINPUT_GAMEPAD_X);
+    button(ImGuiKey_GamepadFaceRight, XINPUT_GAMEPAD_B);
+    button(ImGuiKey_GamepadFaceUp, XINPUT_GAMEPAD_Y);
+    button(ImGuiKey_GamepadFaceDown, XINPUT_GAMEPAD_A);
+    button(ImGuiKey_GamepadDpadLeft, XINPUT_GAMEPAD_DPAD_LEFT);
+    button(ImGuiKey_GamepadDpadRight, XINPUT_GAMEPAD_DPAD_RIGHT);
+    button(ImGuiKey_GamepadDpadUp, XINPUT_GAMEPAD_DPAD_UP);
+    button(ImGuiKey_GamepadDpadDown, XINPUT_GAMEPAD_DPAD_DOWN);
+    button(ImGuiKey_GamepadL1, XINPUT_GAMEPAD_LEFT_SHOULDER);
+    button(ImGuiKey_GamepadR1, XINPUT_GAMEPAD_RIGHT_SHOULDER);
+    button(ImGuiKey_GamepadL3, XINPUT_GAMEPAD_LEFT_THUMB);
+    button(ImGuiKey_GamepadR3, XINPUT_GAMEPAD_RIGHT_THUMB);
+    analog(ImGuiKey_GamepadL2, pad.bLeftTrigger / 255.0f);
+    analog(ImGuiKey_GamepadR2, pad.bRightTrigger / 255.0f);
+    analog(ImGuiKey_GamepadLStickLeft, stick(pad.sThumbLX, false));
+    analog(ImGuiKey_GamepadLStickRight, stick(pad.sThumbLX, true));
+    analog(ImGuiKey_GamepadLStickUp, stick(pad.sThumbLY, true));
+    analog(ImGuiKey_GamepadLStickDown, stick(pad.sThumbLY, false));
+    analog(ImGuiKey_GamepadRStickLeft, stick(pad.sThumbRX, false));
+    analog(ImGuiKey_GamepadRStickRight, stick(pad.sThumbRX, true));
+    analog(ImGuiKey_GamepadRStickUp, stick(pad.sThumbRY, true));
+    analog(ImGuiKey_GamepadRStickDown, stick(pad.sThumbRY, false));
+    submittedActive = connected;
 }
 
 bool consume_gamepad_menu_toggle_request()

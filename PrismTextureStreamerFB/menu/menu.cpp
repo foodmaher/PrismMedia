@@ -57,6 +57,9 @@ namespace
     bool saveNowRequest{};
     std::string restoreStatus;
 
+    constexpr float kWindowEdgeMargin = 12.0f;
+    constexpr uint8_t kMenuPreviewFramerate = 30;
+
     struct inspector_t
     {
         const char* title = "Explore any option";
@@ -144,11 +147,13 @@ namespace
         const ImVec2& maximum, float rounding = 14.0f)
     {
         // ImGui has no blur pass. Layered translucent outlines provide the
-        // soft card elevation from the approved mock-up at negligible cost.
-        for (int layer = 8; layer >= 1; --layer)
+        // soft card elevation from the approved mock-up. Keep the layer count
+        // deliberately small because this is rendered inside the game at the
+        // swap-chain resolution.
+        for (int layer = 3; layer >= 1; --layer)
         {
-            const float spread = static_cast<float>(layer) * 1.25f;
-            const int alpha = 5 + (9 - layer) * 2;
+            const float spread = static_cast<float>(layer) * 2.0f;
+            const int alpha = 8 + (4 - layer) * 5;
             draw->AddRect(
                 ImVec2(minimum.x - spread, minimum.y - spread + 5.0f),
                 ImVec2(maximum.x + spread, maximum.y + spread + 5.0f),
@@ -496,11 +501,28 @@ namespace
     void set_visible(bool visible)
     {
         const bool wasVisible = menuVisible.exchange(visible);
+        if (visible != wasVisible)
+        {
+            // The editor adds a large, polished overlay on top of the game.
+            // Temporarily cap only the in-truck media texture refresh while
+            // it is open. Web/native playback and audio continue normally,
+            // and closing the editor restores every display's saved rate.
+            std::lock_guard<std::mutex> lock(g_screens_mutex);
+            for (auto& screen : g_screens)
+            {
+                if (!screen.source)
+                    continue;
+                screen.source->SetFramerate(
+                    visible
+                        ? (std::min)(screen.framerate,
+                            kMenuPreviewFramerate)
+                        : screen.framerate);
+            }
+        }
         if (visible && !wasVisible)
         {
             menuOpenedTick = GetTickCount64();
             menuNeedsFocus = true;
-            menuNeedsPlacement = true;
         }
         if (!visible) { hotkeyBindingIndex = -1; g_is_binding_hotkey = false; }
         dinput8::set_mouse(visible);
@@ -750,7 +772,11 @@ namespace
             screen_type_ordinal(static_cast<size_t>(selectedScreen)));
         std::snprintf(displayDetail, sizeof(displayDetail),
             "%s\n%ux%u at %u FPS",
-            screen.source ? screen.source->GetStatusText().c_str() : "Waiting for source",
+            screen.contentMode == content_mode_t::GAME_GPS
+                ? "Prism3D game GPS route"
+                : (screen.source
+                    ? screen.source->GetStatusText().c_str()
+                    : "Waiting for source"),
             screen.targetLiveTextureWidth, screen.targetLiveTextureHeight,
             static_cast<unsigned>(screen.framerate));
         std::snprintf(performanceHeadline, sizeof(performanceHeadline),
@@ -945,19 +971,69 @@ namespace
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
         }
 
-        const char* modes[] = { "Window capture", "Integrated YouTube / Spotify", "Native direct media" };
+        const char* modes[] = {
+            "Window capture",
+            "Integrated YouTube / Spotify",
+            "Native direct media",
+            "Game native GPS"
+        };
         int mode = static_cast<int>(screen.contentMode);
         ImGui::TextDisabled("PLAYBACK METHOD");
         ImGui::SetNextItemWidth(-1.0f);
         if (ImGui::Combo("##playback_method", &mode, modes, IM_ARRAYSIZE(modes)))
-        { screen.contentMode = static_cast<content_mode_t>(mode); rebuild_source(screen); mark_changed(); }
+        {
+            const bool routeIdentityChanges =
+                screen.contentMode == content_mode_t::GAME_GPS ||
+                static_cast<content_mode_t>(mode) == content_mode_t::GAME_GPS;
+            screen.contentMode = static_cast<content_mode_t>(mode);
+            rebuild_source(screen);
+            mark_changed(routeIdentityChanges);
+        }
         explain_last_item("Playback method", "Chooses how frames reach the truck display. Integrated media is recommended for web services.", "Integrated: low/medium; Native: lowest; Window: medium/high");
+
+        const bool gameGpsActive =
+            screen.contentMode == content_mode_t::GAME_GPS;
+        if (gameGpsActive)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                ImVec4(0.07f, 0.42f, 0.25f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                ImVec4(0.09f, 0.56f, 0.31f, 1.0f));
+        }
+        if (ImGui::Button(
+                gameGpsActive
+                    ? "Game GPS selected for this display"
+                    : "Pass game native GPS to this display",
+                ImVec2(-1.0f, 40.0f)) && !gameGpsActive)
+        {
+            screen.contentMode = content_mode_t::GAME_GPS;
+            rebuild_source(screen);
+            mark_changed(true);
+        }
+        if (gameGpsActive)
+            ImGui::PopStyleColor(2);
+        explain_last_item(
+            "Game native GPS",
+            "Routes Prism3D's built-in navigation display to the currently selected GPS, dashboard, phone or tablet texture.",
+            "No capture, decoder or client cost",
+            "Auto-saves; one manual texture reload is required");
+        if (gameGpsActive)
+        {
+            ImGui::TextColored(
+                ImVec4(0.42f, 0.94f, 0.47f, 1.0f),
+                "Selected display will use the game's native GPS.");
+            ImGui::TextDisabled(
+                "Reload installed truck textures once from System to apply the route.");
+        }
+
+        ImGui::BeginDisabled(gameGpsActive);
         if (toggle_switch("Pause / Freeze", screen.paused))
         {
             if (screen.source) screen.source->SetPaused(screen.paused);
             mark_changed();
         }
         explain_last_item("Pause / Freeze", "Keeps the last image, pauses media audio/video, and stops plugin frame processing. Unfreezing restores the prior play/pause intent.", "Reduces resource use", "Applies instantly");
+        ImGui::EndDisabled();
 
         if (screen.contentMode == content_mode_t::WINDOW_CAPTURE)
         {
@@ -979,7 +1055,7 @@ namespace
             { rebuild_source(screen); mark_changed(); }
             explain_last_item("Compatibility capture", "Uses the older capture path only when Windows Graphics Capture fails.", "Higher CPU/GPU use");
         }
-        else
+        else if (screen.contentMode != content_mode_t::GAME_GPS)
         {
             if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA)
             {
@@ -2173,8 +2249,10 @@ namespace
         const float uiScale = (std::max)(1.0f, (std::max)(
             io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y));
         const ImVec2 availableArea(
-            (std::max)(480.0f, viewport->WorkSize.x),
-            (std::max)(420.0f, viewport->WorkSize.y));
+            (std::max)(480.0f,
+                viewport->WorkSize.x - kWindowEdgeMargin * 2.0f),
+            (std::max)(420.0f,
+                viewport->WorkSize.y - kWindowEdgeMargin * 2.0f));
         const ImVec2 wanted((std::min)(1680.0f, availableArea.x),
             (std::min)(930.0f, availableArea.y));
         static ImVec2 previousWorkSize{};
@@ -2209,6 +2287,8 @@ namespace
         ImGuiStyle oldStyle = ImGui::GetStyle();
         ImGuiStyle& style = ImGui::GetStyle();
         style.WindowPadding = ImVec2(0.0f, 0.0f);
+        style.WindowRounding = 22.0f;
+        style.WindowBorderSize = 0.0f;
         style.ChildRounding = 12.0f; style.FrameRounding = 9.0f; style.PopupRounding = 10.0f;
         style.FramePadding = ImVec2(12.0f, 9.0f); style.ItemSpacing = ImVec2(10.0f, 11.0f);
         style.ItemInnerSpacing = ImVec2(9.0f, 7.0f); style.ScrollbarSize = 10.0f;
@@ -2271,10 +2351,13 @@ namespace
             ImVec2 windowPos = ImGui::GetWindowPos();
             const ImVec2 windowSize = ImGui::GetWindowSize();
             const ImVec2 viewportMin(
-                viewport->WorkPos.x, viewport->WorkPos.y);
+                viewport->WorkPos.x + kWindowEdgeMargin,
+                viewport->WorkPos.y + kWindowEdgeMargin);
             const ImVec2 viewportMax(
-                viewport->WorkPos.x + viewport->WorkSize.x,
-                viewport->WorkPos.y + viewport->WorkSize.y);
+                viewport->WorkPos.x + viewport->WorkSize.x -
+                    kWindowEdgeMargin,
+                viewport->WorkPos.y + viewport->WorkSize.y -
+                    kWindowEdgeMargin);
             const ImVec2 maximumPosition(
                 (std::max)(viewportMin.x, viewportMax.x - windowSize.x),
                 (std::max)(viewportMin.y, viewportMax.y - windowSize.y));
@@ -2298,16 +2381,16 @@ namespace
             const float centreWidth = windowSize.x - side * 2.0f - leftWidth - rightWidth - gap * 2.0f;
             ImDrawList* shell = ImGui::GetWindowDrawList();
             shell->AddRectFilled(windowPos, ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y),
-                IM_COL32(5, 13, 22, 247), 22.0f);
+                IM_COL32(5, 13, 22, 255), 22.0f);
             shell->AddRect(windowPos, ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y),
                 IM_COL32(61, 81, 98, 210), 22.0f, 0, 1.5f);
             shell->AddRectFilled(windowPos, ImVec2(windowPos.x + windowSize.x, windowPos.y + headerHeight),
-                IM_COL32(9, 20, 31, 250), 22.0f, ImDrawFlags_RoundCornersTop);
+                IM_COL32(9, 20, 31, 255), 22.0f, ImDrawFlags_RoundCornersTop);
             shell->AddLine(ImVec2(windowPos.x, windowPos.y + headerHeight),
                 ImVec2(windowPos.x + windowSize.x, windowPos.y + headerHeight), IM_COL32(45, 69, 86, 190));
             shell->AddRectFilled(ImVec2(windowPos.x, windowPos.y + windowSize.y - footerHeight),
                 ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y),
-                IM_COL32(8, 18, 27, 252), 22.0f, ImDrawFlags_RoundCornersBottom);
+                IM_COL32(8, 18, 27, 255), 22.0f, ImDrawFlags_RoundCornersBottom);
             shell->AddLine(ImVec2(windowPos.x, windowPos.y + windowSize.y - footerHeight),
                 ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y - footerHeight), IM_COL32(45, 69, 86, 190));
             const ImVec2 grip(windowPos.x + windowSize.x - 15.0f,
@@ -2342,7 +2425,15 @@ namespace
                 const int statusIndex = (std::clamp)(selectedScreen, 0, static_cast<int>(g_screens.size() - 1));
                 statusScreen = &g_screens[static_cast<size_t>(statusIndex)];
             }
-            const bool helperInstalled = sources::IsMediaClientInstalled();
+            static bool helperInstalled{};
+            static uint64_t helperInstalledCheckedTick{};
+            const uint64_t helperCheckNow = GetTickCount64();
+            if (helperInstalledCheckedTick == 0 ||
+                helperCheckNow - helperInstalledCheckedTick >= 2000)
+            {
+                helperInstalled = sources::IsMediaClientInstalled();
+                helperInstalledCheckedTick = helperCheckNow;
+            }
             const bool sourceOnline = statusScreen && statusScreen->source;
             const bool youtubeActive = sourceOnline && statusScreen->contentMode == content_mode_t::INTEGRATED_MEDIA &&
                 statusScreen->mediaService == media_service_t::YOUTUBE;

@@ -472,7 +472,7 @@ namespace settings {
             screen.contentMode = static_cast<content_mode_t>((std::clamp)(
                 GetPrivateProfileIntA(section.c_str(), "ContentMode",
                     static_cast<UINT>(content_mode_t::INTEGRATED_MEDIA), path.c_str()),
-                0U, static_cast<UINT>(content_mode_t::NATIVE_DIRECT_MEDIA)));
+                0U, static_cast<UINT>(content_mode_t::GAME_GPS)));
             screen.hotkeyTarget = GetPrivateProfileIntA(
                 section.c_str(), "HotkeyTarget", 0, path.c_str()) != 0;
             screen.followTruckEngine = GetPrivateProfileIntA(

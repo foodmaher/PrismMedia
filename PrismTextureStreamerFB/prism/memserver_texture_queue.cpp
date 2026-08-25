@@ -161,37 +161,18 @@ char memserver_texture_queue_processor(uint8_t* memserver)
 
             std::lock_guard<std::mutex> lock(g_screens_mutex);
             for (auto& screen : g_screens) {
-                const bool gameGpsRoute =
-                    screen.contentMode == content_mode_t::GAME_GPS;
-                if (!screen.source.get() && !gameGpsRoute) continue;
+                if (!screen.source.get()) continue;
 
                 if (screen.original_texture == std::string_view(tobj->m_file_path.m_string))
                 {
-                    static constexpr std::string_view gameGpsTexture =
-                        "/vehicle/truck/share/gps.tobj";
-                    const std::string_view targetPath = gameGpsRoute
-                        ? gameGpsTexture
-                        : std::string_view(screen.override_texture);
+                    tobj->m_file_path.allocate(screen.override_texture.size() + 1);
+                    memcpy(tobj->m_file_path.m_string, screen.override_texture.data(), screen.override_texture.size());
+                    tobj->m_file_path.m_string[screen.override_texture.size()] = '\0';
 
-                    // A primary GPS already points at the native texture. It
-                    // only needs to be claimed so a later configured screen
-                    // cannot rewrite the same request again.
-                    if (std::string_view(tobj->m_file_path.m_string) != targetPath)
-                    {
-                        tobj->m_file_path.allocate(targetPath.size() + 1);
-                        memcpy(tobj->m_file_path.m_string,
-                            targetPath.data(), targetPath.size());
-                        tobj->m_file_path.m_string[targetPath.size()] = '\0';
+                    tobj->m_file_path.m_size =
+                        static_cast<uint32_t>(screen.override_texture.size());
 
-                        tobj->m_file_path.m_size =
-                            static_cast<uint32_t>(targetPath.size());
-                    }
-
-                    scs_log(0,
-                        "[prism::memserver_texture_queue] Replaced '%s' with '%.*s'%s",
-                        screen.original_texture.c_str(),
-                        static_cast<int>(targetPath.size()), targetPath.data(),
-                        gameGpsRoute ? " (game GPS route)" : "");
+                    scs_log(0, "[prism::memserver_texture_queue] Replaced '%s' with '%s'", screen.original_texture.c_str(), screen.override_texture.c_str());
                     const uint64_t now = GetTickCount64();
                     if (screen.lastTextureRedirectTick == 0 ||
                         now - screen.lastTextureRedirectTick >= 5000)
@@ -199,14 +180,13 @@ char memserver_texture_queue_processor(uint8_t* memserver)
                         diagnostic_log::writef(
                             "render", "Redirected game texture %s to %s.",
                             screen.original_texture.c_str(),
-                            std::string(targetPath).c_str());
+                            screen.override_texture.c_str());
                         screen.lastTextureRedirectTick = now;
                     }
 
-                    // The path may now equal another configured screen's
-                    // original path (most notably a tablet routed to gps.tobj).
-                    // One game request belongs to exactly one selected display;
-                    // never feed the rewritten path through the loop again.
+                    // A texture request belongs to exactly one display. Do not
+                    // allow another configured entry to rewrite it a second
+                    // time after its path has changed.
                     break;
                 }
             }

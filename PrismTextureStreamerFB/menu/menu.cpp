@@ -52,13 +52,11 @@ namespace
     float panelAnimation = 1.0f;
     uint64_t menuOpenedTick{};
     bool menuNeedsFocus{};
-    bool menuNeedsPlacement{};
     int restoreRequest = -1;
     bool saveNowRequest{};
     std::string restoreStatus;
 
     constexpr float kWindowEdgeMargin = 12.0f;
-    constexpr uint8_t kMenuPreviewFramerate = 30;
 
     struct inspector_t
     {
@@ -501,24 +499,6 @@ namespace
     void set_visible(bool visible)
     {
         const bool wasVisible = menuVisible.exchange(visible);
-        if (visible != wasVisible)
-        {
-            // The editor adds a large, polished overlay on top of the game.
-            // Temporarily cap only the in-truck media texture refresh while
-            // it is open. Web/native playback and audio continue normally,
-            // and closing the editor restores every display's saved rate.
-            std::lock_guard<std::mutex> lock(g_screens_mutex);
-            for (auto& screen : g_screens)
-            {
-                if (!screen.source)
-                    continue;
-                screen.source->SetFramerate(
-                    visible
-                        ? (std::min)(screen.framerate,
-                            kMenuPreviewFramerate)
-                        : screen.framerate);
-            }
-        }
         if (visible && !wasVisible)
         {
             menuOpenedTick = GetTickCount64();
@@ -772,11 +752,7 @@ namespace
             screen_type_ordinal(static_cast<size_t>(selectedScreen)));
         std::snprintf(displayDetail, sizeof(displayDetail),
             "%s\n%ux%u at %u FPS",
-            screen.contentMode == content_mode_t::GAME_GPS
-                ? "Prism3D game GPS route"
-                : (screen.source
-                    ? screen.source->GetStatusText().c_str()
-                    : "Waiting for source"),
+            screen.source ? screen.source->GetStatusText().c_str() : "Waiting for source",
             screen.targetLiveTextureWidth, screen.targetLiveTextureHeight,
             static_cast<unsigned>(screen.framerate));
         std::snprintf(performanceHeadline, sizeof(performanceHeadline),
@@ -971,69 +947,19 @@ namespace
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
         }
 
-        const char* modes[] = {
-            "Window capture",
-            "Integrated YouTube / Spotify",
-            "Native direct media",
-            "Game native GPS"
-        };
+        const char* modes[] = { "Window capture", "Integrated YouTube / Spotify", "Native direct media" };
         int mode = static_cast<int>(screen.contentMode);
         ImGui::TextDisabled("PLAYBACK METHOD");
         ImGui::SetNextItemWidth(-1.0f);
         if (ImGui::Combo("##playback_method", &mode, modes, IM_ARRAYSIZE(modes)))
-        {
-            const bool routeIdentityChanges =
-                screen.contentMode == content_mode_t::GAME_GPS ||
-                static_cast<content_mode_t>(mode) == content_mode_t::GAME_GPS;
-            screen.contentMode = static_cast<content_mode_t>(mode);
-            rebuild_source(screen);
-            mark_changed(routeIdentityChanges);
-        }
+        { screen.contentMode = static_cast<content_mode_t>(mode); rebuild_source(screen); mark_changed(); }
         explain_last_item("Playback method", "Chooses how frames reach the truck display. Integrated media is recommended for web services.", "Integrated: low/medium; Native: lowest; Window: medium/high");
-
-        const bool gameGpsActive =
-            screen.contentMode == content_mode_t::GAME_GPS;
-        if (gameGpsActive)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button,
-                ImVec4(0.07f, 0.42f, 0.25f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                ImVec4(0.09f, 0.56f, 0.31f, 1.0f));
-        }
-        if (ImGui::Button(
-                gameGpsActive
-                    ? "Game GPS selected for this display"
-                    : "Pass game native GPS to this display",
-                ImVec2(-1.0f, 40.0f)) && !gameGpsActive)
-        {
-            screen.contentMode = content_mode_t::GAME_GPS;
-            rebuild_source(screen);
-            mark_changed(true);
-        }
-        if (gameGpsActive)
-            ImGui::PopStyleColor(2);
-        explain_last_item(
-            "Game native GPS",
-            "Routes Prism3D's built-in navigation display to the currently selected GPS, dashboard, phone or tablet texture.",
-            "No capture, decoder or client cost",
-            "Auto-saves; one manual texture reload is required");
-        if (gameGpsActive)
-        {
-            ImGui::TextColored(
-                ImVec4(0.42f, 0.94f, 0.47f, 1.0f),
-                "Selected display will use the game's native GPS.");
-            ImGui::TextDisabled(
-                "Reload installed truck textures once from System to apply the route.");
-        }
-
-        ImGui::BeginDisabled(gameGpsActive);
         if (toggle_switch("Pause / Freeze", screen.paused))
         {
             if (screen.source) screen.source->SetPaused(screen.paused);
             mark_changed();
         }
         explain_last_item("Pause / Freeze", "Keeps the last image, pauses media audio/video, and stops plugin frame processing. Unfreezing restores the prior play/pause intent.", "Reduces resource use", "Applies instantly");
-        ImGui::EndDisabled();
 
         if (screen.contentMode == content_mode_t::WINDOW_CAPTURE)
         {
@@ -1055,7 +981,7 @@ namespace
             { rebuild_source(screen); mark_changed(); }
             explain_last_item("Compatibility capture", "Uses the older capture path only when Windows Graphics Capture fails.", "Higher CPU/GPU use");
         }
-        else if (screen.contentMode != content_mode_t::GAME_GPS)
+        else
         {
             if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA)
             {
@@ -2245,33 +2171,21 @@ namespace
     void draw_menu()
     {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
-        const ImGuiIO& io = ImGui::GetIO();
-        const float uiScale = (std::max)(1.0f, (std::max)(
-            io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y));
         const ImVec2 availableArea(
             (std::max)(480.0f,
                 viewport->WorkSize.x - kWindowEdgeMargin * 2.0f),
             (std::max)(420.0f,
                 viewport->WorkSize.y - kWindowEdgeMargin * 2.0f));
-        const ImVec2 wanted((std::min)(1680.0f, availableArea.x),
-            (std::min)(930.0f, availableArea.y));
-        static ImVec2 previousWorkSize{};
-        static float previousUiScale{};
-        const bool resolutionChanged = previousWorkSize.x <= 0.0f ||
-            std::fabs(previousWorkSize.x - viewport->WorkSize.x) > 1.0f ||
-            std::fabs(previousWorkSize.y - viewport->WorkSize.y) > 1.0f ||
-            std::fabs(previousUiScale - uiScale) > 0.01f;
-        if (resolutionChanged || menuNeedsPlacement)
-        {
-            ImGui::SetNextWindowPos(
-                ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
-                    viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
-            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-            ImGui::SetNextWindowSize(wanted, ImGuiCond_Always);
-            previousWorkSize = viewport->WorkSize;
-            previousUiScale = uiScale;
-            menuNeedsPlacement = false;
-        }
+        // Behave like a normal window. Choose a modest initial size and centre
+        // only once; after that ImGui owns movement and resizing with no
+        // per-frame reposition/resize manager.
+        const ImVec2 wanted((std::min)(1360.0f, availableArea.x),
+            (std::min)(780.0f, availableArea.y));
+        ImGui::SetNextWindowPos(
+            ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
+            ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(wanted, ImGuiCond_FirstUseEver);
         const ImVec2 minimumSize(
             (std::min)(1040.0f, availableArea.x),
             (std::min)(680.0f, availableArea.y));
@@ -2348,28 +2262,8 @@ namespace
                     panelAnimation = 0.0f;
                 }
             }
-            ImVec2 windowPos = ImGui::GetWindowPos();
+            const ImVec2 windowPos = ImGui::GetWindowPos();
             const ImVec2 windowSize = ImGui::GetWindowSize();
-            const ImVec2 viewportMin(
-                viewport->WorkPos.x + kWindowEdgeMargin,
-                viewport->WorkPos.y + kWindowEdgeMargin);
-            const ImVec2 viewportMax(
-                viewport->WorkPos.x + viewport->WorkSize.x -
-                    kWindowEdgeMargin,
-                viewport->WorkPos.y + viewport->WorkSize.y -
-                    kWindowEdgeMargin);
-            const ImVec2 maximumPosition(
-                (std::max)(viewportMin.x, viewportMax.x - windowSize.x),
-                (std::max)(viewportMin.y, viewportMax.y - windowSize.y));
-            const ImVec2 clampedPosition(
-                (std::clamp)(windowPos.x, viewportMin.x, maximumPosition.x),
-                (std::clamp)(windowPos.y, viewportMin.y, maximumPosition.y));
-            if (std::fabs(clampedPosition.x - windowPos.x) > 0.5f ||
-                std::fabs(clampedPosition.y - windowPos.y) > 0.5f)
-            {
-                ImGui::SetWindowPos(clampedPosition, ImGuiCond_Always);
-                windowPos = clampedPosition;
-            }
             const float headerHeight = 106.0f;
             const float footerHeight = 72.0f;
             const float mainTop = headerHeight + 14.0f;

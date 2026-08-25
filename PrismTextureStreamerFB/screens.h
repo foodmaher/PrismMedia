@@ -36,10 +36,7 @@ enum class performance_profile_t : uint8_t {
 enum class content_mode_t : uint8_t {
 	WINDOW_CAPTURE = 0,
 	INTEGRATED_MEDIA,
-	NATIVE_DIRECT_MEDIA,
-	// Route the selected truck material to Prism3D's built-in GPS texture.
-	// This mode has no capture/helper process and therefore no IContentSource.
-	GAME_GPS
+	NATIVE_DIRECT_MEDIA
 };
 
 enum class media_service_t : uint8_t {

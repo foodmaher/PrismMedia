@@ -73,6 +73,7 @@ namespace PrismMediaClient
         private int parentProcessId;
         private readonly bool silentStart;
         private readonly string profileSuffix;
+        private readonly string clientDirectory;
         private bool ready;
         private bool initializing;
         private bool coreInitialized;
@@ -91,11 +92,13 @@ namespace PrismMediaClient
             int parentProcessId,
             bool silentStart,
             string windowTitle,
-            string profileSuffix)
+            string profileSuffix,
+            string clientDirectory)
         {
             this.parentProcessId = parentProcessId;
             this.silentStart = silentStart;
             this.profileSuffix = profileSuffix ?? "";
+            this.clientDirectory = clientDirectory ?? "";
             Text = string.IsNullOrWhiteSpace(windowTitle)
                 ? "Prism Media Client" : windowTitle;
             StartPosition = FormStartPosition.CenterScreen;
@@ -165,13 +168,14 @@ namespace PrismMediaClient
             {
                 ClientDiagnosticLog.Write(
                     "webview", "WebView2 initialization started.");
-                string profileFolder = Path.Combine(
-                    Environment.GetFolderPath(
-                        Environment.SpecialFolder.LocalApplicationData),
-                    "PrismTextureStreamerFB",
-                    this.profileSuffix == "-legacy"
-                        ? "WebView2Profile"
-                        : "WebView2Profile" + this.profileSuffix);
+                string profileFolder = this.clientDirectory;
+                if (string.IsNullOrWhiteSpace(profileFolder))
+                {
+                    profileFolder = Path.Combine(
+                        Environment.GetFolderPath(
+                            Environment.SpecialFolder.LocalApplicationData),
+                        "PrismMedia", "Clients", "display");
+                }
                 Directory.CreateDirectory(profileFolder);
                 var environmentOptions = new CoreWebView2EnvironmentOptions
                 {
@@ -179,7 +183,14 @@ namespace PrismMediaClient
                         "--disable-backgrounding-occluded-windows " +
                         "--disable-background-timer-throttling " +
                         "--disable-renderer-backgrounding " +
-                        "--disable-features=CalculateNativeWinOcclusion"
+                        // Hardware video overlays can bypass the composed
+                        // window surface. With two isolated media clients that
+                        // leaves WGC receiving valid, but uniformly black,
+                        // frames from one helper. Keep GPU composition enabled
+                        // while forcing video into the capturable compositor.
+                        "--disable-features=" +
+                        "CalculateNativeWinOcclusion," +
+                        "DirectCompositionVideoOverlays"
                 };
                 CoreWebView2Environment environment =
                     await CoreWebView2Environment.CreateAsync(
@@ -280,7 +291,8 @@ namespace PrismMediaClient
                 ClientDiagnosticLog.Write(
                     "webview", "WebView2 initialization completed with a " +
                     "persistent profile at " + profileFolder +
-                    "; occluded-window rendering is enabled.");
+                    "; occluded-window rendering is enabled and video " +
+                    "overlays are composed into the capturable surface.");
             }
             catch (Exception error)
             {
@@ -519,15 +531,39 @@ namespace PrismMediaClient
         {
             get
             {
-                string folder = Path.Combine(
+                string folder = this.clientDirectory;
+                if (string.IsNullOrWhiteSpace(folder))
+                {
+                    folder = Path.Combine(
+                        Environment.GetFolderPath(
+                            Environment.SpecialFolder.LocalApplicationData),
+                        "PrismMedia", "Clients", "display");
+                }
+                Directory.CreateDirectory(folder);
+                string destination = Path.Combine(
+                    folder, "SpotifySession.dat");
+                string legacyRoot = Path.Combine(
                     Environment.GetFolderPath(
                         Environment.SpecialFolder.LocalApplicationData),
                     "PrismTextureStreamerFB");
-                Directory.CreateDirectory(folder);
-                return Path.Combine(folder,
+                string legacyPath = Path.Combine(
+                    legacyRoot,
                     this.profileSuffix == "-legacy"
                         ? "SpotifySession.dat"
                         : "SpotifySession" + this.profileSuffix + ".dat");
+                if (!File.Exists(destination) && File.Exists(legacyPath))
+                {
+                    try
+                    {
+                        File.Move(legacyPath, destination);
+                    }
+                    catch
+                    {
+                        // A locked legacy checkpoint is non-fatal; the next
+                        // successful Spotify navigation writes the new path.
+                    }
+                }
+                return destination;
             }
         }
 
@@ -731,7 +767,7 @@ namespace PrismMediaClient
                 Activate();
                 SetForegroundWindow(Handle);
                 ClientDiagnosticLog.Write(
-                    "spotify", "Interactive Spotify login window opened.");
+                    "window", "Interactive media client opened.");
             }
             else
             {
@@ -740,7 +776,7 @@ namespace PrismMediaClient
                 SetWindowLong(Handle, GwlExStyle,
                     style | WsExNoActivate | WsExToolWindow);
                 ClientDiagnosticLog.Write(
-                    "spotify", "Spotify helper returned to silent mode.");
+                    "window", "Media client returned to silent mode.");
             }
         }
 
@@ -1058,14 +1094,18 @@ namespace PrismMediaClient
                 ApplySoftCpuHints(command.Substring(9));
                 return;
             }
-            if (string.Equals(command, "spotifylogin", StringComparison.Ordinal))
+            if (string.Equals(command, "showclient", StringComparison.Ordinal) ||
+                string.Equals(command, "spotifylogin", StringComparison.Ordinal))
             {
                 SetInteractiveWindow(true);
                 return;
             }
-            if (string.Equals(command, "spotifyhide", StringComparison.Ordinal))
+            if (string.Equals(command, "hideclient", StringComparison.Ordinal) ||
+                string.Equals(command, "spotifyhide", StringComparison.Ordinal))
             {
-                await SaveSpotifySessionAsync("helper returned to silent mode");
+                if (fullSpotifyWeb)
+                    await SaveSpotifySessionAsync(
+                        "helper returned to silent mode");
                 SetInteractiveWindow(false);
                 return;
             }

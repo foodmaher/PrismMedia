@@ -68,6 +68,45 @@ namespace
             magentaSamples * 4 >= totalSamples * 3;
     }
 
+    bool inspect_black_frame(
+        const std::vector<uint8_t>& frame,
+        uint32_t width,
+        uint32_t height,
+        uint32_t& blackSamples,
+        uint32_t& totalSamples)
+    {
+        blackSamples = 0;
+        totalSamples = 0;
+        if (width == 0 || height == 0 ||
+            frame.size() < static_cast<size_t>(width) * height * 4)
+            return false;
+
+        // A denser grid avoids classifying a dark Spotify/YouTube theme as a
+        // failed capture merely because the old 5x4 sample missed its text and
+        // artwork. A compositor-black frame is uniformly near zero.
+        constexpr uint32_t columns = 9;
+        constexpr uint32_t rows = 6;
+        for (uint32_t row = 0; row < rows; ++row)
+        {
+            const uint32_t y = (row * 2 + 1) * height / (rows * 2);
+            for (uint32_t column = 0; column < columns; ++column)
+            {
+                const uint32_t x =
+                    (column * 2 + 1) * width / (columns * 2);
+                const size_t offset =
+                    (static_cast<size_t>(y) * width + x) * 4;
+                const uint8_t blue = frame[offset + 0];
+                const uint8_t green = frame[offset + 1];
+                const uint8_t red = frame[offset + 2];
+                ++totalSamples;
+                if (red <= 8 && green <= 8 && blue <= 8)
+                    ++blackSamples;
+            }
+        }
+        return totalSamples >= 40 &&
+            blackSamples * 100 >= totalSamples * 96;
+    }
+
     void set_stale_state(screen_t& screen, bool stale, uint64_t now)
     {
         if (screen.sourceFrameStale == stale)
@@ -109,28 +148,69 @@ namespace
             frame, width, height, magentaSamples, totalSamples);
         screen.magentaSampleCount = magentaSamples;
         screen.diagnosticSampleCount = totalSamples;
-        if (screen.suspiciousMagentaFrame == suspicious)
-            return;
-
-        screen.suspiciousMagentaFrame = suspicious;
-        if (suspicious)
+        if (screen.suspiciousMagentaFrame != suspicious)
         {
-            diagnostic_log::writef(
-                "render",
-                "%s source is predominantly magenta/pink (%u/%u samples, "
-                "%ux%u). This usually indicates a WebView protected-video "
+            screen.suspiciousMagentaFrame = suspicious;
+            if (suspicious)
+            {
+                diagnostic_log::writef(
+                    "render",
+                    "%s source is predominantly magenta/pink (%u/%u "
+                    "samples, %ux%u). This usually indicates a WebView "
+                    "protected-video "
                     "or compositor capture failure; check PrismMediaClient.log "
                     "navigation and WebView process events.",
-                screen_type_name(screen.type), magentaSamples, totalSamples,
-                width, height);
+                    screen_type_name(screen.type), magentaSamples,
+                    totalSamples, width, height);
+            }
+            else
+            {
+                diagnostic_log::writef(
+                    "render", "%s magenta/pink source condition cleared.",
+                    screen_type_name(screen.type));
+            }
+            screen.lastIssueDiagnosticTick = now;
         }
+
+        uint32_t blackSamples{};
+        uint32_t blackTotal{};
+        const bool currentlyBlack = inspect_black_frame(
+            frame, width, height, blackSamples, blackTotal);
+        screen.blackSampleCount = blackSamples;
+        if (currentlyBlack)
+            ++screen.consecutiveBlackFrameInspections;
         else
+            screen.consecutiveBlackFrameInspections = 0;
+
+        // Ignore startup black while WebView navigates. Three one-second
+        // inspections after five seconds distinguish a persistent capture
+        // failure from a normal video fade or page transition.
+        const bool persistentBlack = currentlyBlack &&
+            screen.consecutiveBlackFrameInspections >= 3 &&
+            screen.sourceCreatedTick != 0 && now > screen.sourceCreatedTick &&
+            now - screen.sourceCreatedTick >= 5000;
+        if (screen.suspiciousBlackFrame != persistentBlack)
         {
-            diagnostic_log::writef(
-                "render", "%s magenta/pink source condition cleared.",
-                screen_type_name(screen.type));
+            screen.suspiciousBlackFrame = persistentBlack;
+            if (persistentBlack)
+            {
+                diagnostic_log::writef(
+                    "error",
+                    "%s source capture is persistently near-black (%u/%u "
+                    "samples, %ux%u) although frames are arriving. The "
+                    "WebView/capture path is black; repairing TOBJ/DDS assets "
+                    "will not fix this condition.",
+                    screen_type_name(screen.type), blackSamples, blackTotal,
+                    width, height);
+            }
+            else
+            {
+                diagnostic_log::writef(
+                    "render", "%s near-black capture condition cleared.",
+                    screen_type_name(screen.type));
+            }
+            screen.lastIssueDiagnosticTick = now;
         }
-        screen.lastIssueDiagnosticTick = now;
     }
 }
 
@@ -600,7 +680,7 @@ void new_frame()
                     "render",
                     "%s summary: source=%ux%u target=%ux%u upload=%.3fms "
                     "worker=%.3fms readback=%.3fms delivered=%.1ffps "
-                    "uploaded=%llu dropped=%llu stale=%d pink=%d.",
+                    "uploaded=%llu dropped=%llu stale=%d pink=%d black=%d.",
                     screen_type_name(screen.type), srcWidth, srcHeight,
                     dstWidth, dstHeight, screen.uploadCpuMs,
                     sourceStats.workerCpuMs, sourceStats.readbackMs,
@@ -610,7 +690,8 @@ void new_frame()
                     static_cast<unsigned long long>(
                         sourceStats.droppedFrames),
                     screen.sourceFrameStale ? 1 : 0,
-                    screen.suspiciousMagentaFrame ? 1 : 0);
+                    screen.suspiciousMagentaFrame ? 1 : 0,
+                    screen.suspiciousBlackFrame ? 1 : 0);
                 screen.lastRenderDiagnosticTick = nowTick;
             }
 	    }

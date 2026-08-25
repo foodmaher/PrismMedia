@@ -192,24 +192,46 @@ namespace override_assets
         std::string& status)
     {
         std::string stem = file_stem(screen.override_texture);
+        const std::string gameTextureStem =
+            safe_identity(file_stem(screen.original_texture));
+        const bool pluginManagedPath =
+            screen.override_texture.rfind(
+                "/home/PrismTextureStreamer/", 0) == 0;
         const bool invalidIdentity = stem.empty() ||
             screen.override_texture_size_w < 4 ||
             screen.override_texture_size_h < 4 ||
             screen.override_texture_size_w % 4 != 0 ||
             screen.override_texture_size_h % 4 != 0;
-        if (requireGeneratedIdentity || invalidIdentity)
+        if (pluginManagedPath && !gameTextureStem.empty())
+            stem = gameTextureStem;
+        if (requireGeneratedIdentity)
         {
-            stem = "display_" + safe_identity(screen.mediaClientId);
-            const uint32_t firstSlot = fnv1a(screen.mediaClientId) % 384U;
-            for (uint32_t attempt = 0; attempt < 384U; ++attempt)
+            // Two different virtual paths can have the same basename. Keep the
+            // readable game texture name and add only a short stable suffix in
+            // that uncommon case.
+            std::string suffix = safe_identity(screen.mediaClientId);
+            if (suffix.size() > 8)
+                suffix = suffix.substr(suffix.size() - 8);
+            stem = (gameTextureStem.empty() ? "display" : gameTextureStem) +
+                "_" + suffix;
+        }
+        if (requireGeneratedIdentity || invalidIdentity || pluginManagedPath)
+        {
+            if (stem.empty())
+                stem = "display_" + safe_identity(screen.mediaClientId);
+            if (requireGeneratedIdentity || invalidIdentity)
             {
-                const uint32_t width =
-                    128U + ((firstSlot + attempt) % 384U) * 4U;
-                if (!dimensions_used(width, 2048U, usedDimensions))
+                const uint32_t firstSlot = fnv1a(screen.mediaClientId) % 384U;
+                for (uint32_t attempt = 0; attempt < 384U; ++attempt)
                 {
-                    screen.override_texture_size_w = width;
-                    screen.override_texture_size_h = 2048U;
-                    break;
+                    const uint32_t width =
+                        128U + ((firstSlot + attempt) % 384U) * 4U;
+                    if (!dimensions_used(width, 2048U, usedDimensions))
+                    {
+                        screen.override_texture_size_w = width;
+                        screen.override_texture_size_h = 2048U;
+                        break;
+                    }
                 }
             }
             screen.override_texture =

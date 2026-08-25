@@ -11,14 +11,15 @@ or a desktop window onto supported ETS2/ATS truck displays.
   inspector. The console re-reads the game viewport whenever it opens,
   auto-centres against the full viewport, clamps moved windows on-screen,
   can be resized, and reflows its navigation for shorter displays.
-- System > Display discovery records the `.tobj` paths actually loaded by the
-  current truck/accessories during one texture reload. Likely GPS, dashboard,
-  tablet, navigation and infotainment paths are prioritised, unusual paths can
-  be shown with **Show all**, and the selected path can be assigned and reloaded
-  without manually typing it. PrismMedia now validates and regenerates the
-  paired DXT5 `.dds` and `.tobj` override assets for every GPS, dashboard and
-  custom display at startup. A **Repair active display assets + reload** button
-  is available for an immediate manual repair, including the primary GPS.
+- System > Display discovery keeps a passive history of `.tobj` paths actually
+  loaded by the truck and accessories. A 30-second observation marks paths used
+  while an installed accessory or infotainment mode is switched; it never
+  reloads the game or applies an unconfirmed configurator basket. Likely GPS,
+  dashboard, tablet, navigation, infotainment and YTHQ paths are prioritised,
+  while traffic/world textures are marked unsafe and blocked from automatic
+  assignment. PrismMedia validates and regenerates the paired DXT5 `.dds` and
+  `.tobj` override assets for every display at startup. Asset repair and the
+  final critical texture reload are deliberately separate actions.
 - The complete retained control set remains available: GPS/Dashboard/Custom
   displays, Pause/Freeze, media mute and volume, hotkey target selection,
   performance profiles, scaling modes, backups, adaptive audio tuning, update
@@ -28,7 +29,28 @@ or a desktop window onto supported ETS2/ATS truck displays.
   PrismMediaClient/WebView2 profile and audio session, so GPS, dashboard and
   tablet/custom displays can play different sources simultaneously. A
   gamepad-accessible Media Key Target selector routes transport keys without
-  disturbing the other displays. Bundled personal URLs remain removed.
+  disturbing the other displays. Per-display **Open client** and **Hide client**
+  controls expose or dismiss the interactive helper without stopping playback.
+  Bundled personal URLs remain removed.
+- Generated override assets and client data use the discovered game-texture
+  name. For example, `driver_plate.tobj` produces `driver_plate.tobj` and
+  `driver_plate.dds` in the game's PrismMedia override directory, plus an
+  isolated `%LOCALAPPDATA%\PrismMedia\Clients\driver_plate` profile and log.
+  A short stable suffix is added only when two different game paths share the
+  same basename. Existing WebView2 and Spotify session data is migrated from
+  the old suffix-based folder on first use.
+- Independent clients still require independent Prism3D texture paths. If a
+  tablet mod reuses `/vehicle/truck/share/gps.tobj`, the tablet and primary GPS
+  are two surfaces of one texture and cannot show different media. PrismMedia
+  now detects that collision, stops the duplicate helper/audio source, protects
+  the primary GPS from being overwritten, and asks for the accessory's unique
+  material TOBJ. New secondary GPS/dashboard entries start unassigned instead
+  of silently claiming the generic path.
+- Integrated WebView video overlays are forced into the capturable compositor
+  so a second isolated media client does not produce valid-but-black WGC frames.
+  Runtime diagnostics now distinguish persistent black capture, magenta capture,
+  stale frames and successful texture matches; TOBJ repair is no longer offered
+  as a misleading remedy for a black source frame.
 - Spotify now uses only the official full Web Player. The embedded Spotify path
   and its duplicated playback state are removed.
 - Play/Pause is state-neutral in the plugin, while actual browser media events

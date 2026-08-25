@@ -8,7 +8,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 #include "../scs_logging.h"
@@ -23,11 +23,12 @@ static memserver_texture_queue_processor_t original_memserver_texture_queue_proc
 namespace
 {
     constexpr size_t kMaximumDiscoveredTextures = 4096;
-    constexpr uint64_t kDiscoveryWindowMilliseconds = 15000;
+    constexpr uint64_t kDiscoveryWindowMilliseconds = 30000;
     std::mutex g_discoveryMutex;
     std::vector<prism::memserver_texture_queue::discovered_texture_t>
         g_discoveredTextures;
-    std::unordered_set<std::string> g_discoveredTexturePaths;
+    std::unordered_map<std::string, size_t> g_discoveredTextureIndexes;
+    std::atomic<uint64_t> g_discoveryStartedTick{};
     std::atomic<uint64_t> g_discoveryExpiresTick{};
 
     bool ends_with_tobj(const std::string& value)
@@ -52,7 +53,7 @@ namespace
         constexpr const char* tokens[] = {
             "gps", "dashboard", "display", "screen", "tablet",
             "navigation", "navigator", "infotainment", "monitor",
-            "computer", "phone"
+            "computer", "phone", "ythq"
         };
         for (const char* token : tokens)
         {
@@ -62,19 +63,65 @@ namespace
         return false;
     }
 
+    bool unsafe_display_candidate(const std::string& path)
+    {
+        std::string lower;
+        lower.reserve(path.size());
+        for (const unsigned char character : path)
+            lower.push_back(static_cast<char>(std::tolower(character)));
+
+        // These are ordinary world/traffic paint textures. Intercepting one
+        // can replace every matching vehicle or prop and is never a sensible
+        // automatic display choice. Keep it visible behind "Show all" for
+        // expert diagnosis, but clearly mark it unsafe.
+        constexpr const char* prefixes[] = {
+            "/vehicle/ai/", "/vehicle/trailer", "/prefab/", "/road/",
+            "/terrain/", "/building/"
+        };
+        for (const char* prefix : prefixes)
+        {
+            if (lower.rfind(prefix, 0) == 0)
+                return true;
+        }
+        return false;
+    }
+
     void record_discovered_texture(const std::string& path)
     {
         const uint64_t now = GetTickCount64();
-        const uint64_t expires = g_discoveryExpiresTick.load();
-        if (expires == 0 || now >= expires || !ends_with_tobj(path) ||
-            path.size() > 1024)
+        if (!ends_with_tobj(path) || path.size() > 1024)
             return;
 
         std::lock_guard<std::mutex> lock(g_discoveryMutex);
-        if (g_discoveredTextures.size() >= kMaximumDiscoveredTextures ||
-            !g_discoveredTexturePaths.insert(path).second)
+        const uint64_t scanStart = g_discoveryStartedTick.load();
+        const uint64_t scanExpires = g_discoveryExpiresTick.load();
+        const bool currentScan = scanStart != 0 && now >= scanStart &&
+            now < scanExpires;
+        const auto existing = g_discoveredTextureIndexes.find(path);
+        if (existing != g_discoveredTextureIndexes.end())
+        {
+            auto& entry = g_discoveredTextures[existing->second];
+            entry.last_seen_tick = now;
+            if (entry.seen_count != 0xffffffffU)
+                ++entry.seen_count;
+            entry.seen_during_current_scan =
+                entry.seen_during_current_scan || currentScan;
             return;
-        g_discoveredTextures.push_back({ path, likely_display_texture(path) });
+        }
+        if (g_discoveredTextures.size() >= kMaximumDiscoveredTextures)
+            return;
+
+        prism::memserver_texture_queue::discovered_texture_t entry{};
+        entry.path = path;
+        entry.likely_display = likely_display_texture(path);
+        entry.unsafe_candidate = unsafe_display_candidate(path);
+        entry.seen_during_current_scan = currentScan;
+        entry.first_seen_tick = now;
+        entry.last_seen_tick = now;
+        entry.seen_count = 1;
+        g_discoveredTextureIndexes.emplace(
+            entry.path, g_discoveredTextures.size());
+        g_discoveredTextures.push_back(std::move(entry));
     }
 }
 
@@ -85,8 +132,6 @@ char memserver_texture_queue_processor(uint8_t* memserver)
 
     if (first_node != fake_node)
     {
-        const bool discoveryActive =
-            prism::memserver_texture_queue::display_discovery_active();
         prism::list_node_t<prism::mem_tobj_t>* target = first_node;
         while (target != fake_node)
         {
@@ -99,14 +144,20 @@ char memserver_texture_queue_processor(uint8_t* memserver)
             }
 
             std::string discoveredPath;
-            if (discoveryActive &&
-                tobj->m_file_path.m_size > 0 &&
+            if (tobj->m_file_path.m_size > 0 &&
                 tobj->m_file_path.m_size <= 1024)
             {
                 discoveredPath.assign(
                     tobj->m_file_path.m_string,
                     tobj->m_file_path.m_size);
             }
+
+            // Record the game's original path before any PrismMedia rewrite.
+            // Passive history means accessories already loaded before the user
+            // opens System remain selectable and scanning no longer needs to
+            // force a risky game reload from inside the configurator.
+            if (!discoveredPath.empty())
+                record_discovered_texture(discoveredPath);
 
             std::lock_guard<std::mutex> lock(g_screens_mutex);
             for (auto& screen : g_screens) {
@@ -135,9 +186,6 @@ char memserver_texture_queue_processor(uint8_t* memserver)
                 }
             }
 
-            if (!discoveredPath.empty())
-                record_discovered_texture(discoveredPath);
-
             target = target->m_next;
         }
     }
@@ -150,12 +198,14 @@ namespace prism::memserver_texture_queue {
 	void begin_display_discovery()
 	{
 		std::lock_guard<std::mutex> lock(g_discoveryMutex);
-		g_discoveredTextures.clear();
-		g_discoveredTexturePaths.clear();
-		g_discoveryExpiresTick =
-			GetTickCount64() + kDiscoveryWindowMilliseconds;
+		const uint64_t now = GetTickCount64();
+		for (auto& entry : g_discoveredTextures)
+			entry.seen_during_current_scan = false;
+		g_discoveryStartedTick = now;
+		g_discoveryExpiresTick = now + kDiscoveryWindowMilliseconds;
 		diagnostic_log::write(
-			"render", "Started 15-second loaded TOBJ display discovery.");
+			"render", "Started 30-second passive TOBJ display observation; "
+			"no game reload was requested.");
 	}
 
 	bool display_discovery_active()
@@ -172,8 +222,16 @@ namespace prism::memserver_texture_queue {
 			result.begin(), result.end(),
 			[](const auto& left, const auto& right)
 			{
+				if (left.seen_during_current_scan !=
+						right.seen_during_current_scan)
+					return left.seen_during_current_scan >
+						right.seen_during_current_scan;
 				if (left.likely_display != right.likely_display)
 					return left.likely_display > right.likely_display;
+				if (left.unsafe_candidate != right.unsafe_candidate)
+					return left.unsafe_candidate < right.unsafe_candidate;
+				if (left.last_seen_tick != right.last_seen_tick)
+					return left.last_seen_tick > right.last_seen_tick;
 				return left.path < right.path;
 			});
 		return result;

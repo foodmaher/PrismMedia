@@ -125,7 +125,8 @@ namespace {
 
     bool launch_media_client(
         const std::string& instanceId,
-        const std::string& windowTitle)
+        const std::string& windowTitle,
+        const std::string& profileName)
     {
         g_mediaClientsShuttingDown = false;
         if (find_media_client(windowTitle))
@@ -154,7 +155,8 @@ namespace {
             "\"" + executable + "\" --silent --parent-pid " +
             std::to_string(GetCurrentProcessId()) +
             " --window-title \"" + windowTitle + "\"" +
-            " --profile-suffix \"-" + instanceId + "\"";
+            " --profile-suffix \"-" + instanceId + "\"" +
+            " --profile-name \"" + profileName + "\"";
         STARTUPINFOA startup{};
         startup.cb = sizeof(startup);
         startup.dwFlags = STARTF_USESHOWWINDOW;
@@ -346,7 +348,7 @@ namespace {
         {
             return send_payload(
                 m_windowTitle,
-                show ? "spotifylogin" : "spotifyhide");
+                show ? "showclient" : "hideclient");
         }
         bool ClearBrowserSession() override
         {
@@ -593,6 +595,7 @@ namespace sources {
 
     std::unique_ptr<IContentSource> CreateMediaClientSource(
         const std::string& instance_id,
+        const std::string& display_identity_path,
         const std::string& media_url,
         uint8_t framerate,
         uint32_t output_width,
@@ -610,9 +613,29 @@ namespace sources {
         }
         if (safeInstanceId.empty())
             safeInstanceId = MakeMediaClientInstanceId();
+        std::string profileName;
+        const size_t slash = display_identity_path.find_last_of("/\\");
+        const size_t start = slash == std::string::npos ? 0 : slash + 1;
+        size_t extension = display_identity_path.find_last_of('.');
+        if (extension == std::string::npos || extension <= start)
+            extension = display_identity_path.size();
+        for (size_t index = start; index < extension; ++index)
+        {
+            const unsigned char character =
+                static_cast<unsigned char>(display_identity_path[index]);
+            if (std::isalnum(character) || character == '-' ||
+                character == '_')
+                profileName.push_back(static_cast<char>(character));
+            else if (character == ' ' && !profileName.empty() &&
+                profileName.back() != '_')
+                profileName.push_back('_');
+        }
+        if (profileName.empty())
+            profileName = safeInstanceId;
         const std::string windowTitle =
             std::string(kMediaClientWindowTitlePrefix) + safeInstanceId;
-        if (!launch_media_client(safeInstanceId, windowTitle))
+        if (!launch_media_client(
+                safeInstanceId, windowTitle, profileName))
             return nullptr;
 
         if (!media_url.empty())

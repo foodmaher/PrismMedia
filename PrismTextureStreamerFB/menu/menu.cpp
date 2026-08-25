@@ -19,6 +19,7 @@
 #include <ImGui/imgui_impl_win32.h>
 
 #include "../dinput8/dinput8.h"
+#include "../diagnostic_log.h"
 #include "../dx11/present.h"
 #include "../environment_audio.h"
 #include "../hotkeys.h"
@@ -388,6 +389,20 @@ namespace
         screen.hasUploadedFrame = false;
     }
 
+    const screen_t* texture_owner_other_than(
+        const screen_t& screen, const std::string& originalTexture)
+    {
+        if (originalTexture.empty())
+            return nullptr;
+        for (const auto& other : g_screens)
+        {
+            if (&other != &screen &&
+                other.original_texture == originalTexture)
+                return &other;
+        }
+        return nullptr;
+    }
+
     void reset_source_stats(screen_t& screen)
     {
         screen.frameScratch.clear();
@@ -398,12 +413,28 @@ namespace
         screen.estimatedFpsLoss = screen.deliveredFps = 0.0;
         screen.uploadedFrames = screen.lastUploadTick = 0;
         screen.sourceCreatedTick = screen.lastSourceFrameTick = 0;
-        screen.suspiciousMagentaFrame = screen.sourceFrameStale = false;
+        screen.suspiciousMagentaFrame = false;
+        screen.suspiciousBlackFrame = false;
+        screen.sourceFrameStale = false;
+        screen.consecutiveBlackFrameInspections = 0;
+        screen.blackSampleCount = 0;
         screen.consecutiveMapFailures = 0;
     }
 
     bool rebuild_source(screen_t& screen)
     {
+        if (texture_owner_other_than(screen, screen.original_texture))
+        {
+            screen.source.reset();
+            reset_source_stats(screen);
+            diagnostic_log::writef(
+                "error",
+                "Media source %s was not started because game texture %s "
+                "is already assigned to another display.",
+                screen.mediaClientId.c_str(),
+                screen.original_texture.c_str());
+            return false;
+        }
         g_screen_source_creation_in_progress = true;
         screen.source.reset();
         reset_source_stats(screen);
@@ -424,6 +455,7 @@ namespace
         {
             screen.source = sources::CreateMediaClientSource(
                 screen.mediaClientId,
+                screen.override_texture,
                 screen.mediaUrl, screen.framerate,
                 screen.targetLiveTextureWidth, screen.targetLiveTextureHeight,
                 screen.mediaService == media_service_t::SPOTIFY);
@@ -1123,12 +1155,27 @@ namespace
                     mark_changed();
                 }
             }
-            if (screen.mediaService == media_service_t::SPOTIFY && screen.contentMode == content_mode_t::INTEGRATED_MEDIA && screen.source)
+            if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA && screen.source)
             {
-                if (ImGui::Button("Open Spotify sign-in")) screen.source->ShowInteractivePlayer(true);
-                explain_last_item("Spotify sign-in", "Temporarily shows the official Spotify Web page for authentication.", "No game reload");
-                ImGui::SameLine(); if (ImGui::Button("Hide browser")) screen.source->ShowInteractivePlayer(false);
-                ImGui::SameLine(); if (ImGui::Button("Clear Spotify session")) screen.source->ClearBrowserSession();
+                if (ImGui::Button("Open client"))
+                    screen.source->ShowInteractivePlayer(true);
+                explain_last_item(
+                    "Open client",
+                    "Shows this display's own interactive media window for sign-in or direct control.",
+                    "No game reload");
+                ImGui::SameLine();
+                if (ImGui::Button("Hide client"))
+                    screen.source->ShowInteractivePlayer(false);
+                explain_last_item(
+                    "Hide client",
+                    "Closes the visible helper window without stopping its in-game video or audio.",
+                    "Playback continues");
+                if (screen.mediaService == media_service_t::SPOTIFY)
+                {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Clear Spotify session"))
+                        screen.source->ClearBrowserSession();
+                }
             }
         }
         const bool supportsVehiclePower = screen.source && screen.source->SupportsVehiclePowerControl();
@@ -1455,8 +1502,31 @@ namespace
         screen.liveTextureRenderTarget = nullptr; screen.immediateContext = nullptr;
     }
 
+    std::string screen_owner_name(const screen_t& screen)
+    {
+        size_t ordinal{};
+        for (const auto& candidate : g_screens)
+        {
+            if (candidate.type == screen.type)
+                ++ordinal;
+            if (&candidate == &screen)
+                break;
+        }
+        return std::string(screen_type_label(screen.type)) + " " +
+            std::to_string((std::max)(size_t{ 1 }, ordinal));
+    }
+
     bool prepare_override_assets(screen_t& screen, std::string& status)
     {
+        if (const screen_t* owner = texture_owner_other_than(
+                screen, screen.original_texture))
+        {
+            status = "Cannot prepare an independent display: " +
+                screen_owner_name(*owner) + " already owns " +
+                screen.original_texture +
+                ". Select the tablet/accessory's unique TOBJ first.";
+            return false;
+        }
         std::vector<std::pair<uint32_t, uint32_t>> usedDimensions;
         bool identityConflict{};
         usedDimensions.reserve(g_screens.size());
@@ -1599,6 +1669,28 @@ namespace
         }
 
         ImGui::Text("Source: %s", snapshot.status.c_str());
+        if (screen.suspiciousBlackFrame)
+        {
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.34f, 0.24f, 1.0f),
+                "Capture fault: arriving frames are persistently black.");
+            ImGui::TextWrapped(
+                "Restart the selected media source; do not repair the "
+                "display TOBJ because the game texture target is not the "
+                "cause of this fault.");
+        }
+        else if (screen.suspiciousMagentaFrame)
+        {
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.34f, 0.64f, 1.0f),
+                "Capture fault: arriving frames are predominantly magenta.");
+        }
+        else if (screen.sourceFrameStale)
+        {
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+                "Capture warning: the source is not delivering new frames.");
+        }
         if (ImGui::CollapsingHeader("Live performance", ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::Text("Current game FPS: %.1f", snapshot.gameFps);
@@ -1718,35 +1810,37 @@ namespace
             }
 
             ImGui::TextWrapped(
-                "Reloads the current truck once, then lists TOBJ textures "
-                "actually loaded by the truck and its accessories.");
+                "Lists TOBJ textures observed from the truck and accessories. "
+                "Observation is passive and never reloads or changes an "
+                "unconfirmed configurator order.");
             if (ImGui::Button(
-                    "Scan current truck displays", ImVec2(-1.0f, 36.0f)))
+                    "Observe display textures for 30 seconds",
+                    ImVec2(-1.0f, 36.0f)))
             {
                 prism::memserver_texture_queue::begin_display_discovery();
-                discoveredTextures.clear();
                 selectedDiscoveredTexture = -1;
                 discoveryStarted = true;
-                prism::string command("game");
-                if (prism::execute_command::call(&command, -1))
-                    criticalReloadPending = false;
             }
             explain_last_item(
-                "Scan current truck displays",
-                "Captures loaded TOBJ paths during one normal game texture reload. It does not scan the disk or run continuously.",
-                "Only during reload", "Results appear below");
+                "Observe current truck displays",
+                "Keeps the existing passive history and marks textures used while you switch the accessory or infotainment display.",
+                "Negligible for 30 seconds", "No game reload");
 
             if (prism::memserver_texture_queue::display_discovery_active())
                 ImGui::TextColored(
                     ImVec4(0.20f, 0.88f, 0.94f, 1.0f),
-                    "Scanning... %zu unique TOBJ paths found",
-                    discoveredTextures.size());
+                    "Observing... switch the installed accessory/display mode");
 
             size_t likelyCount{};
+            size_t currentCount{};
             for (const auto& candidate : discoveredTextures)
+            {
                 likelyCount += candidate.likely_display ? 1U : 0U;
+                currentCount += candidate.seen_during_current_scan ? 1U : 0U;
+            }
             ImGui::TextDisabled(
-                "%zu likely display%s | %zu total loaded TOBJ%s",
+                "%zu observed in scan | %zu likely display%s | %zu total TOBJ%s",
+                currentCount,
                 likelyCount, likelyCount == 1 ? "" : "s",
                 discoveredTextures.size(),
                 discoveredTextures.size() == 1 ? "" : "s");
@@ -1761,13 +1855,20 @@ namespace
                     index < discoveredTextures.size(); ++index)
                 {
                     const auto& candidate = discoveredTextures[index];
-                    if (!showAllLoadedTextures && !candidate.likely_display)
+                    if (!showAllLoadedTextures &&
+                        ((!candidate.likely_display &&
+                          !candidate.seen_during_current_scan) ||
+                         candidate.unsafe_candidate))
                         continue;
                     anyVisible = true;
                     ImGui::PushID(static_cast<int>(index));
                     const std::string label =
-                        std::string(candidate.likely_display
-                            ? "[DISPLAY]  " : "[OTHER]  ") +
+                        std::string(candidate.seen_during_current_scan
+                            ? "[SCAN] " : "[HISTORY] ") +
+                        (candidate.unsafe_candidate
+                            ? "[UNSAFE]  "
+                            : candidate.likely_display
+                                ? "[DISPLAY]  " : "[OTHER]  ") +
                         candidate.path;
                     if (ImGui::Selectable(
                             label.c_str(),
@@ -1780,8 +1881,8 @@ namespace
                 {
                     ImGui::TextDisabled(
                         discoveryStarted
-                            ? "No likely display paths yet. Enable 'Show all' for unusual accessory names."
-                            : "Run the scan to discover current truck display paths.");
+                            ? "No likely display paths yet. Switch the tablet screen, then enable 'Show all' only for expert inspection."
+                            : "Start observation, then switch the installed accessory or its display mode.");
                 }
                 ImGui::EndListBox();
             }
@@ -1789,65 +1890,91 @@ namespace
             const bool validSelection = selectedDiscoveredTexture >= 0 &&
                 selectedDiscoveredTexture <
                     static_cast<int>(discoveredTextures.size());
-            ImGui::BeginDisabled(!validSelection);
-            const float assignWidth =
-                (ImGui::GetContentRegionAvail().x - 8.0f) * 0.5f;
+            const auto* selectedCandidate = validSelection
+                ? &discoveredTextures[
+                    static_cast<size_t>(selectedDiscoveredTexture)]
+                : nullptr;
+            const screen_t* prospectiveOwner = selectedCandidate
+                ? texture_owner_other_than(screen, selectedCandidate->path)
+                : nullptr;
+            const bool assignmentSafe = selectedCandidate &&
+                !selectedCandidate->unsafe_candidate && !prospectiveOwner;
+            ImGui::BeginDisabled(!assignmentSafe);
             if (ImGui::Button(
-                    "Use selected", ImVec2(assignWidth, 34.0f)) &&
-                validSelection)
+                    "Use selected display texture",
+                    ImVec2(-1.0f, 34.0f)) && assignmentSafe)
             {
                 const std::string& selectedPath =
-                    discoveredTextures[
-                        static_cast<size_t>(selectedDiscoveredTexture)].path;
+                    selectedCandidate->path;
                 if (screen.original_texture != selectedPath)
                     screen.original_texture = selectedPath;
-                prepare_override_assets(screen, overrideAssetStatus);
+                if (prepare_override_assets(screen, overrideAssetStatus) &&
+                    !screen.source && !screen.mediaUrl.empty())
+                    rebuild_source(screen);
                 mark_changed(true);
-            }
-            ImGui::SameLine(0.0f, 8.0f);
-            if (ImGui::Button(
-                    "Use + reload now", ImVec2(-1.0f, 34.0f)) &&
-                validSelection)
-            {
-                screen.original_texture = discoveredTextures[
-                    static_cast<size_t>(selectedDiscoveredTexture)].path;
-                // Save the chosen game texture even if Windows prevents asset
-                // repair, so the user can retry without rescanning the truck.
-                mark_changed(true);
-                if (prepare_override_assets(screen, overrideAssetStatus))
-                {
-                    prism::string command("game");
-                    if (prism::execute_command::call(&command, -1))
-                        criticalReloadPending = false;
-                }
             }
             ImGui::EndDisabled();
+            if (selectedCandidate && selectedCandidate->unsafe_candidate)
+            {
+                ImGui::TextColored(
+                    ImVec4(1.0f, 0.48f, 0.30f, 1.0f),
+                    "Blocked: this is a world/traffic texture, not a safe "
+                    "automatic display target.");
+            }
+            else if (prospectiveOwner)
+            {
+                ImGui::TextColored(
+                    ImVec4(1.0f, 0.48f, 0.30f, 1.0f),
+                    "Shared texture: already owned by %s. Two surfaces that "
+                    "use the same TOBJ can only show the same media.",
+                    screen_owner_name(*prospectiveOwner).c_str());
+            }
             ImGui::TextDisabled(
                 "PrismMedia verifies or generates the matching TOBJ/DDS pair "
                 "and preserves unique identity dimensions.");
             if (!overrideAssetStatus.empty())
                 ImGui::TextWrapped("%s", overrideAssetStatus.c_str());
             if (ImGui::Button(
-                    "Repair active display assets + reload",
+                    "Repair active display assets",
                     ImVec2(-1.0f, 36.0f)))
             {
                 if (prepare_override_assets(screen, overrideAssetStatus))
                 {
                     mark_changed(true);
-                    prism::string command("game");
-                    if (prism::execute_command::call(&command, -1))
-                        criticalReloadPending = false;
                 }
             }
             explain_last_item(
                 "Repair display assets",
-                "Regenerates the active GPS, dashboard or custom display's TOBJ/DDS override pair, then reloads textures once.",
-                "Only during repair", "Works for every display type");
+                "Regenerates the active GPS, dashboard or custom display's TOBJ/DDS override pair without touching the current truck state.",
+                "Only while writing assets", "Reload remains a separate critical action");
+        }
+
+        if (const screen_t* owner = texture_owner_other_than(
+                screen, screen.original_texture))
+        {
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.32f, 0.24f, 1.0f),
+                "DISPLAY COLLISION: %s also owns %s",
+                screen_owner_name(*owner).c_str(),
+                screen.original_texture.c_str());
+            ImGui::TextWrapped(
+                "This display is isolated for media and audio, but Prism3D "
+                "cannot route two different videos through one shared TOBJ. "
+                "Choose a unique tablet/material TOBJ before reloading.");
         }
 
         if (ImGui::CollapsingHeader("Critical texture identity"))
         {
-            if (ImGui::InputText("Game texture", &screen.original_texture)) mark_changed(true);
+            if (ImGui::InputText("Game texture", &screen.original_texture))
+            {
+                if (texture_owner_other_than(
+                        screen, screen.original_texture))
+                {
+                    screen.source.reset();
+                    reset_source_stats(screen);
+                }
+                mark_changed(true);
+            }
             explain_last_item("Game texture", "Changes which Prism3D texture is intercepted.", "Critical", "Requires texture reload");
             if (ImGui::InputText("Override texture", &screen.override_texture)) mark_changed(true);
             if (ImGui::InputScalar("Override width", ImGuiDataType_U32, &screen.override_texture_size_w)) mark_changed(true);
@@ -1855,9 +1982,32 @@ namespace
         }
         if (criticalReloadPending)
         {
+            static bool accessoryOrderConfirmed{};
             ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.28f, 1.0f), "Texture identity changed. Reload only when ready.");
-            if (ImGui::Button("Reload game textures", ImVec2(-1.0f, 34.0f))) { prism::string command("game"); prism::execute_command::call(&command, -1); criticalReloadPending = false; }
-            explain_last_item("Reload game textures", "Runs the game reload only for texture identity changes or restored backups.", "Brief loading interruption", "Manual critical action");
+            if (!g_telemetry_driving.load())
+            {
+                ImGui::Checkbox(
+                    "The accessory order is confirmed/installed",
+                    &accessoryOrderConfirmed);
+                ImGui::TextDisabled(
+                    "Reloading from the configurator cannot apply a pending "
+                    "basket; confirm the order first.");
+            }
+            const bool reloadAllowed = g_telemetry_driving.load() ||
+                accessoryOrderConfirmed;
+            ImGui::BeginDisabled(!reloadAllowed);
+            if (ImGui::Button(
+                    "Reload installed truck textures", ImVec2(-1.0f, 34.0f)))
+            {
+                prism::string command("game");
+                if (prism::execute_command::call(&command, -1))
+                {
+                    criticalReloadPending = false;
+                    accessoryOrderConfirmed = false;
+                }
+            }
+            ImGui::EndDisabled();
+            explain_last_item("Reload game textures", "Runs the game reload only after the accessory is installed and the texture identity is saved.", "Brief loading interruption", "Manual critical action");
         }
         if (ImGui::CollapsingHeader("Configuration backups"))
         {
@@ -1890,6 +2040,18 @@ namespace
         else if (type == screen_type_t::DASHBOARD)
         { screen.original_texture = "/vehicle/truck/share/dashboard.tobj"; screen.override_texture = "/home/PrismTextureStreamer/dashboard.tobj"; screen.override_texture_size_w = 2048; screen.override_texture_size_h = 64; }
         else { screen.original_texture = ".tobj"; screen.override_texture = "/home/PrismTextureStreamer/.tobj"; }
+
+        // A second generic GPS/dashboard path addresses the same Prism3D
+        // resource, not a second physical surface. Start unassigned instead
+        // of silently creating a collision that can blank the primary GPS.
+        for (const auto& existing : g_screens)
+        {
+            if (existing.original_texture == screen.original_texture)
+            {
+                screen.original_texture.clear();
+                break;
+            }
+        }
         std::vector<std::pair<uint32_t, uint32_t>> usedDimensions;
         bool identityConflict{};
         usedDimensions.reserve(g_screens.size());

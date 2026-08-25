@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -8,6 +9,11 @@ namespace prism::memserver_texture_queue {
 	{
 		std::string path;
 		bool likely_display{};
+		bool unsafe_candidate{};
+		bool seen_during_current_scan{};
+		uint64_t first_seen_tick{};
+		uint64_t last_seen_tick{};
+		uint32_t seen_count{};
 	};
 
 	bool init();

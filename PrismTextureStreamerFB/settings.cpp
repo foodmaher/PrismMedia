@@ -554,6 +554,7 @@ namespace settings {
 
             std::vector<std::pair<uint32_t, uint32_t>> usedDimensions;
             bool identityConflict{};
+            bool originalTextureConflict{};
             usedDimensions.reserve(loaded.size());
             for (const auto& existing : loaded)
             {
@@ -566,17 +567,32 @@ namespace settings {
                         screen.override_texture_size_w &&
                      existing.override_texture_size_h ==
                         screen.override_texture_size_h);
+                originalTextureConflict = originalTextureConflict ||
+                    (!screen.original_texture.empty() &&
+                     existing.original_texture == screen.original_texture);
             }
             std::string overrideStatus;
             override_assets::ensure(
                 screen, usedDimensions, identityConflict, overrideStatus);
 
-            if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA &&
+            if (originalTextureConflict)
+            {
+                diagnostic_log::writef(
+                    "error",
+                    "Screen %s was not started because another configured "
+                    "display already owns game texture %s. Select a unique "
+                    "accessory TOBJ; one Prism3D texture cannot carry two "
+                    "independent media streams.",
+                    screen.mediaClientId.c_str(),
+                    screen.original_texture.c_str());
+            }
+            else if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA &&
                 !screen.mediaUrl.empty())
             {
                 g_screen_source_creation_in_progress = true;
                 screen.source = sources::CreateMediaClientSource(
                     screen.mediaClientId,
+                    screen.override_texture,
                     screen.mediaUrl, screen.framerate,
                     screen.targetLiveTextureWidth,
                     screen.targetLiveTextureHeight,

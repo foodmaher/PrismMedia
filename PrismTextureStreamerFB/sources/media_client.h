@@ -19,6 +19,7 @@ namespace sources {
         const std::string& stable_hint = {});
     std::unique_ptr<IContentSource> CreateMediaClientSource(
         const std::string& instance_id,
+        const std::string& display_identity_path,
         const std::string& media_url,
         uint8_t framerate = 30,
         uint32_t output_width = 1280,

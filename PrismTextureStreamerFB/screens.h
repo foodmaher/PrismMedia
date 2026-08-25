@@ -138,9 +138,12 @@ struct screen_t
 	uint64_t lastTextureMatchTick{};
 	uint64_t lastTextureRedirectTick{};
 	bool suspiciousMagentaFrame{};
+	bool suspiciousBlackFrame{};
 	bool sourceFrameStale{};
 	uint32_t magentaSampleCount{};
+	uint32_t blackSampleCount{};
 	uint32_t diagnosticSampleCount{};
+	uint32_t consecutiveBlackFrameInspections{};
 	uint32_t consecutiveMapFailures{};
 	long lastMapResult{};
 

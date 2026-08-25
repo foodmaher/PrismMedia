@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -16,27 +15,19 @@ namespace PrismMediaClient
         private static Thread writer;
         private static string logPath;
 
-        internal static void Start(int parentProcessId)
+        internal static void Start(string clientDirectory)
         {
             try
             {
-                string directory = AppDomain.CurrentDomain.BaseDirectory;
-                if (parentProcessId > 0)
+                string directory = clientDirectory;
+                if (string.IsNullOrWhiteSpace(directory))
                 {
-                    using (Process parent =
-                        Process.GetProcessById(parentProcessId))
-                    {
-                        string executable = parent.MainModule?.FileName;
-                        if (!string.IsNullOrEmpty(executable))
-                        {
-                            string parentDirectory =
-                                Path.GetDirectoryName(executable);
-                            if (!string.IsNullOrEmpty(parentDirectory))
-                                directory = parentDirectory;
-                        }
-                    }
+                    directory = Path.Combine(
+                        Environment.GetFolderPath(
+                            Environment.SpecialFolder.LocalApplicationData),
+                        "PrismMedia", "Clients", "display");
                 }
-
+                Directory.CreateDirectory(directory);
                 logPath = Path.Combine(directory, "PrismMediaClient.log");
                 writer = new Thread(WriterLoop)
                 {

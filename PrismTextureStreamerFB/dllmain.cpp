@@ -807,12 +807,12 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
 #pragma comment( linker, "/export:scs_telemetry_init=scs_telemetry_init" )
 SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_init_params_t* const params)
 {
-    scs_logging::init(params, "PrismTextureStreamer v" + std::string(g_version));
+    scs_logging::init(params, "PrismMedia v" + std::string(g_version));
     diagnostic_log::start();
     diagnostic_log::writef(
-        "session", "PrismTextureStreamerFB %s initializing (pid=%lu)",
+        "session", "PrismMedia %s initializing (pid=%lu)",
         g_version, GetCurrentProcessId());
-    scs_log(0, "Starting PrismTextureStreamer | By: Baldy09");
+    scs_log(0, "Starting PrismMedia | By: Baldy09");
 
     const scs_telemetry_init_params_v101_t* version_params = reinterpret_cast<const scs_telemetry_init_params_v101_t*>(params);
     version_params->register_for_event(SCS_TELEMETRY_EVENT_frame_start, telemetry_tick, nullptr);

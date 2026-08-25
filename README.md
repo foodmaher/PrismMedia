@@ -1,6 +1,6 @@
-# PrismTextureStreamerFB 4.0.0
+# PrismMedia 4.0.0
 
-PrismTextureStreamerFB streams YouTube, Spotify Web, local media, direct streams,
+PrismMedia streams YouTube, Spotify Web, local media, direct streams,
 or a desktop window onto supported ETS2/ATS truck displays.
 
 ## What changed in 4.0.0
@@ -16,8 +16,11 @@ or a desktop window onto supported ETS2/ATS truck displays.
   performance profiles, scaling modes, backups, adaptive audio tuning, update
   notifications, detailed live performance, and sampled per-core activity.
 - Media URLs load immediately. Lightweight saved-link libraries are available
-  separately for YouTube and Spotify, while only the selected source runs.
-  Bundled personal URLs remain removed.
+  separately for YouTube and Spotify. Every truck display now owns an isolated
+  PrismMediaClient/WebView2 profile and audio session, so GPS, dashboard and
+  tablet/custom displays can play different sources simultaneously. A
+  gamepad-accessible Media Key Target selector routes transport keys without
+  disturbing the other displays. Bundled personal URLs remain removed.
 - Spotify now uses only the official full Web Player. The embedded Spotify path
   and its duplicated playback state are removed.
 - Play/Pause is state-neutral in the plugin, while actual browser media events
@@ -45,10 +48,11 @@ or a desktop window onto supported ETS2/ATS truck displays.
 ## Install
 
 1. Build `Release|x64` or run `build-release.ps1` on Windows.
-2. Copy `PrismTextureStreamerFB.dll` and the `PrismTextureStreamerFB` folder to
+2. Remove an older `PrismTextureStreamerFB.dll`, then copy `PrismMedia.dll` and
+   the `PrismMedia` folder to
    `<game>\bin\win_x64\plugins`.
 3. Keep the DLL directly in `plugins`; keep the helper files in the adjacent
-   `PrismTextureStreamerFB` folder.
+   `PrismMedia` folder.
 4. Open the UI with `Ctrl+F8` or the configured gamepad chord.
 
 `config-recommended.ini` is a sanitized copy of the recommended 4.0.0 profile.

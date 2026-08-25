@@ -14,17 +14,17 @@ if (-not $MsBuild) { throw 'MSBuild was not found.' }
 if ($LASTEXITCODE -ne 0) { throw "MSBuild failed with exit code $LASTEXITCODE." }
 
 $Output = Join-Path $ProjectRoot 'x64\Release'
-$Dll = Join-Path $Output 'PrismTextureStreamerFB.dll'
+$Dll = Join-Path $Output 'PrismMedia.dll'
 $BridgeDll = Join-Path $Output 'PrismCameraBridge.dll'
 $ClientDirectory = Join-Path $ProjectRoot 'PrismMediaClient\bin\x64\Release\net48'
 foreach ($required in @($Dll, $BridgeDll, (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     if (-not (Test-Path $required)) { throw "Expected build output is missing: $required" }
 }
 
-$Package = Join-Path $Output 'PrismTextureStreamerFB-4.0.0'
+$Package = Join-Path $Output 'PrismMedia-4.0.0'
 if (Test-Path $Package) { Remove-Item $Package -Recurse -Force }
 New-Item -ItemType Directory -Path $Package | Out-Null
-$Runtime = Join-Path $Package 'PrismTextureStreamerFB'
+$Runtime = Join-Path $Package 'PrismMedia'
 New-Item -ItemType Directory -Path $Runtime | Out-Null
 Copy-Item $Dll $Package
 Copy-Item (Join-Path $ClientDirectory '*') $Runtime -Recurse
@@ -39,9 +39,10 @@ Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Runtime
 Copy-Item (Join-Path $ProjectRoot 'README.md') $Package
 
 @"
-PrismTextureStreamerFB 4.0.0
+PrismMedia 4.0.0
 
-Copy PrismTextureStreamerFB.dll and the PrismTextureStreamerFB folder into:
+Remove the old PrismTextureStreamerFB.dll, then copy PrismMedia.dll and the
+PrismMedia folder into:
 <ETS2 or ATS>\bin\win_x64\plugins
 
 Keep the DLL directly inside plugins. Open the interface with Ctrl+F8.

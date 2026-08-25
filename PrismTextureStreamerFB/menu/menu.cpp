@@ -421,6 +421,7 @@ namespace
         else if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA && !screen.mediaUrl.empty())
         {
             screen.source = sources::CreateMediaClientSource(
+                screen.mediaClientId,
                 screen.mediaUrl, screen.framerate,
                 screen.targetLiveTextureWidth, screen.targetLiveTextureHeight,
                 screen.mediaService == media_service_t::SPOTIFY);
@@ -846,8 +847,54 @@ namespace
     void draw_media(screen_t& screen)
     {
         text_with_font(2, ImVec4(0.93f, 0.97f, 0.99f, 1.0f), "MEDIA SOURCE");
-        ImGui::TextDisabled("One live source with lightweight saved YouTube and Spotify link libraries.");
+        ImGui::TextDisabled("Each display has an isolated player, browser profile and audio session.");
         ImGui::Dummy(ImVec2(0.0f, 4.0f)); ImGui::Separator(); ImGui::Dummy(ImVec2(0.0f, 4.0f));
+
+        if (g_screens.size() > 1)
+        {
+            int targetIndex = 0;
+            for (size_t index = 0; index < g_screens.size(); ++index)
+            {
+                if (g_screens[index].hotkeyTarget)
+                {
+                    targetIndex = static_cast<int>(index);
+                    break;
+                }
+            }
+            std::vector<std::string> targetLabels;
+            std::vector<const char*> targetLabelPointers;
+            targetLabels.reserve(g_screens.size());
+            targetLabelPointers.reserve(g_screens.size());
+            for (size_t index = 0; index < g_screens.size(); ++index)
+            {
+                const char* kind = g_screens[index].type == screen_type_t::GPS
+                    ? "GPS" : (g_screens[index].type == screen_type_t::DASHBOARD
+                        ? "Dashboard" : "Custom");
+                targetLabels.push_back(
+                    std::to_string(index + 1) + " - " + kind);
+            }
+            for (const auto& label : targetLabels)
+                targetLabelPointers.push_back(label.c_str());
+
+            ImGui::TextDisabled("MEDIA KEY TARGET");
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::Combo(
+                    "##media_key_target", &targetIndex,
+                    targetLabelPointers.data(),
+                    static_cast<int>(targetLabelPointers.size())))
+            {
+                for (auto& candidate : g_screens)
+                    candidate.hotkeyTarget = false;
+                g_screens[static_cast<size_t>(targetIndex)].hotkeyTarget = true;
+                mark_changed();
+            }
+            explain_last_item(
+                "Media key target",
+                "Routes keyboard, Steam Input and gamepad media commands to one display without interrupting the others.",
+                "No playback restart", "Applies instantly");
+            ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        }
+
         const char* modes[] = { "Window capture", "Integrated YouTube / Spotify", "Native direct media" };
         int mode = static_cast<int>(screen.contentMode);
         ImGui::TextDisabled("PLAYBACK METHOD");
@@ -1050,7 +1097,7 @@ namespace
                     dispatch_media_command(screen, media_command_t::VOLUME_UP);
 
                 bool hotkeyTarget = screen.hotkeyTarget;
-                if (toggle_switch("Use this screen for media hotkeys", hotkeyTarget))
+                if (toggle_switch("Use this display for media keys", hotkeyTarget))
                 {
                     if (hotkeyTarget)
                         for (auto& other : g_screens) other.hotkeyTarget = false;
@@ -1621,6 +1668,8 @@ namespace
     void add_screen(screen_type_t type)
     {
         screen_t screen; screen.type = type;
+        screen.mediaClientId = sources::MakeMediaClientInstanceId();
+        screen.hotkeyTarget = g_screens.empty();
         if (type == screen_type_t::GPS)
         { screen.original_texture = "/vehicle/truck/share/gps.tobj"; screen.override_texture = "/home/PrismTextureStreamer/gps.tobj"; screen.override_texture_size_w = 64; screen.override_texture_size_h = 2048; }
         else if (type == screen_type_t::DASHBOARD)

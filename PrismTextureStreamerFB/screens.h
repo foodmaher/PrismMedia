@@ -56,6 +56,10 @@ struct screen_t
 
 	std::string source_application_name;
 	std::string source_application_display_name;
+	// Stable identity for this display's isolated browser/profile/audio tree.
+	// It survives screen reordering so WebView logins remain attached to the
+	// correct in-truck display.
+	std::string mediaClientId;
 	std::string mediaUrl;
 	media_service_t mediaService = media_service_t::YOUTUBE;
 	// Lightweight saved-link libraries. These store URLs only; playback still

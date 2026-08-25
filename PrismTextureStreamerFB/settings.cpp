@@ -421,6 +421,19 @@ namespace settings {
                 0U, static_cast<UINT>(performance_profile_t::SMOOTH)));
             screen.source_application_name = read_string(path, section.c_str(), "SourceApplication");
             screen.source_application_display_name = read_string(path, section.c_str(), "SourceTitle");
+            screen.mediaClientId = read_string(
+                path, section.c_str(), "MediaClientId");
+            if (screen.mediaClientId.empty())
+            {
+                // The first pre-isolation screen keeps the historical profile
+                // folder, preserving its cookies and sign-in. Additional
+                // legacy screens receive deterministic independent profiles.
+                screen.mediaClientId = i == 0
+                    ? "legacy"
+                    : sources::MakeMediaClientInstanceId(
+                        section + "|" + screen.original_texture + "|" +
+                        screen.override_texture);
+            }
             screen.mediaUrl = read_string(path, section.c_str(), "MediaUrl");
             screen.mediaService = static_cast<media_service_t>((std::clamp)(
                 GetPrivateProfileIntA(
@@ -542,6 +555,7 @@ namespace settings {
             {
                 g_screen_source_creation_in_progress = true;
                 screen.source = sources::CreateMediaClientSource(
+                    screen.mediaClientId,
                     screen.mediaUrl, screen.framerate,
                     screen.targetLiveTextureWidth,
                     screen.targetLiveTextureHeight,
@@ -589,6 +603,19 @@ namespace settings {
 
             loaded.push_back(std::move(screen));
         }
+
+        bool mediaTargetFound{};
+        for (auto& screen : loaded)
+        {
+            if (!screen.hotkeyTarget)
+                continue;
+            if (!mediaTargetFound)
+                mediaTargetFound = true;
+            else
+                screen.hotkeyTarget = false;
+        }
+        if (!mediaTargetFound && !loaded.empty())
+            loaded.front().hotkeyTarget = true;
 
         const auto loadedCount = loaded.size();
         {
@@ -707,6 +734,7 @@ namespace settings {
             write_float(temporaryPath, section.c_str(), "AdaptiveAudioExternalMinimumCutoff", screen.adaptiveAudioExternalMinimumCutoff);
             WritePrivateProfileStringA(section.c_str(), "SourceApplication", screen.source_application_name.c_str(), temporaryPath.c_str());
             WritePrivateProfileStringA(section.c_str(), "SourceTitle", screen.source_application_display_name.c_str(), temporaryPath.c_str());
+            WritePrivateProfileStringA(section.c_str(), "MediaClientId", screen.mediaClientId.c_str(), temporaryPath.c_str());
             WritePrivateProfileStringA(section.c_str(), "MediaUrl", screen.mediaUrl.c_str(), temporaryPath.c_str());
             write_number(
                 temporaryPath, section.c_str(), "MediaService",

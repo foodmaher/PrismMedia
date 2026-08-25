@@ -36,14 +36,14 @@ namespace
 		const DWORD length = GetModuleFileNameW(
 			nullptr, path, pathCapacity);
 		if (length == 0 || length >= pathCapacity)
-			return L"PrismTextureStreamerFB.log";
+			return L"PrismMedia.log";
 
 		std::wstring result(path, length);
 		const size_t separator = result.find_last_of(L"\\/");
 		if (separator == std::wstring::npos)
-			return L"PrismTextureStreamerFB.log";
+			return L"PrismMedia.log";
 		result.resize(separator + 1);
-		result += L"PrismTextureStreamerFB.log";
+		result += L"PrismMedia.log";
 		return result;
 	}
 

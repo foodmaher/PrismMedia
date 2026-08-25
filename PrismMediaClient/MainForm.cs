@@ -169,7 +169,9 @@ namespace PrismMediaClient
                     Environment.GetFolderPath(
                         Environment.SpecialFolder.LocalApplicationData),
                     "PrismTextureStreamerFB",
-                    "WebView2Profile" + this.profileSuffix);
+                    this.profileSuffix == "-legacy"
+                        ? "WebView2Profile"
+                        : "WebView2Profile" + this.profileSuffix);
                 Directory.CreateDirectory(profileFolder);
                 var environmentOptions = new CoreWebView2EnvironmentOptions
                 {
@@ -513,7 +515,7 @@ namespace PrismMediaClient
                 : "<invalid URI>";
         }
 
-        private static string SpotifySessionPath
+        private string SpotifySessionPath
         {
             get
             {
@@ -522,7 +524,10 @@ namespace PrismMediaClient
                         Environment.SpecialFolder.LocalApplicationData),
                     "PrismTextureStreamerFB");
                 Directory.CreateDirectory(folder);
-                return Path.Combine(folder, "SpotifySession.dat");
+                return Path.Combine(folder,
+                    this.profileSuffix == "-legacy"
+                        ? "SpotifySession.dat"
+                        : "SpotifySession" + this.profileSuffix + ".dat");
             }
         }
 

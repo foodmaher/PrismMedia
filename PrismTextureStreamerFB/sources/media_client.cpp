@@ -12,15 +12,22 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cctype>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 using namespace scs_logging;
 
 namespace {
     constexpr ULONG_PTR kPrismCopyDataId = 0x50524953;
     constexpr UINT kPrismEnvironmentMessage = WM_APP + 0x351;
+    std::mutex g_mediaClientsMutex;
+    std::vector<std::string> g_mediaClientTitles;
+    std::atomic<bool> g_mediaClientsShuttingDown{};
+    std::atomic<uint32_t> g_instanceCounter{};
 
     std::string module_directory()
     {
@@ -43,9 +50,9 @@ namespace {
         return result;
     }
 
-    HWND find_media_client()
+    HWND find_media_client(const std::string& windowTitle)
     {
-        return FindWindowA(nullptr, sources::kMediaClientWindowTitle);
+        return FindWindowA(nullptr, windowTitle.c_str());
     }
 
     std::string media_client_executable()
@@ -57,6 +64,13 @@ namespace {
         if (GetFileAttributesA(organized.c_str()) !=
             INVALID_FILE_ATTRIBUTES)
             return organized;
+
+        const std::string legacyOrganized =
+            root + sources::kLegacyMediaClientFolder +
+            sources::kMediaClientExecutable;
+        if (GetFileAttributesA(legacyOrganized.c_str()) !=
+            INVALID_FILE_ATTRIBUTES)
+            return legacyOrganized;
 
         // Keep older flat installations working during the transition to the
         // organized runtime folder.
@@ -71,9 +85,12 @@ namespace {
             : path.substr(0, separator + 1);
     }
 
-    bool send_payload(const std::string& payload, DWORD timeout_ms = 1000)
+    bool send_payload(
+        const std::string& windowTitle,
+        const std::string& payload,
+        DWORD timeout_ms = 1000)
     {
-        const HWND window = find_media_client();
+        const HWND window = find_media_client(windowTitle);
         if (!window)
             return false;
 
@@ -87,15 +104,39 @@ namespace {
             SMTO_ABORTIFHUNG | SMTO_BLOCK, timeout_ms, &ignored) != 0;
     }
 
-    bool launch_media_client()
+    void register_media_client(const std::string& windowTitle)
     {
-        if (find_media_client())
+        std::lock_guard<std::mutex> lock(g_mediaClientsMutex);
+        if (std::find(
+                g_mediaClientTitles.begin(), g_mediaClientTitles.end(),
+                windowTitle) == g_mediaClientTitles.end())
+            g_mediaClientTitles.push_back(windowTitle);
+    }
+
+    void unregister_media_client(const std::string& windowTitle)
+    {
+        std::lock_guard<std::mutex> lock(g_mediaClientsMutex);
+        g_mediaClientTitles.erase(
+            std::remove(
+                g_mediaClientTitles.begin(), g_mediaClientTitles.end(),
+                windowTitle),
+            g_mediaClientTitles.end());
+    }
+
+    bool launch_media_client(
+        const std::string& instanceId,
+        const std::string& windowTitle)
+    {
+        g_mediaClientsShuttingDown = false;
+        if (find_media_client(windowTitle))
         {
             diagnostic_log::write(
                 "media", "Reusing the existing PrismMediaClient helper.");
             const bool parentSent = send_payload(
+                windowTitle,
                 "parent|" + std::to_string(GetCurrentProcessId()));
-            send_payload("initialize", 100);
+            send_payload(windowTitle, "initialize", 100);
+            register_media_client(windowTitle);
             return parentSent;
         }
 
@@ -111,7 +152,9 @@ namespace {
 
         std::string commandLine =
             "\"" + executable + "\" --silent --parent-pid " +
-            std::to_string(GetCurrentProcessId());
+            std::to_string(GetCurrentProcessId()) +
+            " --window-title \"" + windowTitle + "\"" +
+            " --profile-suffix \"-" + instanceId + "\"";
         STARTUPINFOA startup{};
         startup.cb = sizeof(startup);
         startup.dwFlags = STARTF_USESHOWWINDOW;
@@ -148,11 +191,13 @@ namespace {
             if ((attempt % 40) == 0)
                 thread_scheduling::apply_thread_preference(
                     process.hThread, 2);
-            if (find_media_client())
+            if (find_media_client(windowTitle))
             {
                 send_payload(
+                    windowTitle,
                     "parent|" +
                     std::to_string(GetCurrentProcessId()));
+                register_media_client(windowTitle);
                 diagnostic_log::write(
                     "media", "PrismMediaClient window is ready.");
                 CloseHandle(process.hThread);
@@ -174,9 +219,13 @@ namespace {
     public:
         explicit MediaClientSource(
             std::unique_ptr<IContentSource> capture,
+            std::string instanceId,
+            std::string windowTitle,
             bool fullSpotifyWeb,
             uint8_t framerate)
             : m_capture(std::move(capture)),
+              m_instanceId(std::move(instanceId)),
+              m_windowTitle(std::move(windowTitle)),
               m_framerate((std::max)(static_cast<uint8_t>(1), framerate)),
               m_fullSpotifyWeb(fullSpotifyWeb)
         {
@@ -184,12 +233,29 @@ namespace {
         ~MediaClientSource() override
         {
             if (m_userCapturePaused.load())
-                send_payload("freeze|0", 30);
+                send_payload(m_windowTitle, "freeze|0", 30);
             if (m_spatialEnabled)
                 send_payload(
+                    m_windowTitle,
                     "spatial|0|1.0000|0.0000|20000.0", 30);
             if (!m_vehiclePowered.load())
-                send_payload("vehiclepower|1", 30);
+                send_payload(m_windowTitle, "vehiclepower|1", 30);
+
+            if (!g_mediaClientsShuttingDown.load())
+            {
+                const HWND window = find_media_client(m_windowTitle);
+                if (window)
+                {
+                    if (!send_payload(m_windowTitle, "shutdown", 40))
+                        PostMessageA(window, WM_CLOSE, 0, 0);
+                    for (int attempt = 0;
+                        attempt < 25 && find_media_client(m_windowTitle);
+                        ++attempt)
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(10));
+                }
+            }
+            unregister_media_client(m_windowTitle);
         }
 
         uint32_t GetWidth() const override { return m_capture->GetWidth(); }
@@ -203,7 +269,9 @@ namespace {
         {
             const bool changed = m_userCapturePaused.exchange(paused) != paused;
             if (changed)
-                send_payload(paused ? "freeze|1" : "freeze|0", 60);
+                send_payload(
+                    m_windowTitle,
+                    paused ? "freeze|1" : "freeze|0", 60);
             m_capture->SetPaused(
                 m_userCapturePaused.load() ||
                 !m_vehiclePowered.load());
@@ -212,6 +280,7 @@ namespace {
         {
             m_capture->SetOutputSize(width, height);
             send_payload(
+                m_windowTitle,
                 "resize|" + std::to_string(width) + "x" +
                 std::to_string(height));
         }
@@ -251,6 +320,7 @@ namespace {
                 return;
 
             if (send_payload(
+                m_windowTitle,
                 powered ? "vehiclepower|1" : "vehiclepower|0", 30))
             {
                 m_vehiclePowered = powered;
@@ -263,6 +333,7 @@ namespace {
         bool LoadMedia(const std::string& url) override
         {
             const bool sent = send_payload(
+                m_windowTitle,
                 (m_fullSpotifyWeb ? "loadspotifyweb|" : "load|") + url,
                 120);
             diagnostic_log::writef(
@@ -273,11 +344,13 @@ namespace {
         }
         bool ShowInteractivePlayer(bool show) override
         {
-            return send_payload(show ? "spotifylogin" : "spotifyhide");
+            return send_payload(
+                m_windowTitle,
+                show ? "spotifylogin" : "spotifyhide");
         }
         bool ClearBrowserSession() override
         {
-            return send_payload("clearspotify");
+            return send_payload(m_windowTitle, "clearspotify");
         }
         bool SendMediaCommand(media_command_t command) override
         {
@@ -293,7 +366,7 @@ namespace {
             }
             // Never let a temporarily busy WebView stall the game/UI thread.
             // The helper copies and serializes accepted commands itself.
-            const bool sent = name && send_payload(name, 35);
+            const bool sent = name && send_payload(m_windowTitle, name, 35);
             if (name)
             {
                 diagnostic_log::writef(
@@ -328,7 +401,7 @@ namespace {
                 payload, sizeof(payload),
                 "spatial|%d|%.4f|%.4f|%.1f",
                 enabled ? 1 : 0, gain, pan, lowpassHz);
-            if (send_payload(payload, 30))
+            if (send_payload(m_windowTitle, payload, 30))
             {
                 m_spatialEnabled = enabled;
                 m_lastSpatialGain = gain;
@@ -359,7 +432,7 @@ namespace {
             char payload[48]{};
             std::snprintf(
                 payload, sizeof(payload), "brightness|%.4f", brightness);
-            if (send_payload(payload, 30))
+            if (send_payload(m_windowTitle, payload, 30))
             {
                 m_lastBrightness = brightness;
                 m_lastBrightnessSendTick = now;
@@ -381,8 +454,8 @@ namespace {
         std::string GetStatusText() const override
         {
             return m_fullSpotifyWeb
-                ? "Integrated Media Client: Full Spotify Web Player"
-                : "Integrated Media Client running";
+                ? "Isolated Spotify Web player: " + m_instanceId
+                : "Isolated media player: " + m_instanceId;
         }
 
     private:
@@ -411,7 +484,7 @@ namespace {
                 std::to_string(
                     cpu2 == thread_scheduling::kUnassignedProcessor
                         ? cpu0 : cpu2);
-            if (send_payload(payload, 30))
+            if (send_payload(m_windowTitle, payload, 30))
             {
                 m_lastCpuHint0 = cpu0;
                 m_lastCpuHint1 = cpu1;
@@ -429,6 +502,8 @@ namespace {
         }
 
         std::unique_ptr<IContentSource> m_capture;
+        std::string m_instanceId;
+        std::string m_windowTitle;
         std::atomic<uint8_t> m_framerate{ 60 };
         std::atomic<bool> m_userCapturePaused{};
         std::atomic<bool> m_vehiclePowered{ true };
@@ -458,35 +533,86 @@ namespace sources {
 
     bool SetMediaClientDucking(float gain)
     {
-        const HWND window = find_media_client();
-        if (!window)
-            return false;
-
         gain = (std::clamp)(gain, 0.0f, 1.0f);
         const WPARAM scaledGain = static_cast<WPARAM>(
             std::lround(gain * 10000.0f));
-        return PostMessageA(
-            window, kPrismEnvironmentMessage, scaledGain, 0) != FALSE;
+        std::vector<std::string> titles;
+        {
+            std::lock_guard<std::mutex> lock(g_mediaClientsMutex);
+            titles = g_mediaClientTitles;
+        }
+        bool delivered{};
+        for (const auto& title : titles)
+        {
+            const HWND window = find_media_client(title);
+            if (window && PostMessageA(
+                    window, kPrismEnvironmentMessage,
+                    scaledGain, 0) != FALSE)
+                delivered = true;
+        }
+        return delivered;
     }
 
     void ShutdownMediaClient()
     {
-        const HWND window = find_media_client();
-        if (!window)
-            return;
-        // Close the owned helper before DXGI and telemetry start tearing down.
-        if (!send_payload("shutdown", 30))
-            PostMessageA(window, WM_CLOSE, 0, 0);
+        g_mediaClientsShuttingDown = true;
+        std::vector<std::string> titles;
+        {
+            std::lock_guard<std::mutex> lock(g_mediaClientsMutex);
+            titles.swap(g_mediaClientTitles);
+        }
+        for (const auto& title : titles)
+        {
+            const HWND window = find_media_client(title);
+            if (window && !send_payload(title, "shutdown", 30))
+                PostMessageA(window, WM_CLOSE, 0, 0);
+        }
+    }
+
+    std::string MakeMediaClientInstanceId(const std::string& stable_hint)
+    {
+        uint64_t hash = 1469598103934665603ULL;
+        std::string seed = stable_hint;
+        if (seed.empty())
+        {
+            seed = std::to_string(GetCurrentProcessId()) + "|" +
+                std::to_string(GetTickCount64()) + "|" +
+                std::to_string(g_instanceCounter.fetch_add(1));
+        }
+        for (const unsigned char character : seed)
+        {
+            hash ^= character;
+            hash *= 1099511628211ULL;
+        }
+        char id[24]{};
+        std::snprintf(
+            id, sizeof(id), "display-%016llx",
+            static_cast<unsigned long long>(hash));
+        return id;
     }
 
     std::unique_ptr<IContentSource> CreateMediaClientSource(
+        const std::string& instance_id,
         const std::string& media_url,
         uint8_t framerate,
         uint32_t output_width,
         uint32_t output_height,
         bool full_spotify_web)
     {
-        if (!launch_media_client())
+        std::string safeInstanceId;
+        const std::string requestedInstanceId = instance_id.empty()
+            ? MakeMediaClientInstanceId() : instance_id;
+        for (const unsigned char character : requestedInstanceId)
+        {
+            if (std::isalnum(character) || character == '-' ||
+                character == '_')
+                safeInstanceId.push_back(static_cast<char>(character));
+        }
+        if (safeInstanceId.empty())
+            safeInstanceId = MakeMediaClientInstanceId();
+        const std::string windowTitle =
+            std::string(kMediaClientWindowTitlePrefix) + safeInstanceId;
+        if (!launch_media_client(safeInstanceId, windowTitle))
             return nullptr;
 
         if (!media_url.empty())
@@ -494,19 +620,26 @@ namespace sources {
             // The helper can receive commands as soon as its Win32 window is
             // visible; it queues the URL until WebView2 has initialized.
             send_payload(
+                windowTitle,
                 (full_spotify_web ? "loadspotifyweb|" : "load|") +
                 media_url, 120);
         }
         send_payload(
+            windowTitle,
             "resize|" + std::to_string(output_width) + "x" +
             std::to_string(output_height), 80);
 
         auto capture = CreateWgcWindowSource(
-            kMediaClientExecutable, kMediaClientWindowTitle,
+            kMediaClientExecutable, windowTitle.c_str(),
             framerate, output_width, output_height);
         if (!capture)
+        {
+            send_payload(windowTitle, "shutdown", 30);
+            unregister_media_client(windowTitle);
             return nullptr;
+        }
         return std::make_unique<MediaClientSource>(
-            std::move(capture), full_spotify_web, framerate);
+            std::move(capture), safeInstanceId, windowTitle,
+            full_spotify_web, framerate);
     }
 }

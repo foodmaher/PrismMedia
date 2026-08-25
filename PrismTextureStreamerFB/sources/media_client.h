@@ -6,13 +6,19 @@
 
 namespace sources {
     constexpr const char* kMediaClientExecutable = "PrismMediaClient.exe";
-    constexpr const char* kMediaClientFolder = "PrismTextureStreamerFB\\";
-    constexpr const char* kMediaClientWindowTitle = "Prism Media Client";
+    constexpr const char* kMediaClientFolder = "PrismMedia\\";
+    constexpr const char* kLegacyMediaClientFolder =
+        "PrismTextureStreamerFB\\";
+    constexpr const char* kMediaClientWindowTitlePrefix =
+        "Prism Media Client - ";
 
     bool IsMediaClientInstalled();
     bool SetMediaClientDucking(float gain);
     void ShutdownMediaClient();
+    std::string MakeMediaClientInstanceId(
+        const std::string& stable_hint = {});
     std::unique_ptr<IContentSource> CreateMediaClientSource(
+        const std::string& instance_id,
         const std::string& media_url,
         uint8_t framerate = 30,
         uint32_t output_width = 1280,

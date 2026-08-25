@@ -22,13 +22,13 @@ jobs:
         shell: pwsh
         run: |
           $Package = 'package'
-          $Runtime = "$Package\PrismTextureStreamerFB"
+          $Runtime = "$Package\PrismMedia"
           $Client = 'PrismMediaClient\bin\x64\Release\net48'
-          foreach ($File in @('x64\Release\PrismTextureStreamerFB.dll','x64\Release\PrismCameraBridge.dll',"$Client\PrismMediaClient.exe")) {
+          foreach ($File in @('x64\Release\PrismMedia.dll','x64\Release\PrismCameraBridge.dll',"$Client\PrismMediaClient.exe")) {
             if (-not (Test-Path $File)) { throw "Missing build output: $File" }
           }
           New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
-          Copy-Item 'x64\Release\PrismTextureStreamerFB.dll' $Package
+          Copy-Item 'x64\Release\PrismMedia.dll' $Package
           Copy-Item "$Client\*" $Runtime -Recurse
           Get-ChildItem $Runtime -Recurse -File | Where-Object { $_.Extension -in '.pdb','.xml' } | Remove-Item -Force
           $Bridge = "$Runtime\SPF-OPTIONAL\PrismCameraBridge"
@@ -39,14 +39,15 @@ jobs:
           Copy-Item 'PERFORMANCE-NOTES.md' $Runtime
           Copy-Item 'README.md' $Package
           @"
-          PrismTextureStreamerFB 4.0.0
-          Copy the DLL and PrismTextureStreamerFB folder to:
+          PrismMedia 4.0.0
+          Remove the old PrismTextureStreamerFB.dll, then copy PrismMedia.dll
+          and the PrismMedia folder to:
           <ETS2 or ATS>\bin\win_x64\plugins
           Open the UI with Ctrl+F8.
           "@ | Set-Content "$Package\INSTALL.txt"
       - uses: actions/upload-artifact@v4
         with:
-          name: PrismTextureStreamerFB-4.0.0
+          name: PrismMedia-4.0.0
           path: package
           if-no-files-found: error
           retention-days: 30

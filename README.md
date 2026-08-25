@@ -31,7 +31,9 @@ or a desktop window onto supported ETS2/ATS truck displays.
   gamepad-accessible Media Key Target selector routes transport keys without
   disturbing the other displays. Per-display **Open client** and **Hide client**
   controls expose or dismiss the interactive helper without stopping playback.
-  Bundled personal URLs remain removed.
+  **Close client** terminates only that display's helper, capture and audio
+  session and releases their resources; **Open client** can start it again
+  without reloading the game. Bundled personal URLs remain removed.
 - Generated override assets and client data use the discovered game-texture
   name. For example, `driver_plate.tobj` produces `driver_plate.tobj` and
   `driver_plate.dds` in the game's PrismMedia override directory, plus an
@@ -39,6 +41,11 @@ or a desktop window onto supported ETS2/ATS truck displays.
   A short stable suffix is added only when two different game paths share the
   same basename. Existing WebView2 and Spotify session data is migrated from
   the old suffix-based folder on first use.
+- Generated-name reservation is evaluated against the final readable path,
+  not only the screen's previous override. Thus the stock
+  `/vehicle/truck/share/gps.tobj` may retain `gps.tobj`, while an accessory such
+  as `/vehicle/truck/upgrade/bagps/gps.tobj` automatically receives a stable
+  `gps_<id>.tobj`/`.dds` pair instead of blacking or replacing the primary GPS.
 - Independent clients still require independent Prism3D texture paths. If a
   tablet mod reuses `/vehicle/truck/share/gps.tobj`, the tablet and primary GPS
   are two surfaces of one texture and cannot show different media. PrismMedia

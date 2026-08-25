@@ -1155,27 +1155,56 @@ namespace
                     mark_changed();
                 }
             }
-            if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA && screen.source)
+            if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA)
             {
                 if (ImGui::Button("Open client"))
-                    screen.source->ShowInteractivePlayer(true);
+                {
+                    if ((!screen.source && rebuild_source(screen)) ||
+                        screen.source)
+                        screen.source->ShowInteractivePlayer(true);
+                }
                 explain_last_item(
                     "Open client",
-                    "Shows this display's own interactive media window for sign-in or direct control.",
+                    "Starts this display's client if it was fully closed, then shows its interactive media window.",
                     "No game reload");
                 ImGui::SameLine();
+                ImGui::BeginDisabled(!screen.source);
                 if (ImGui::Button("Hide client"))
                     screen.source->ShowInteractivePlayer(false);
                 explain_last_item(
                     "Hide client",
                     "Closes the visible helper window without stopping its in-game video or audio.",
                     "Playback continues");
-                if (screen.mediaService == media_service_t::SPOTIFY)
+                ImGui::SameLine();
+                const bool closeClient = ImGui::Button("Close client");
+                explain_last_item(
+                    "Close client",
+                    "Terminates this display's helper, capture and audio session and releases their resources. Open client starts it again.",
+                    "Playback stops", "Session-only; no game reload");
+                if (screen.mediaService == media_service_t::SPOTIFY &&
+                    screen.source)
                 {
                     ImGui::SameLine();
                     if (ImGui::Button("Clear Spotify session"))
                         screen.source->ClearBrowserSession();
                 }
+                ImGui::EndDisabled();
+                if (closeClient && screen.source)
+                {
+                    const std::string closedClientId = screen.mediaClientId;
+                    screen.source.reset();
+                    reset_source_stats(screen);
+                    diagnostic_log::writef(
+                        "media",
+                        "Media client %s was completely closed by the user; "
+                        "capture and audio resources were released.",
+                        closedClientId.c_str());
+                }
+                if (!screen.source)
+                    ImGui::TextDisabled(
+                        screen.mediaUrl.empty()
+                            ? "Add a media URL before opening the client."
+                            : "Client closed - Open client restarts this display.");
             }
         }
         const bool supportsVehiclePower = screen.source && screen.source->SupportsVehiclePowerControl();
@@ -1528,8 +1557,10 @@ namespace
             return false;
         }
         std::vector<std::pair<uint32_t, uint32_t>> usedDimensions;
+        std::vector<std::string> usedOverridePaths;
         bool identityConflict{};
         usedDimensions.reserve(g_screens.size());
+        usedOverridePaths.reserve(g_screens.size());
         for (const auto& other : g_screens)
         {
             if (&other == &screen)
@@ -1537,6 +1568,7 @@ namespace
             usedDimensions.emplace_back(
                 other.override_texture_size_w,
                 other.override_texture_size_h);
+            usedOverridePaths.push_back(other.override_texture);
             identityConflict = identityConflict ||
                 other.override_texture == screen.override_texture ||
                 (other.override_texture_size_w ==
@@ -1545,7 +1577,8 @@ namespace
                     screen.override_texture_size_h);
         }
         return override_assets::ensure(
-            screen, usedDimensions, identityConflict, status);
+            screen, usedDimensions, usedOverridePaths,
+            identityConflict, status);
     }
 
     void draw_system(screen_t& screen, bool& removeCurrent)
@@ -2053,13 +2086,16 @@ namespace
             }
         }
         std::vector<std::pair<uint32_t, uint32_t>> usedDimensions;
+        std::vector<std::string> usedOverridePaths;
         bool identityConflict{};
         usedDimensions.reserve(g_screens.size());
+        usedOverridePaths.reserve(g_screens.size());
         for (const auto& existing : g_screens)
         {
             usedDimensions.emplace_back(
                 existing.override_texture_size_w,
                 existing.override_texture_size_h);
+            usedOverridePaths.push_back(existing.override_texture);
             identityConflict = identityConflict ||
                 existing.override_texture == screen.override_texture ||
                 (existing.override_texture_size_w ==
@@ -2069,7 +2105,8 @@ namespace
         }
         std::string assetStatus;
         override_assets::ensure(
-            screen, usedDimensions, identityConflict, assetStatus);
+            screen, usedDimensions, usedOverridePaths,
+            identityConflict, assetStatus);
         g_screens.push_back(std::move(screen)); selectedScreen = static_cast<int>(g_screens.size() - 1); mark_changed(true);
     }
 

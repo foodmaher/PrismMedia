@@ -188,6 +188,7 @@ namespace override_assets
     bool ensure(
         screen_t& screen,
         const std::vector<std::pair<uint32_t, uint32_t>>& usedDimensions,
+        const std::vector<std::string>& usedOverridePaths,
         bool requireGeneratedIdentity,
         std::string& status)
     {
@@ -202,6 +203,14 @@ namespace override_assets
             screen.override_texture_size_h < 4 ||
             screen.override_texture_size_w % 4 != 0 ||
             screen.override_texture_size_h % 4 != 0;
+        const std::string readableGeneratedPath =
+            "/home/PrismTextureStreamer/" + gameTextureStem + ".tobj";
+        const bool readableNameConflict =
+            std::find(
+                usedOverridePaths.begin(), usedOverridePaths.end(),
+                readableGeneratedPath) != usedOverridePaths.end();
+        requireGeneratedIdentity =
+            requireGeneratedIdentity || readableNameConflict;
         if (pluginManagedPath && !gameTextureStem.empty())
             stem = gameTextureStem;
         if (requireGeneratedIdentity)
@@ -214,6 +223,15 @@ namespace override_assets
                 suffix = suffix.substr(suffix.size() - 8);
             stem = (gameTextureStem.empty() ? "display" : gameTextureStem) +
                 "_" + suffix;
+            if (readableNameConflict)
+            {
+                diagnostic_log::writef(
+                    "render",
+                    "Generated override name %s is already reserved; %s "
+                    "will use a stable suffixed identity.",
+                    readableGeneratedPath.c_str(),
+                    screen.original_texture.c_str());
+            }
         }
         if (requireGeneratedIdentity || invalidIdentity || pluginManagedPath)
         {

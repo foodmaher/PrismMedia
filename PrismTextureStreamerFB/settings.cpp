@@ -553,14 +553,17 @@ namespace settings {
                     20.0f, 8000.0f);
 
             std::vector<std::pair<uint32_t, uint32_t>> usedDimensions;
+            std::vector<std::string> usedOverridePaths;
             bool identityConflict{};
             bool originalTextureConflict{};
             usedDimensions.reserve(loaded.size());
+            usedOverridePaths.reserve(loaded.size());
             for (const auto& existing : loaded)
             {
                 usedDimensions.emplace_back(
                     existing.override_texture_size_w,
                     existing.override_texture_size_h);
+                usedOverridePaths.push_back(existing.override_texture);
                 identityConflict = identityConflict ||
                     existing.override_texture == screen.override_texture ||
                     (existing.override_texture_size_w ==
@@ -573,7 +576,8 @@ namespace settings {
             }
             std::string overrideStatus;
             override_assets::ensure(
-                screen, usedDimensions, identityConflict, overrideStatus);
+                screen, usedDimensions, usedOverridePaths,
+                identityConflict, overrideStatus);
 
             if (originalTextureConflict)
             {

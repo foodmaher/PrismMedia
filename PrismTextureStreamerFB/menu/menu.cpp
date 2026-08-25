@@ -23,6 +23,7 @@
 #include "../environment_audio.h"
 #include "../hotkeys.h"
 #include "../misc/imgui_stdlib.h"
+#include "../override_assets.h"
 #include "../prism/execute_command.h"
 #include "../prism/memserver_texture_queue.h"
 #include "../prism/prism.h"
@@ -684,11 +685,27 @@ namespace
         return clicked;
     }
 
+    const char* screen_type_label(screen_type_t type)
+    {
+        return type == screen_type_t::GPS ? "GPS" :
+            (type == screen_type_t::DASHBOARD ? "Dashboard" : "Custom");
+    }
+
+    int screen_type_ordinal(size_t screenIndex)
+    {
+        if (screenIndex >= g_screens.size())
+            return 1;
+        const screen_type_t type = g_screens[screenIndex].type;
+        int ordinal{};
+        for (size_t index = 0; index <= screenIndex; ++index)
+            ordinal += g_screens[index].type == type ? 1 : 0;
+        return (std::max)(1, ordinal);
+    }
+
     void draw_home(screen_t& screen)
     {
         const auto stats = screen.source ? screen.source->GetPerformanceStats() : source_performance_stats_t{};
-        const char* screenKind = screen.type == screen_type_t::GPS ? "GPS" :
-            (screen.type == screen_type_t::DASHBOARD ? "Dashboard" : "Custom");
+        const char* screenKind = screen_type_label(screen.type);
         char displayHeadline[64]{};
         char displayDetail[192]{};
         char performanceHeadline[64]{};
@@ -697,7 +714,8 @@ namespace
         char brightnessHeadline[64]{};
         char brightnessDetail[192]{};
         std::snprintf(displayHeadline, sizeof(displayHeadline),
-            "%s %d", screenKind, selectedScreen + 1);
+            "%s %d", screenKind,
+            screen_type_ordinal(static_cast<size_t>(selectedScreen)));
         std::snprintf(displayDetail, sizeof(displayDetail),
             "%s\n%ux%u at %u FPS",
             screen.source ? screen.source->GetStatusText().c_str() : "Waiting for source",
@@ -868,11 +886,10 @@ namespace
             targetLabelPointers.reserve(g_screens.size());
             for (size_t index = 0; index < g_screens.size(); ++index)
             {
-                const char* kind = g_screens[index].type == screen_type_t::GPS
-                    ? "GPS" : (g_screens[index].type == screen_type_t::DASHBOARD
-                        ? "Dashboard" : "Custom");
+                const char* kind = screen_type_label(g_screens[index].type);
                 targetLabels.push_back(
-                    std::to_string(index + 1) + " - " + kind);
+                    std::string(kind) + " " +
+                    std::to_string(screen_type_ordinal(index)));
             }
             for (const auto& label : targetLabels)
                 targetLabelPointers.push_back(label.c_str());
@@ -1438,6 +1455,29 @@ namespace
         screen.liveTextureRenderTarget = nullptr; screen.immediateContext = nullptr;
     }
 
+    bool prepare_override_assets(screen_t& screen, std::string& status)
+    {
+        std::vector<std::pair<uint32_t, uint32_t>> usedDimensions;
+        bool identityConflict{};
+        usedDimensions.reserve(g_screens.size());
+        for (const auto& other : g_screens)
+        {
+            if (&other == &screen)
+                continue;
+            usedDimensions.emplace_back(
+                other.override_texture_size_w,
+                other.override_texture_size_h);
+            identityConflict = identityConflict ||
+                other.override_texture == screen.override_texture ||
+                (other.override_texture_size_w ==
+                    screen.override_texture_size_w &&
+                 other.override_texture_size_h ==
+                    screen.override_texture_size_h);
+        }
+        return override_assets::ensure(
+            screen, usedDimensions, identityConflict, status);
+    }
+
     void draw_system(screen_t& screen, bool& removeCurrent)
     {
         ImGui::TextColored(ImVec4(0.20f, 0.88f, 0.94f, 1.0f), "PERFORMANCE + SYSTEM");
@@ -1639,6 +1679,7 @@ namespace
             static bool discoveryStarted{};
             static int selectedDiscoveredTexture = -1;
             static std::string discoveryScreenId;
+            static std::string overrideAssetStatus;
             static uint64_t lastDiscoveryRefreshTick{};
             static std::vector<
                 prism::memserver_texture_queue::discovered_texture_t>
@@ -1759,10 +1800,9 @@ namespace
                     discoveredTextures[
                         static_cast<size_t>(selectedDiscoveredTexture)].path;
                 if (screen.original_texture != selectedPath)
-                {
                     screen.original_texture = selectedPath;
-                    mark_changed(true);
-                }
+                prepare_override_assets(screen, overrideAssetStatus);
+                mark_changed(true);
             }
             ImGui::SameLine(0.0f, 8.0f);
             if (ImGui::Button(
@@ -1771,15 +1811,38 @@ namespace
             {
                 screen.original_texture = discoveredTextures[
                     static_cast<size_t>(selectedDiscoveredTexture)].path;
+                // Save the chosen game texture even if Windows prevents asset
+                // repair, so the user can retry without rescanning the truck.
                 mark_changed(true);
-                prism::string command("game");
-                if (prism::execute_command::call(&command, -1))
-                    criticalReloadPending = false;
+                if (prepare_override_assets(screen, overrideAssetStatus))
+                {
+                    prism::string command("game");
+                    if (prism::execute_command::call(&command, -1))
+                        criticalReloadPending = false;
+                }
             }
             ImGui::EndDisabled();
             ImGui::TextDisabled(
-                "The selected screen keeps its existing override TOBJ/DDS "
-                "pair and unique matching dimensions.");
+                "PrismMedia verifies or generates the matching TOBJ/DDS pair "
+                "and preserves unique identity dimensions.");
+            if (!overrideAssetStatus.empty())
+                ImGui::TextWrapped("%s", overrideAssetStatus.c_str());
+            if (ImGui::Button(
+                    "Repair active display assets + reload",
+                    ImVec2(-1.0f, 36.0f)))
+            {
+                if (prepare_override_assets(screen, overrideAssetStatus))
+                {
+                    mark_changed(true);
+                    prism::string command("game");
+                    if (prism::execute_command::call(&command, -1))
+                        criticalReloadPending = false;
+                }
+            }
+            explain_last_item(
+                "Repair display assets",
+                "Regenerates the active GPS, dashboard or custom display's TOBJ/DDS override pair, then reloads textures once.",
+                "Only during repair", "Works for every display type");
         }
 
         if (ImGui::CollapsingHeader("Critical texture identity"))
@@ -1827,6 +1890,24 @@ namespace
         else if (type == screen_type_t::DASHBOARD)
         { screen.original_texture = "/vehicle/truck/share/dashboard.tobj"; screen.override_texture = "/home/PrismTextureStreamer/dashboard.tobj"; screen.override_texture_size_w = 2048; screen.override_texture_size_h = 64; }
         else { screen.original_texture = ".tobj"; screen.override_texture = "/home/PrismTextureStreamer/.tobj"; }
+        std::vector<std::pair<uint32_t, uint32_t>> usedDimensions;
+        bool identityConflict{};
+        usedDimensions.reserve(g_screens.size());
+        for (const auto& existing : g_screens)
+        {
+            usedDimensions.emplace_back(
+                existing.override_texture_size_w,
+                existing.override_texture_size_h);
+            identityConflict = identityConflict ||
+                existing.override_texture == screen.override_texture ||
+                (existing.override_texture_size_w ==
+                    screen.override_texture_size_w &&
+                 existing.override_texture_size_h ==
+                    screen.override_texture_size_h);
+        }
+        std::string assetStatus;
+        override_assets::ensure(
+            screen, usedDimensions, identityConflict, assetStatus);
         g_screens.push_back(std::move(screen)); selectedScreen = static_cast<int>(g_screens.size() - 1); mark_changed(true);
     }
 
@@ -2100,16 +2181,21 @@ namespace
                     ImGuiChildFlags_Borders,
                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
                 ImGui::PushFont(ui_font(1)); ImGui::TextDisabled("ACTIVE DISPLAY"); ImGui::PopFont();
-                const char* activeKind = g_screens[static_cast<size_t>(selectedScreen)].type == screen_type_t::GPS
-                    ? "GPS" : (g_screens[static_cast<size_t>(selectedScreen)].type == screen_type_t::DASHBOARD ? "Dashboard" : "Custom");
-                const std::string activeLabel = std::string(activeKind) + "  " + std::to_string(selectedScreen + 1);
+                const char* activeKind = screen_type_label(
+                    g_screens[static_cast<size_t>(selectedScreen)].type);
+                const std::string activeLabel = std::string(activeKind) +
+                    "  " + std::to_string(screen_type_ordinal(
+                        static_cast<size_t>(selectedScreen)));
                 ImGui::SetNextItemWidth(-1.0f);
                 if (ImGui::BeginCombo("##active_display", activeLabel.c_str()))
                 {
                 for (int i = 0; i < static_cast<int>(g_screens.size()); ++i)
                 {
-                    const char* kind = g_screens[static_cast<size_t>(i)].type == screen_type_t::GPS ? "GPS" : (g_screens[static_cast<size_t>(i)].type == screen_type_t::DASHBOARD ? "Dashboard" : "Custom");
-                    const std::string label = std::string(kind) + "  " + std::to_string(i + 1);
+                    const char* kind = screen_type_label(
+                        g_screens[static_cast<size_t>(i)].type);
+                    const std::string label = std::string(kind) + "  " +
+                        std::to_string(screen_type_ordinal(
+                            static_cast<size_t>(i)));
                     if (ImGui::Selectable(label.c_str(), selectedScreen == i)) selectedScreen = i;
                 }
                     ImGui::EndCombo();

@@ -50,6 +50,9 @@
     <ClCompile Include="menu\menu.cpp">
       <Filter>Source Files\menu</Filter>
     </ClCompile>
+    <ClCompile Include="override_assets.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="win32\win32.cpp">
       <Filter>Source Files\win32</Filter>
     </ClCompile>
@@ -117,6 +120,9 @@
     </ClInclude>
     <ClInclude Include="menu\menu.h">
       <Filter>Source Files\menu</Filter>
+    </ClInclude>
+    <ClInclude Include="override_assets.h">
+      <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="win32\win32.h">
       <Filter>Source Files\win32</Filter>

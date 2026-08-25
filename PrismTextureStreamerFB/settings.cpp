@@ -13,6 +13,7 @@
 #include "screens.h"
 #include "diagnostic_log.h"
 #include "hotkeys.h"
+#include "override_assets.h"
 #include "scs_logging.h"
 #include "sources/media_client.h"
 #include "sources/native_media.h"
@@ -550,6 +551,26 @@ namespace settings {
                         "AdaptiveAudioExternalMinimumCutoff",
                         20.0f),
                     20.0f, 8000.0f);
+
+            std::vector<std::pair<uint32_t, uint32_t>> usedDimensions;
+            bool identityConflict{};
+            usedDimensions.reserve(loaded.size());
+            for (const auto& existing : loaded)
+            {
+                usedDimensions.emplace_back(
+                    existing.override_texture_size_w,
+                    existing.override_texture_size_h);
+                identityConflict = identityConflict ||
+                    existing.override_texture == screen.override_texture ||
+                    (existing.override_texture_size_w ==
+                        screen.override_texture_size_w &&
+                     existing.override_texture_size_h ==
+                        screen.override_texture_size_h);
+            }
+            std::string overrideStatus;
+            override_assets::ensure(
+                screen, usedDimensions, identityConflict, overrideStatus);
+
             if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA &&
                 !screen.mediaUrl.empty())
             {

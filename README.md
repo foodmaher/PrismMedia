@@ -15,7 +15,10 @@ or a desktop window onto supported ETS2/ATS truck displays.
   current truck/accessories during one texture reload. Likely GPS, dashboard,
   tablet, navigation and infotainment paths are prioritised, unusual paths can
   be shown with **Show all**, and the selected path can be assigned and reloaded
-  without manually typing it.
+  without manually typing it. PrismMedia now validates and regenerates the
+  paired DXT5 `.dds` and `.tobj` override assets for every GPS, dashboard and
+  custom display at startup. A **Repair active display assets + reload** button
+  is available for an immediate manual repair, including the primary GPS.
 - The complete retained control set remains available: GPS/Dashboard/Custom
   displays, Pause/Freeze, media mute and volume, hotkey target selection,
   performance profiles, scaling modes, backups, adaptive audio tuning, update
@@ -37,7 +40,12 @@ or a desktop window onto supported ETS2/ATS truck displays.
   three Audio tabs; merely focusing an Audio card also selects it. Media chords
   are suppressed while the menu owns the controller.
 - Adaptive gain, stereo pan, and low-pass changes use a 650 ms crossfade so
-  cabin/exterior camera transitions do not produce an abrupt “DJ” effect.
+  cabin/exterior camera transitions do not produce an abrupt “DJ” effect. Each
+  isolated display receives its own adaptive-audio update, while media keys
+  continue to control only the selected Media Key Target.
+- Display names use compact numbering per type. Removing Custom 1 and creating
+  another custom display produces Custom 1 again; GPS and Dashboard numbering
+  is compacted independently.
 - Engine-off playback pauses immediately with no fade; engine-start can still
   recover smoothly without changing cabin/exterior transition behavior.
 - Automatic brightness now behaves like a phone sensor: sunlight changes settle

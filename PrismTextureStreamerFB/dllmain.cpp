@@ -227,9 +227,6 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
     bool has_gps{};
     bool has_dash{};
     bool has_custom{};
-    IContentSource* spatialAudioTarget{};
-    IContentSource* spatialAudioFallback{};
-    screen_t* spatialAudioScreen{};
 
     camera_bridge::poll();
 
@@ -473,17 +470,6 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
             else if (screen.type == screen_type_t::CUSTOM)
                 has_custom = true;
 
-            if (screen.source && screen.source->SupportsSpatialAudio())
-            {
-                if (!spatialAudioFallback)
-                    spatialAudioFallback = screen.source.get();
-                if (!spatialAudioTarget && screen.adaptiveAudioEnabled)
-                {
-                    spatialAudioTarget = screen.source.get();
-                    spatialAudioScreen = &screen;
-                }
-            }
-
             if (screen.source &&
                 screen.source->SupportsVehiclePowerControl())
             {
@@ -551,58 +537,53 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
         g_auto_brightness_requested = autoBrightnessRequested;
         g_auto_brightness_sample_hz = autoBrightnessSampleHz;
 
-        if (spatialAudioTarget && spatialAudioScreen)
-        {
-            const bool driving = g_telemetry_driving.load();
-            const uint64_t now = GetTickCount64();
-            const uint64_t lastHeadUpdate =
-                g_last_head_update_tick.load();
-            const bool headTelemetryFresh =
-                driving && lastHeadUpdate != 0 &&
-                now >= lastHeadUpdate &&
-                now - lastHeadUpdate <= 500;
-            const bool externalCamera =
-                driving &&
-                (g_camera_bridge_connected.load()
-                    ? g_camera_type.load() != kSpfInteriorCamera
-                    : (!g_camera_interior_hint.load() ||
-                        !headTelemetryFresh));
+        const bool driving = g_telemetry_driving.load();
+        const uint64_t spatialNow = GetTickCount64();
+        const uint64_t lastHeadUpdate = g_last_head_update_tick.load();
+        const bool headTelemetryFresh = driving && lastHeadUpdate != 0 &&
+            spatialNow >= lastHeadUpdate &&
+            spatialNow - lastHeadUpdate <= 500;
+        const bool externalCamera = driving &&
+            (g_camera_bridge_connected.load()
+                ? g_camera_type.load() != kSpfInteriorCamera
+                : (!g_camera_interior_hint.load() || !headTelemetryFresh));
+        bool metricsPublished{};
 
+        for (auto& screen : g_screens)
+        {
+            if (!screen.source || !screen.source->SupportsSpatialAudio())
+                continue;
+            if (!screen.adaptiveAudioEnabled)
+            {
+                screen.source->SetSpatialAudio(
+                    1.0f, 0.0f, false, 20000.0f);
+                continue;
+            }
+
+            float gain = 1.0f;
+            float pan{};
+            float lowpassHz = 20000.0f;
             if (!driving)
             {
-                const float menuVolume = (std::clamp)(
-                    spatialAudioScreen->adaptiveAudioMenuVolume,
-                    0.0f, 1.0f);
-                spatialAudioTarget->SetSpatialAudio(
-                    menuVolume, 0.0f, true, 20000.0f);
-                g_adaptive_audio_distance_gain = menuVolume;
-                g_adaptive_audio_lowpass_hz = 20000.0f;
+                gain = (std::clamp)(
+                    screen.adaptiveAudioMenuVolume, 0.0f, 1.0f);
             }
             else if (externalCamera)
             {
-                float gain = (std::clamp)(
-                    spatialAudioScreen->
-                        adaptiveAudioExternalNearVolume,
-                    0.0f, 1.0f);
+                gain = (std::clamp)(
+                    screen.adaptiveAudioExternalNearVolume, 0.0f, 1.0f);
                 const float nearCutoff = (std::clamp)(
-                    spatialAudioScreen->
-                        adaptiveAudioExternalNearCutoff,
+                    screen.adaptiveAudioExternalNearCutoff,
                     20.0f, 20000.0f);
-                float lowpassHz =
-                    spatialAudioScreen->
-                        adaptiveAudioExternalLowPassEnabled
-                    ? nearCutoff
-                    : 20000.0f;
-                const float farCutoff = (std::min)(
-                    nearCutoff,
+                lowpassHz = screen.adaptiveAudioExternalLowPassEnabled
+                    ? nearCutoff : 20000.0f;
+                const float farCutoff = (std::min)(nearCutoff,
                     (std::clamp)(
-                        spatialAudioScreen->
-                            adaptiveAudioExternalMinimumCutoff,
+                        screen.adaptiveAudioExternalMinimumCutoff,
                         20.0f, 8000.0f));
 
                 const bool useExactDistance =
-                    spatialAudioScreen->
-                        adaptiveAudioExternalDistanceEnabled &&
+                    screen.adaptiveAudioExternalDistanceEnabled &&
                     g_camera_bridge_connected.load() &&
                     g_head_anchor_calibrated.load();
                 if (useExactDistance)
@@ -610,13 +591,11 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                     const float distance = (std::max)(
                         0.0f, g_external_camera_distance.load());
                     const float fullDistance = (std::clamp)(
-                        spatialAudioScreen->
-                            adaptiveAudioExternalFullVolumeDistance,
+                        screen.adaptiveAudioExternalFullVolumeDistance,
                         0.0f, 25.0f);
                     const float muteDistance = (std::max)(
                         fullDistance + 0.5f,
-                        spatialAudioScreen->
-                            adaptiveAudioExternalMuteDistance);
+                        screen.adaptiveAudioExternalMuteDistance);
                     const float blend = (std::clamp)(
                         (distance - fullDistance) /
                             (muteDistance - fullDistance),
@@ -624,102 +603,69 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                     const float audible =
                         std::pow(1.0f - blend, 1.35f);
                     const float minimumGain = (std::clamp)(
-                        spatialAudioScreen->
-                            adaptiveAudioOutsideVolume,
-                        0.0f, 1.0f);
+                        screen.adaptiveAudioOutsideVolume, 0.0f, 1.0f);
                     const float nearGain = (std::clamp)(
-                        spatialAudioScreen->
-                            adaptiveAudioExternalNearVolume,
+                        screen.adaptiveAudioExternalNearVolume,
                         0.0f, 1.0f);
                     gain = minimumGain +
                         (nearGain - minimumGain) * audible;
-
-                    if (spatialAudioScreen->
-                        adaptiveAudioExternalLowPassEnabled)
+                    if (screen.adaptiveAudioExternalLowPassEnabled)
                     {
-                        const float logCutoff =
-                            std::log(nearCutoff) +
-                            blend *
-                                (std::log(farCutoff) -
-                                    std::log(nearCutoff));
+                        const float logCutoff = std::log(nearCutoff) +
+                            blend * (std::log(farCutoff) -
+                                std::log(nearCutoff));
                         lowpassHz = std::exp(logCutoff);
                     }
-                    else
-                    {
-                        lowpassHz = 20000.0f;
-                    }
                 }
-
-                spatialAudioTarget->SetSpatialAudio(
-                    gain, 0.0f, true, lowpassHz);
-                g_adaptive_audio_distance_gain = gain;
-                g_adaptive_audio_lowpass_hz = lowpassHz;
             }
             else
             {
                 float heading = g_head_heading.load();
-                if (heading > 0.5f)
-                    heading -= 1.0f;
-                else if (heading < -0.5f)
-                    heading += 1.0f;
-
+                if (heading > 0.5f) heading -= 1.0f;
+                else if (heading < -0.5f) heading += 1.0f;
                 float relativeDegrees =
-                    -spatialAudioScreen->adaptiveAudioSpeakerAzimuth -
-                    heading * 360.0f;
-                while (relativeDegrees > 180.0f)
-                    relativeDegrees -= 360.0f;
-                while (relativeDegrees < -180.0f)
-                    relativeDegrees += 360.0f;
-
+                    -screen.adaptiveAudioSpeakerAzimuth - heading * 360.0f;
+                while (relativeDegrees > 180.0f) relativeDegrees -= 360.0f;
+                while (relativeDegrees < -180.0f) relativeDegrees += 360.0f;
                 const float relativeRadians =
                     relativeDegrees * kPi / 180.0f;
                 const float strength = (std::clamp)(
-                    spatialAudioScreen->adaptiveAudioStrength,
-                    0.0f, 1.0f);
-                const float pan = (std::clamp)(
-                    -std::sin(relativeRadians) * strength,
-                    -1.0f, 1.0f);
+                    screen.adaptiveAudioStrength, 0.0f, 1.0f);
+                pan = (std::clamp)(
+                    -std::sin(relativeRadians) * strength, -1.0f, 1.0f);
                 const float frontAmount =
                     (std::cos(relativeRadians) + 1.0f) * 0.5f;
                 const float facingAwayVolume = (std::clamp)(
-                    spatialAudioScreen->adaptiveAudioFacingAwayVolume,
-                    0.0f, 1.0f);
-                const float directionalGain =
-                    facingAwayVolume +
+                    screen.adaptiveAudioFacingAwayVolume, 0.0f, 1.0f);
+                const float directionalGain = facingAwayVolume +
                     (1.0f - facingAwayVolume) * frontAmount;
-                float gain = 1.0f -
-                    strength * (1.0f - directionalGain);
-                gain *= (std::clamp)(
-                    spatialAudioScreen->adaptiveAudioInteriorVolume,
-                    0.0f, 1.0f);
-
+                gain = (1.0f - strength * (1.0f - directionalGain)) *
+                    (std::clamp)(
+                        screen.adaptiveAudioInteriorVolume, 0.0f, 1.0f);
                 const float x = g_head_offset_x.load();
                 const float y = g_head_offset_y.load();
                 const float z = g_head_offset_z.load();
-                const float distance =
-                    std::sqrt(x * x + y * y + z * z);
+                const float distance = std::sqrt(x * x + y * y + z * z);
                 const float outsideDistance = (std::clamp)(
-                    spatialAudioScreen->adaptiveAudioOutsideDistance,
-                    0.25f, 5.0f);
+                    screen.adaptiveAudioOutsideDistance, 0.25f, 5.0f);
                 const float outsideBlend = (std::clamp)(
-                    (distance - outsideDistance) / 0.35f,
-                    0.0f, 1.0f);
+                    (distance - outsideDistance) / 0.35f, 0.0f, 1.0f);
                 const float outsideVolume = (std::clamp)(
-                    spatialAudioScreen->adaptiveAudioOutsideVolume,
-                    0.0f, 1.0f);
-                gain *= 1.0f -
-                    outsideBlend * (1.0f - outsideVolume);
+                    screen.adaptiveAudioOutsideVolume, 0.0f, 1.0f);
+                gain *= 1.0f - outsideBlend * (1.0f - outsideVolume);
+            }
 
-                spatialAudioTarget->SetSpatialAudio(
-                    gain, pan, true, 20000.0f);
+            screen.source->SetSpatialAudio(
+                gain, pan, true, lowpassHz);
+            if (!metricsPublished || screen.hotkeyTarget)
+            {
                 g_adaptive_audio_distance_gain = gain;
-                g_adaptive_audio_lowpass_hz = 20000.0f;
+                g_adaptive_audio_lowpass_hz = lowpassHz;
+                metricsPublished = true;
             }
         }
-        else if (spatialAudioFallback)
+        if (!metricsPublished)
         {
-            spatialAudioFallback->SetSpatialAudio(
-                1.0f, 0.0f, false, 20000.0f);
             g_adaptive_audio_distance_gain = 1.0f;
             g_adaptive_audio_lowpass_hz = 20000.0f;
         }

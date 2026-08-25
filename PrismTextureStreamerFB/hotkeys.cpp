@@ -141,10 +141,17 @@ namespace {
 
     std::atomic<bool> gamepadMenuToggleRequested{};
 
-    XInputGetState_t load_xinput_get_state()
+    struct xinput_functions_t
     {
-        static XInputGetState_t function = []() -> XInputGetState_t
+        std::array<XInputGetState_t, 3> getState{};
+        size_t count{};
+    };
+
+    const xinput_functions_t& load_xinput_functions()
+    {
+        static const xinput_functions_t functions = []
         {
+            xinput_functions_t result{};
             const char* libraries[] = {
                 "xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll"
             };
@@ -153,14 +160,19 @@ namespace {
                 const HMODULE module = LoadLibraryA(library);
                 if (!module)
                     continue;
-                const auto result = reinterpret_cast<XInputGetState_t>(
+                const auto function = reinterpret_cast<XInputGetState_t>(
                     GetProcAddress(module, "XInputGetState"));
-                if (result)
-                    return result;
+                if (!function)
+                    continue;
+                bool duplicate{};
+                for (size_t index = 0; index < result.count; ++index)
+                    duplicate |= result.getState[index] == function;
+                if (!duplicate && result.count < result.getState.size())
+                    result.getState[result.count++] = function;
             }
-            return nullptr;
+            return result;
         }();
-        return function;
+        return functions;
     }
 
     struct winmm_functions_t
@@ -458,43 +470,66 @@ namespace {
         return false;
     }
 
-    bool read_gamepad(
+    bool read_gamepad_uncached(
         XINPUT_STATE& state,
         DWORD& controller,
         gamepad_backend_t& backend,
         bool& usedAutomaticFallback)
     {
-        const XInputGetState_t getState = load_xinput_get_state();
+        const auto& xinput = load_xinput_functions();
         usedAutomaticFallback = false;
+        static int lastProvider = -1;
+        static DWORD lastController{};
 
-        if (getState && g_gamepad_controller_index >= 0 &&
+        const auto try_xinput = [&](size_t provider, DWORD index)
+        {
+            if (provider >= xinput.count || index >= XUSER_MAX_COUNT)
+                return false;
+            XINPUT_STATE candidate{};
+            if (xinput.getState[provider](index, &candidate) != ERROR_SUCCESS)
+                return false;
+            state = candidate;
+            controller = index;
+            backend = gamepad_backend_t::XINPUT;
+            lastProvider = static_cast<int>(provider);
+            lastController = index;
+            return true;
+        };
+
+        if (g_gamepad_controller_index >= 0 &&
             g_gamepad_controller_index < XUSER_MAX_COUNT)
         {
-            controller = static_cast<DWORD>(g_gamepad_controller_index);
-            if (getState(controller, &state) == ERROR_SUCCESS)
-            {
-                backend = gamepad_backend_t::XINPUT;
+            const DWORD preferred =
+                static_cast<DWORD>(g_gamepad_controller_index);
+            if (lastProvider >= 0 &&
+                try_xinput(static_cast<size_t>(lastProvider), preferred))
                 return true;
-            }
+            for (size_t provider = 0; provider < xinput.count; ++provider)
+                if (static_cast<int>(provider) != lastProvider &&
+                    try_xinput(provider, preferred))
+                    return true;
             usedAutomaticFallback = true;
         }
 
-        if (getState)
+        if (g_gamepad_controller_index < 0 && lastProvider >= 0 &&
+            try_xinput(static_cast<size_t>(lastProvider), lastController))
+            return true;
+
+        for (size_t provider = 0; provider < xinput.count; ++provider)
         {
             for (DWORD index = 0; index < XUSER_MAX_COUNT; ++index)
             {
                 if (g_gamepad_controller_index >= 0 &&
                     index == static_cast<DWORD>(g_gamepad_controller_index))
                     continue;
-                XINPUT_STATE candidate{};
-                if (getState(index, &candidate) != ERROR_SUCCESS)
+                if (static_cast<int>(provider) == lastProvider &&
+                    index == lastController)
                     continue;
-                state = candidate;
-                controller = index;
-                backend = gamepad_backend_t::XINPUT;
-                return true;
+                if (try_xinput(provider, index))
+                    return true;
             }
         }
+        lastProvider = -1;
 
         // Steam Input and many PlayStation/generic controllers are visible to
         // the legacy Windows joystick API even when XInput exposes no slot.
@@ -523,6 +558,47 @@ namespace {
         }
         backend = gamepad_backend_t::NONE;
         return false;
+    }
+
+    bool read_gamepad(
+        XINPUT_STATE& state,
+        DWORD& controller,
+        gamepad_backend_t& backend,
+        bool& usedAutomaticFallback)
+    {
+        // The media dispatcher and ImGui backend run in the same Present.
+        // Reuse their result instead of polling Steam/XInput twice per frame.
+        static XINPUT_STATE cachedState{};
+        static DWORD cachedController{};
+        static gamepad_backend_t cachedBackend{ gamepad_backend_t::NONE };
+        static bool cachedFallback{};
+        static bool cachedConnected{};
+        static int cachedPreference = -2;
+        static uint64_t cachedTick{};
+        const uint64_t now = GetTickCount64();
+        if (cachedPreference == g_gamepad_controller_index &&
+            cachedTick != 0 && now >= cachedTick && now - cachedTick <= 2)
+        {
+            state = cachedState;
+            controller = cachedController;
+            backend = cachedBackend;
+            usedAutomaticFallback = cachedFallback;
+            return cachedConnected;
+        }
+
+        cachedState = {};
+        cachedController = 0;
+        cachedBackend = gamepad_backend_t::NONE;
+        cachedFallback = false;
+        cachedConnected = read_gamepad_uncached(
+            cachedState, cachedController, cachedBackend, cachedFallback);
+        cachedPreference = g_gamepad_controller_index;
+        cachedTick = now;
+        state = cachedState;
+        controller = cachedController;
+        backend = cachedBackend;
+        usedAutomaticFallback = cachedFallback;
+        return cachedConnected;
     }
 
     void process_gamepad_bindings(bool menuVisible)

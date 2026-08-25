@@ -28,6 +28,9 @@ AI traffic enumeration and the traffic-radio helper were removed, reducing
 shared-memory size and eliminating that periodic vehicle scan.
 
 The UI animates only while open. Auto-save is debounced after interaction, so
-sliders do not write the configuration on every frame. Controller polling for
-ImGui navigation also runs only while the console is visible; media hotkeys keep
-their existing low-frequency background path.
+sliders do not write the configuration on every frame. The Live Performance
+page snapshots source data at 4 Hz and the logical-processor map at 2 Hz instead
+of querying them at the game's frame rate. Its FPS-loss estimate includes only
+measured render-thread upload work, not the monitor's own ImGui draw. Controller
+poll results are shared by media bindings and ImGui within each frame; Steam,
+XInput, and WinMM are therefore not polled twice while the console is open.

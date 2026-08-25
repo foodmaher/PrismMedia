@@ -8,8 +8,9 @@ or a desktop window onto supported ETS2/ATS truck displays.
 - New hybrid dashboard UI with a Home overview, custom vector icons, elevated
   cards and simulated soft shadows, animated audio waves, mouse/gamepad
   navigation, auto-save, smooth page transitions, and a live option-effect
-  inspector. The console auto-centres for the active game resolution, can be
-  moved or resized, and reflows its navigation for shorter displays.
+  inspector. The console re-reads the game viewport whenever it opens,
+  auto-centres inside a DPI-aware safe area, clamps moved windows on-screen,
+  can be resized, and reflows its navigation for shorter displays.
 - The complete retained control set remains available: GPS/Dashboard/Custom
   displays, Pause/Freeze, media mute and volume, hotkey target selection,
   performance profiles, scaling modes, backups, adaptive audio tuning, update
@@ -21,8 +22,11 @@ or a desktop window onto supported ETS2/ATS truck displays.
   and its duplicated playback state are removed.
 - Play/Pause is state-neutral in the plugin, while actual browser media events
   resynchronize playback intent to prevent a stale pause indicator.
-- Controller navigation now uses the plugin's XInput/Steam/WinMM fallback:
-  D-pad or left stick moves, A activates, and LB/RB changes pages. Media chords
+- Controller navigation probes all installed XInput providers so Steam Input's
+  virtual pad is found even when it hooks a different XInput DLL than ETS2/ATS.
+  WinMM and keyboard-emulation fallbacks remain available. D-pad or left stick
+  moves, A activates, B goes back, LB/RB changes pages, and LT/RT cycles the
+  three Audio tabs; merely focusing an Audio card also selects it. Media chords
   are suppressed while the menu owns the controller.
 - Adaptive gain, stereo pan, and low-pass changes use a 650 ms crossfade so
   cabin/exterior camera transitions do not produce an abrupt “DJ” effect.

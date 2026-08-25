@@ -4,6 +4,7 @@
 #include <Windows.h>
 #include <d3d11.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cfloat>
@@ -48,6 +49,7 @@ namespace
     float panelAnimation = 1.0f;
     uint64_t menuOpenedTick{};
     bool menuNeedsFocus{};
+    bool menuNeedsPlacement{};
     int restoreRequest = -1;
     bool saveNowRequest{};
     std::string restoreStatus;
@@ -463,6 +465,7 @@ namespace
         {
             menuOpenedTick = GetTickCount64();
             menuNeedsFocus = true;
+            menuNeedsPlacement = true;
         }
         if (!visible) { hotkeyBindingIndex = -1; g_is_binding_hotkey = false; }
         dinput8::set_mouse(visible);
@@ -756,12 +759,17 @@ namespace
         ImGui::PopStyleVar();
     }
 
-    bool audio_feature_card(const char* id, const char* title, int icon, bool selected, float width)
+    bool audio_feature_card(const char* id, const char* title, int icon,
+        int panelIndex, bool selected, float width)
     {
         ImGui::PushID(id);
         const ImVec2 start = ImGui::GetCursorScreenPos();
         const ImVec2 size(width, 126.0f);
         const bool clicked = ImGui::InvisibleButton("##audio_feature", size);
+        if (selected)
+            ImGui::SetItemDefaultFocus();
+        const bool selectedByNavigation = ImGui::IsItemFocused() &&
+            selectedAudioPanel != panelIndex;
         const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         ImDrawList* draw = ImGui::GetWindowDrawList();
         draw_card_shadow(draw, start, ImVec2(start.x + size.x, start.y + size.y), 12.0f);
@@ -791,33 +799,48 @@ namespace
         draw->AddText(ui_font(1), 19.0f, ImVec2(start.x + (size.x - titleSize.x) * 0.5f, start.y + 91.0f),
             selected ? kCyan : IM_COL32(235, 241, 246, 255), title);
         ImGui::PopID();
-        return clicked;
+        return clicked || selectedByNavigation;
+    }
+
+    void select_audio_panel(int panel)
+    {
+        selectedAudioPanel = (panel + 3) % 3;
+        panelAnimation = 0.0f;
+        switch (selectedAudioPanel)
+        {
+        case 0:
+            inspector = { "Volume & balance",
+                "Controls cabin, menu and exterior media levels.",
+                "Very low CPU", "Applies live" };
+            break;
+        case 1:
+            inspector = { "Cabin / outside",
+                "Smoothly blends volume and tone between camera environments.",
+                "Very low CPU", "Applies live" };
+            break;
+        default:
+            inspector = { "Filters",
+                "Controls distance-based low-pass muffling outside the truck.",
+                "Very low CPU", "Applies live" };
+            break;
+        }
     }
 
     void draw_audio_feature_cards()
     {
         const float gap = 12.0f;
         const float width = (ImGui::GetContentRegionAvail().x - gap * 2.0f) / 3.0f;
-        if (audio_feature_card("volume", "VOLUME & BALANCE", 0, selectedAudioPanel == 0, width))
-        {
-            selectedAudioPanel = 0;
-            panelAnimation = 0.0f;
-            inspector = { "Volume & balance", "Controls cabin, menu and exterior media levels.", "Very low CPU", "Applies live" };
-        }
+        if (audio_feature_card("volume", "VOLUME & BALANCE", 0, 0,
+            selectedAudioPanel == 0, width))
+            select_audio_panel(0);
         ImGui::SameLine(0.0f, gap);
-        if (audio_feature_card("transition", "CABIN / OUTSIDE", 1, selectedAudioPanel == 1, width))
-        {
-            selectedAudioPanel = 1;
-            panelAnimation = 0.0f;
-            inspector = { "Cabin / outside", "Smoothly blends volume and tone between camera environments.", "Very low CPU", "Applies live" };
-        }
+        if (audio_feature_card("transition", "CABIN / OUTSIDE", 1, 1,
+            selectedAudioPanel == 1, width))
+            select_audio_panel(1);
         ImGui::SameLine(0.0f, gap);
-        if (audio_feature_card("filters", "FILTERS", 2, selectedAudioPanel == 2, width))
-        {
-            selectedAudioPanel = 2;
-            panelAnimation = 0.0f;
-            inspector = { "Filters", "Controls distance-based low-pass muffling outside the truck.", "Very low CPU", "Applies live" };
-        }
+        if (audio_feature_card("filters", "FILTERS", 2, 2,
+            selectedAudioPanel == 2, width))
+            select_audio_panel(2);
     }
 
     void draw_media(screen_t& screen)
@@ -1204,7 +1227,7 @@ namespace
     void draw_controls()
     {
         ImGui::TextColored(ImVec4(0.20f, 0.88f, 0.94f, 1.0f), "MOUSE + GAMEPAD");
-        ImGui::TextWrapped("D-pad or left stick moves, A activates, and LB/RB changes pages. Hold X for ImGui window move/resize mode.");
+        ImGui::TextWrapped("D-pad or left stick moves, A activates, B goes back, LB/RB changes pages, and LT/RT switches the Audio tabs.");
         if (toggle_switch("Enable gamepad controls", g_gamepad_hotkeys_enabled)) mark_changed();
         const char* controllers[] = { "Automatic", "Controller 1", "Controller 2", "Controller 3", "Controller 4" };
         int controller = g_gamepad_controller_index + 1;
@@ -1397,47 +1420,130 @@ namespace
             }
             mark_changed();
         }
-        const auto stats = screen.source ? screen.source->GetPerformanceStats() : source_performance_stats_t{};
-        const std::string status = screen.source ? screen.source->GetStatusText() : "Waiting for source";
-        ImGui::Text("Source: %s", status.c_str());
-        if (ImGui::CollapsingHeader("Live performance", ImGuiTreeNodeFlags_DefaultOpen))
+        struct performance_snapshot_t
         {
-            const double gameFps = ImGui::GetIO().Framerate;
-            const double observedFrameMs = gameFps > 0.1 ? 1000.0 / gameFps : 0.0;
+            const screen_t* owner{};
+            source_performance_stats_t stats{};
+            std::string status{ "Waiting for source" };
+            double gameFps{};
+            double uploadCpuMs{};
+            double totalPluginCpuMs{};
+            double deliveredFps{};
+            uint64_t uploadedFrames{};
+            double environmentCpuUs{};
+            DWORD cpu0{ thread_scheduling::kUnassignedProcessor };
+            DWORD cpu1{ thread_scheduling::kUnassignedProcessor };
+            DWORD cpu2{ thread_scheduling::kUnassignedProcessor };
+            DWORD processorCount{};
+            std::array<uint32_t,
+                thread_scheduling::kTrackedProcessors> gameHits{};
+            std::array<uint32_t,
+                thread_scheduling::kTrackedProcessors> pluginHits{};
+            uint64_t lastRefreshTick{};
+            uint64_t lastProcessorRefreshTick{};
+        };
+        static performance_snapshot_t snapshot{};
+        const uint64_t monitorNow = GetTickCount64();
+        if (snapshot.owner != &screen)
+        {
+            snapshot = performance_snapshot_t{};
+            snapshot.owner = &screen;
+            snapshot.status = "Waiting for source";
+        }
+        // Query live source data at 4 Hz. Rendering the monitor must not turn
+        // source atomics/status calls into game-frame work at 60-144 Hz.
+        if (snapshot.lastRefreshTick == 0 ||
+            monitorNow - snapshot.lastRefreshTick >= 250)
+        {
+            const uint64_t elapsed = snapshot.lastRefreshTick == 0
+                ? 250 : monitorNow - snapshot.lastRefreshTick;
+            snapshot.lastRefreshTick = monitorNow;
+            snapshot.stats = screen.source
+                ? screen.source->GetPerformanceStats()
+                : source_performance_stats_t{};
+            snapshot.status = screen.source
+                ? screen.source->GetStatusText() : "Waiting for source";
+            snapshot.gameFps = ImGui::GetIO().Framerate;
+            snapshot.uploadCpuMs = screen.uploadCpuMs;
+            snapshot.totalPluginCpuMs = screen.totalPluginCpuMs;
+            snapshot.deliveredFps = snapshot.stats.deliveredFps > 0.0
+                ? snapshot.stats.deliveredFps : screen.deliveredFps;
+            snapshot.uploadedFrames = screen.uploadedFrames;
+            snapshot.environmentCpuUs =
+                g_environment_update_cpu_us.load();
+
+            const double observedFrameMs = snapshot.gameFps > 0.1
+                ? 1000.0 / snapshot.gameFps : 0.0;
             if (observedFrameMs > 0.0)
             {
-                const double withoutPluginMs = (std::max)(0.1, observedFrameMs - screen.uploadCpuMs);
-                const double instantaneousLoss = (std::max)(0.0, 1000.0 / withoutPluginMs - gameFps);
-                const double smoothing = 1.0 - std::exp(-observedFrameMs / 2500.0);
-                screen.estimatedFpsLoss = screen.estimatedFpsLoss == 0.0 ? instantaneousLoss :
-                    screen.estimatedFpsLoss * (1.0 - smoothing) + instantaneousLoss * smoothing;
+                // Only measured render-thread upload work is allowed into
+                // this estimate. The monitor's own UI draw is not attributed
+                // to texture streaming.
+                const double withoutUploadMs = (std::max)(
+                    0.1, observedFrameMs - snapshot.uploadCpuMs);
+                const double instantaneousLoss = (std::max)(0.0,
+                    1000.0 / withoutUploadMs - snapshot.gameFps);
+                const double smoothing = 1.0 - std::exp(
+                    -static_cast<double>(elapsed) / 2500.0);
+                screen.estimatedFpsLoss = screen.estimatedFpsLoss == 0.0
+                    ? instantaneousLoss
+                    : screen.estimatedFpsLoss * (1.0 - smoothing) +
+                        instantaneousLoss * smoothing;
             }
-            const double delivered = stats.deliveredFps > 0.0 ? stats.deliveredFps : screen.deliveredFps;
-            ImGui::Text("Current game FPS: %.1f", gameFps);
+        }
+        if (snapshot.lastProcessorRefreshTick == 0 ||
+            monitorNow - snapshot.lastProcessorRefreshTick >= 500)
+        {
+            snapshot.lastProcessorRefreshTick = monitorNow;
+            snapshot.cpu0 = thread_scheduling::preferred_processor(0);
+            snapshot.cpu1 = thread_scheduling::preferred_processor(1);
+            snapshot.cpu2 = thread_scheduling::preferred_processor(2);
+            snapshot.processorCount =
+                thread_scheduling::tracked_processor_count();
+            for (DWORD processor = 0;
+                processor < snapshot.processorCount; ++processor)
+            {
+                snapshot.gameHits[processor] =
+                    thread_scheduling::sampled_game_hits(processor);
+                snapshot.pluginHits[processor] =
+                    thread_scheduling::sampled_plugin_hits(processor);
+            }
+        }
+
+        ImGui::Text("Source: %s", snapshot.status.c_str());
+        if (ImGui::CollapsingHeader("Live performance", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Text("Current game FPS: %.1f", snapshot.gameFps);
             const ImVec4 lossColour = screen.estimatedFpsLoss < 1.0 ? ImVec4(0.35f, 0.90f, 0.40f, 1.0f) :
                 (screen.estimatedFpsLoss < 3.0 ? ImVec4(1.0f, 0.72f, 0.25f, 1.0f) : ImVec4(1.0f, 0.30f, 0.30f, 1.0f));
-            ImGui::TextColored(lossColour, "Smoothed estimated FPS loss: %.2f", screen.estimatedFpsLoss);
-            ImGui::Text("Game-thread texture upload: %.3f ms", screen.uploadCpuMs);
-            ImGui::Text("Source worker CPU: %.3f ms/frame", stats.workerCpuMs);
-            ImGui::Text("Total measured plugin CPU: %.3f ms/frame", screen.totalPluginCpuMs);
-            ImGui::Text("GPU readback portion: %.3f ms/frame", stats.readbackMs);
-            ImGui::Text("Delivered source rate: %.1f FPS", delivered);
+            ImGui::TextColored(lossColour,
+                "Estimated game-thread FPS cost: %.2f",
+                screen.estimatedFpsLoss);
+            ImGui::Text("Game-thread texture upload: %.3f ms", snapshot.uploadCpuMs);
+            ImGui::Text("Source worker CPU: %.3f ms/frame", snapshot.stats.workerCpuMs);
+            ImGui::Text("Total measured plugin CPU: %.3f ms/frame", snapshot.totalPluginCpuMs);
+            ImGui::Text("GPU readback portion: %.3f ms/frame", snapshot.stats.readbackMs);
+            ImGui::Text("Delivered source rate: %.1f FPS", snapshot.deliveredFps);
             ImGui::Text("Dropped/overloaded frames: %llu",
-                static_cast<unsigned long long>(stats.droppedFrames));
+                static_cast<unsigned long long>(snapshot.stats.droppedFrames));
             ImGui::Text("Frames uploaded to game: %llu",
-                static_cast<unsigned long long>(screen.uploadedFrames));
-            ImGui::Text("Hardware decode requested: %s", stats.hardwareDecoded ? "Yes" : "No / external");
-            ImGui::Text("Window capture bypassed: %s", stats.directMedia ? "Yes" : "No");
-            ImGui::Text("Live environment estimator: %.1f us/update", g_environment_update_cpu_us.load());
-            const DWORD cpu0 = thread_scheduling::preferred_processor(0);
-            DWORD cpu1 = thread_scheduling::preferred_processor(1);
-            DWORD cpu2 = thread_scheduling::preferred_processor(2);
-            if (cpu0 != thread_scheduling::kUnassignedProcessor)
+                static_cast<unsigned long long>(snapshot.uploadedFrames));
+            ImGui::Text("Hardware decode requested: %s", snapshot.stats.hardwareDecoded ? "Yes" : "No / external");
+            ImGui::Text("Window capture bypassed: %s", snapshot.stats.directMedia ? "Yes" : "No");
+            ImGui::Text("Monitor refresh: 4 Hz | environment %.1f us/update",
+                snapshot.environmentCpuUs);
+            if (snapshot.cpu0 != thread_scheduling::kUnassignedProcessor)
             {
-                if (cpu1 == thread_scheduling::kUnassignedProcessor) cpu1 = cpu0;
-                if (cpu2 == thread_scheduling::kUnassignedProcessor) cpu2 = cpu1;
+                DWORD cpu1 = snapshot.cpu1 ==
+                    thread_scheduling::kUnassignedProcessor
+                    ? snapshot.cpu0 : snapshot.cpu1;
+                DWORD cpu2 = snapshot.cpu2 ==
+                    thread_scheduling::kUnassignedProcessor
+                    ? cpu1 : snapshot.cpu2;
                 ImGui::Text("Background CPU hints: LP %lu, %lu, %lu",
-                    static_cast<unsigned long>(cpu0), static_cast<unsigned long>(cpu1), static_cast<unsigned long>(cpu2));
+                    static_cast<unsigned long>(snapshot.cpu0),
+                    static_cast<unsigned long>(cpu1),
+                    static_cast<unsigned long>(cpu2));
             }
             else ImGui::TextDisabled("Background CPU hints: learning render-thread use...");
 
@@ -1454,11 +1560,11 @@ namespace
                 ImGui::SameLine(); ImGui::TextUnformatted("Plugin"); ImGui::SameLine();
                 ImGui::ColorButton("##shared_cpu", sharedColour, colourFlags, ImVec2(12.0f, 12.0f));
                 ImGui::SameLine(); ImGui::TextUnformatted("Both");
-                const DWORD processorCount = thread_scheduling::tracked_processor_count();
-                for (DWORD processor = 0; processor < processorCount; ++processor)
+                for (DWORD processor = 0;
+                    processor < snapshot.processorCount; ++processor)
                 {
-                    const uint32_t gameHits = thread_scheduling::sampled_game_hits(processor);
-                    const uint32_t pluginHits = thread_scheduling::sampled_plugin_hits(processor);
+                    const uint32_t gameHits = snapshot.gameHits[processor];
+                    const uint32_t pluginHits = snapshot.pluginHits[processor];
                     const ImVec4 colour = gameHits && pluginHits ? sharedColour :
                         (gameHits ? gameColour : (pluginHits ? pluginColour : idleColour));
                     ImGui::PushID(12000 + static_cast<int>(processor));
@@ -1582,27 +1688,39 @@ namespace
     void draw_menu()
     {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
-        const ImVec2 wanted((std::min)(1680.0f, viewport->WorkSize.x - 28.0f),
-            (std::min)(930.0f, viewport->WorkSize.y - 28.0f));
+        const ImGuiIO& io = ImGui::GetIO();
+        const float uiScale = (std::max)(1.0f, (std::max)(
+            io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y));
+        const float safeMargin = (std::clamp)(
+            32.0f * uiScale, 28.0f, 52.0f);
+        const ImVec2 safeArea(
+            (std::max)(480.0f, viewport->WorkSize.x - safeMargin * 2.0f),
+            (std::max)(420.0f, viewport->WorkSize.y - safeMargin * 2.0f));
+        const ImVec2 wanted((std::min)(1680.0f, safeArea.x),
+            (std::min)(930.0f, safeArea.y));
         static ImVec2 previousWorkSize{};
+        static float previousUiScale{};
         const bool resolutionChanged = previousWorkSize.x <= 0.0f ||
             std::fabs(previousWorkSize.x - viewport->WorkSize.x) > 1.0f ||
-            std::fabs(previousWorkSize.y - viewport->WorkSize.y) > 1.0f;
-        if (resolutionChanged)
+            std::fabs(previousWorkSize.y - viewport->WorkSize.y) > 1.0f ||
+            std::fabs(previousUiScale - uiScale) > 0.01f;
+        if (resolutionChanged || menuNeedsPlacement)
         {
             ImGui::SetNextWindowPos(
                 ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
                     viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
-                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
             ImGui::SetNextWindowSize(wanted, ImGuiCond_Always);
             previousWorkSize = viewport->WorkSize;
+            previousUiScale = uiScale;
+            menuNeedsPlacement = false;
         }
         const ImVec2 minimumSize(
-            (std::min)(1040.0f, viewport->WorkSize.x - 16.0f),
-            (std::min)(680.0f, viewport->WorkSize.y - 16.0f));
+            (std::min)(1040.0f, safeArea.x),
+            (std::min)(680.0f, safeArea.y));
         const ImVec2 maximumSize(
-            (std::max)(minimumSize.x, viewport->WorkSize.x - 8.0f),
-            (std::max)(minimumSize.y, viewport->WorkSize.y - 8.0f));
+            (std::max)(minimumSize.x, safeArea.x),
+            (std::max)(minimumSize.y, safeArea.y));
         ImGui::SetNextWindowSizeConstraints(minimumSize, maximumSize);
         if (menuNeedsFocus)
         {
@@ -1643,6 +1761,23 @@ namespace
         {
             if (GetTickCount64() >= menuOpenedTick + 180)
             {
+                if (ImGui::IsKeyPressed(
+                    ImGuiKey_GamepadFaceRight, false))
+                {
+                    if (selectedPage == 0)
+                        set_visible(false);
+                    else
+                    {
+                        selectedPage = 0;
+                        panelAnimation = 0.0f;
+                    }
+                }
+                if (selectedPage == 2 && ImGui::IsKeyPressed(
+                    ImGuiKey_GamepadL2, false))
+                    select_audio_panel(selectedAudioPanel - 1);
+                if (selectedPage == 2 && ImGui::IsKeyPressed(
+                    ImGuiKey_GamepadR2, false))
+                    select_audio_panel(selectedAudioPanel + 1);
                 if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false))
                 {
                     selectedPage = (selectedPage + 5) % 6;
@@ -1654,8 +1789,26 @@ namespace
                     panelAnimation = 0.0f;
                 }
             }
-            const ImVec2 windowPos = ImGui::GetWindowPos();
+            ImVec2 windowPos = ImGui::GetWindowPos();
             const ImVec2 windowSize = ImGui::GetWindowSize();
+            const ImVec2 safeMin(
+                viewport->WorkPos.x + safeMargin,
+                viewport->WorkPos.y + safeMargin);
+            const ImVec2 safeMax(
+                viewport->WorkPos.x + viewport->WorkSize.x - safeMargin,
+                viewport->WorkPos.y + viewport->WorkSize.y - safeMargin);
+            const ImVec2 maximumPosition(
+                (std::max)(safeMin.x, safeMax.x - windowSize.x),
+                (std::max)(safeMin.y, safeMax.y - windowSize.y));
+            const ImVec2 clampedPosition(
+                (std::clamp)(windowPos.x, safeMin.x, maximumPosition.x),
+                (std::clamp)(windowPos.y, safeMin.y, maximumPosition.y));
+            if (std::fabs(clampedPosition.x - windowPos.x) > 0.5f ||
+                std::fabs(clampedPosition.y - windowPos.y) > 0.5f)
+            {
+                ImGui::SetWindowPos(clampedPosition, ImGuiCond_Always);
+                windowPos = clampedPosition;
+            }
             const float headerHeight = 106.0f;
             const float footerHeight = 72.0f;
             const float mainTop = headerHeight + 14.0f;
@@ -1663,7 +1816,7 @@ namespace
             const float leftWidth = (std::clamp)(windowSize.x * 0.185f, 235.0f, 292.0f);
             const float rightWidth = (std::clamp)(windowSize.x * 0.235f, 300.0f, 385.0f);
             const float gap = 14.0f;
-            const float side = 16.0f;
+            const float side = 20.0f;
             const float centreWidth = windowSize.x - side * 2.0f - leftWidth - rightWidth - gap * 2.0f;
             ImDrawList* shell = ImGui::GetWindowDrawList();
             shell->AddRectFilled(windowPos, ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y),
@@ -1718,7 +1871,11 @@ namespace
             const bool spotifyActive = sourceOnline && statusScreen->contentMode == content_mode_t::INTEGRATED_MEDIA &&
                 statusScreen->mediaService == media_service_t::SPOTIFY;
             const float statusWidth = (std::clamp)((windowSize.x - 620.0f) / 3.0f, 150.0f, 188.0f);
-            ImGui::SetCursorPos(ImVec2(windowSize.x - (statusWidth * 3.0f + 22.0f), 23.0f));
+            constexpr float statusGap = 8.0f;
+            constexpr float headerRightPadding = 30.0f;
+            ImGui::SetCursorPos(ImVec2(windowSize.x -
+                (statusWidth * 3.0f + statusGap * 2.0f +
+                    headerRightPadding), 23.0f));
             status_card(0, "YouTube", youtubeActive ? "Active" : "Ready", youtubeActive ? kGreen : kCyan, statusWidth); ImGui::SameLine(0.0f, 8.0f);
             status_card(1, "Spotify Web", spotifyActive ? "Active" : "Ready", spotifyActive ? kGreen : kCyan, statusWidth); ImGui::SameLine(0.0f, 8.0f);
             status_card(2, "Client", sourceOnline ? "Online" : (helperInstalled ? "Standby" : "Missing"),
@@ -1832,8 +1989,8 @@ namespace
             ImGui::TextColored(ImVec4(0.48f, 0.95f, 0.38f, 1.0f), "[A]"); ImGui::SameLine(); ImGui::TextUnformatted("Select");
             ImGui::SameLine(0.0f, 34.0f); ImGui::TextColored(ImVec4(1.0f, 0.34f, 0.38f, 1.0f), "[B]"); ImGui::SameLine(); ImGui::TextUnformatted("Back");
             ImGui::SameLine(0.0f, 34.0f); ImGui::TextColored(ImVec4(0.30f, 0.76f, 1.0f, 1.0f), "[LB/RB]"); ImGui::SameLine(); ImGui::TextUnformatted("Category");
-            ImGui::SameLine(0.0f, 34.0f); ImGui::TextColored(ImVec4(1.0f, 0.84f, 0.23f, 1.0f), "[Y]"); ImGui::SameLine(); ImGui::TextUnformatted("Explain");
-            ImGui::SameLine(0.0f, 34.0f); ImGui::TextDisabled("D-pad / left stick moves  |  Mouse also supported");
+            ImGui::SameLine(0.0f, 34.0f); ImGui::TextColored(ImVec4(1.0f, 0.84f, 0.23f, 1.0f), "[LT/RT]"); ImGui::SameLine(); ImGui::TextUnformatted("Audio tabs");
+            ImGui::SameLine(0.0f, 34.0f); ImGui::TextDisabled("D-pad / left stick moves  |  Mouse supported");
             ImGui::PopFont();
         }
         ImGui::End(); ImGui::GetStyle() = oldStyle; (void)earlyExit;

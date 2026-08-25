@@ -43,6 +43,15 @@ namespace
             std::tolower(static_cast<unsigned char>(value[offset + 4])) == 'j';
     }
 
+    bool plugin_managed_texture(const std::string& path)
+    {
+        std::string lower;
+        lower.reserve(path.size());
+        for (const unsigned char character : path)
+            lower.push_back(static_cast<char>(std::tolower(character)));
+        return lower.rfind("/home/prismtexturestreamer/", 0) == 0;
+    }
+
     bool likely_display_texture(const std::string& path)
     {
         std::string lower;
@@ -89,7 +98,11 @@ namespace
     void record_discovered_texture(const std::string& path)
     {
         const uint64_t now = GetTickCount64();
-        if (!ends_with_tobj(path) || path.size() > 1024)
+        // Generated PrismMedia files are outputs. Offering them as truck
+        // display inputs can create an override-to-override chain and hijack
+        // an already configured GPS during a reload.
+        if (!ends_with_tobj(path) || path.size() > 1024 ||
+            plugin_managed_texture(path))
             return;
 
         std::lock_guard<std::mutex> lock(g_discoveryMutex);
@@ -161,10 +174,80 @@ char memserver_texture_queue_processor(uint8_t* memserver)
 
             std::lock_guard<std::mutex> lock(g_screens_mutex);
             for (auto& screen : g_screens) {
-                if (!screen.source.get()) continue;
+                if (screen.original_texture != discoveredPath)
+                    continue;
 
-                if (screen.original_texture == std::string_view(tobj->m_file_path.m_string))
+                const uint64_t now = GetTickCount64();
+                if (!screen.enabled || !screen.source.get())
                 {
+                    if (screen.lastTextureRouteSkipLogTick == 0 ||
+                        now - screen.lastTextureRouteSkipLogTick >= 5000)
+                    {
+                        diagnostic_log::writef(
+                            "route",
+                            "Passed through native TOBJ %s for display %s "
+                            "because media replacement is %s.",
+                            screen.original_texture.c_str(),
+                            screen.mediaClientId.c_str(),
+                            !screen.enabled ? "disabled" :
+                                "waiting for a media source");
+                        screen.lastTextureRouteSkipLogTick = now;
+                    }
+                    continue;
+                }
+                if (plugin_managed_texture(screen.original_texture))
+                {
+                    if (screen.lastTextureRouteSkipLogTick == 0 ||
+                        now - screen.lastTextureRouteSkipLogTick >= 5000)
+                    {
+                        diagnostic_log::writef(
+                            "error",
+                            "Blocked override-to-override route for display "
+                            "%s: %s is a generated PrismMedia output, not a "
+                            "game display TOBJ.",
+                            screen.mediaClientId.c_str(),
+                            screen.original_texture.c_str());
+                        screen.lastTextureRouteSkipLogTick = now;
+                    }
+                    continue;
+                }
+
+                {
+                    if (screen.textureRouteArmed &&
+                        now >= screen.textureRouteArmedTick &&
+                        now - screen.textureRouteArmedTick >
+                            kTextureRouteArmTimeoutMilliseconds)
+                    {
+                        diagnostic_log::writef(
+                            "route",
+                            "Expired unconsumed route #%llu for display %s "
+                            "before a new %s request arrived.",
+                            static_cast<unsigned long long>(
+                                screen.textureRouteSequence),
+                            screen.mediaClientId.c_str(),
+                            screen.original_texture.c_str());
+                        screen.textureRouteArmed = false;
+                    }
+                    if (!screen.textureRouteArmed)
+                    {
+                        screen.textureRouteArmed = true;
+                        screen.textureRouteArmedTick = now;
+                        ++screen.textureRouteSequence;
+                        diagnostic_log::writef(
+                            "route",
+                            "Armed route #%llu for display %s: %s -> %s "
+                            "(identity %ux%u, timeout %llums).",
+                            static_cast<unsigned long long>(
+                                screen.textureRouteSequence),
+                            screen.mediaClientId.c_str(),
+                            screen.original_texture.c_str(),
+                            screen.override_texture.c_str(),
+                            screen.override_texture_size_w,
+                            screen.override_texture_size_h,
+                            static_cast<unsigned long long>(
+                                kTextureRouteArmTimeoutMilliseconds));
+                    }
+
                     tobj->m_file_path.allocate(screen.override_texture.size() + 1);
                     memcpy(tobj->m_file_path.m_string, screen.override_texture.data(), screen.override_texture.size());
                     tobj->m_file_path.m_string[screen.override_texture.size()] = '\0';
@@ -172,13 +255,12 @@ char memserver_texture_queue_processor(uint8_t* memserver)
                     tobj->m_file_path.m_size =
                         static_cast<uint32_t>(screen.override_texture.size());
 
-                    scs_log(0, "[prism::memserver_texture_queue] Replaced '%s' with '%s'", screen.original_texture.c_str(), screen.override_texture.c_str());
-                    const uint64_t now = GetTickCount64();
                     if (screen.lastTextureRedirectTick == 0 ||
                         now - screen.lastTextureRedirectTick >= 5000)
                     {
+                        scs_log(0, "[prism::memserver_texture_queue] Replaced '%s' with '%s'", screen.original_texture.c_str(), screen.override_texture.c_str());
                         diagnostic_log::writef(
-                            "render", "Redirected game texture %s to %s.",
+                            "route", "Redirected game texture %s to %s.",
                             screen.original_texture.c_str(),
                             screen.override_texture.c_str());
                         screen.lastTextureRedirectTick = now;

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cfloat>
 #include <cstdio>
@@ -399,7 +400,7 @@ namespace
             return nullptr;
         for (const auto& other : g_screens)
         {
-            if (&other != &screen &&
+            if (&other != &screen && other.enabled &&
                 other.original_texture == originalTexture)
                 return &other;
         }
@@ -426,6 +427,19 @@ namespace
 
     bool rebuild_source(screen_t& screen)
     {
+        if (!screen.enabled)
+        {
+            screen.source.reset();
+            screen.textureRouteArmed = false;
+            screen.textureRouteArmedTick = 0;
+            reset_source_stats(screen);
+            diagnostic_log::writef(
+                "route",
+                "Display %s remains disabled; media source and texture "
+                "routing were not started.",
+                screen.mediaClientId.c_str());
+            return false;
+        }
         if (texture_owner_other_than(screen, screen.original_texture))
         {
             screen.source.reset();
@@ -474,6 +488,22 @@ namespace
             screen.sourceCreatedTick = GetTickCount64();
             screen.source->SetPaused(screen.paused);
             apply_brightness(screen);
+            diagnostic_log::writef(
+                "route",
+                "Media source ready for display %s; waiting for exact TOBJ "
+                "redirect %s -> %s before any GPU texture can be claimed.",
+                screen.mediaClientId.c_str(),
+                screen.original_texture.c_str(),
+                screen.override_texture.c_str());
+        }
+        else
+        {
+            diagnostic_log::writef(
+                "route",
+                "No media source was created for enabled display %s; its "
+                "native TOBJ will pass through until a valid source is "
+                "configured.",
+                screen.mediaClientId.c_str());
         }
         g_screen_source_creation_in_progress = false;
         return screen.source != nullptr;
@@ -1531,6 +1561,8 @@ namespace
         if (screen.immediateContext) screen.immediateContext->Release();
         screen.liveTexture = nullptr; screen.uploadTexture = nullptr;
         screen.liveTextureRenderTarget = nullptr; screen.immediateContext = nullptr;
+        screen.textureRouteArmed = false;
+        screen.textureRouteArmedTick = 0;
     }
 
     std::string screen_owner_name(const screen_t& screen)
@@ -1547,8 +1579,50 @@ namespace
             std::to_string((std::max)(size_t{ 1 }, ordinal));
     }
 
+    void log_route_snapshot(const screen_t& screen, const char* reason)
+    {
+        diagnostic_log::writef(
+            "route",
+            "Snapshot (%s): display=%s id=%s enabled=%d source=%d "
+            "original='%s' override='%s' identity=%ux%u armed=%d "
+            "route=%llu matched=%llu live=%p redirect_tick=%llu "
+            "match_tick=%llu.",
+            reason ? reason : "manual",
+            screen_owner_name(screen).c_str(),
+            screen.mediaClientId.c_str(),
+            screen.enabled ? 1 : 0,
+            screen.source ? 1 : 0,
+            screen.original_texture.c_str(),
+            screen.override_texture.c_str(),
+            screen.override_texture_size_w,
+            screen.override_texture_size_h,
+            screen.textureRouteArmed ? 1 : 0,
+            static_cast<unsigned long long>(screen.textureRouteSequence),
+            static_cast<unsigned long long>(
+                screen.textureRouteMatchedSequence),
+            static_cast<void*>(screen.liveTexture),
+            static_cast<unsigned long long>(screen.lastTextureRedirectTick),
+            static_cast<unsigned long long>(screen.lastTextureMatchTick));
+    }
+
     bool prepare_override_assets(screen_t& screen, std::string& status)
     {
+        std::string originalLower;
+        originalLower.reserve(screen.original_texture.size());
+        for (const unsigned char character : screen.original_texture)
+            originalLower.push_back(
+                static_cast<char>(std::tolower(character)));
+        if (originalLower.rfind("/home/prismtexturestreamer/", 0) == 0)
+        {
+            status = "Select the truck/accessory's game TOBJ, not a generated "
+                "PrismMedia override file.";
+            diagnostic_log::writef(
+                "error",
+                "Rejected generated override %s as an input for display %s.",
+                screen.original_texture.c_str(),
+                screen.mediaClientId.c_str());
+            return false;
+        }
         if (const screen_t* owner = texture_owner_other_than(
                 screen, screen.original_texture))
         {
@@ -2034,11 +2108,29 @@ namespace
             if (ImGui::Button(
                     "Reload installed truck textures", ImVec2(-1.0f, 34.0f)))
             {
+                diagnostic_log::write(
+                    "route",
+                    "User requested a truck-texture reload. Recording all "
+                    "display routes before executing the game command.");
+                for (const auto& candidate : g_screens)
+                    log_route_snapshot(candidate, "before texture reload");
                 prism::string command("game");
                 if (prism::execute_command::call(&command, -1))
                 {
+                    diagnostic_log::write(
+                        "route",
+                        "Game accepted the truck-texture reload command; "
+                        "enabled displays are waiting for exact TOBJ "
+                        "redirects and one-shot GPU matches.");
                     criticalReloadPending = false;
                     accessoryOrderConfirmed = false;
+                }
+                else
+                {
+                    diagnostic_log::write(
+                        "error",
+                        "Game rejected the truck-texture reload command; "
+                        "no route state was assumed to have changed.");
                 }
             }
             ImGui::EndDisabled();
@@ -2060,6 +2152,17 @@ namespace
                 restoreRequest = backup;
             ImGui::EndDisabled(); if (!restoreStatus.empty()) ImGui::TextWrapped("%s", restoreStatus.c_str());
         }
+        if (ImGui::Button(
+                "Write display routing snapshot to log",
+                ImVec2(-1.0f, 34.0f)))
+        {
+            log_route_snapshot(screen, "manual UI request");
+        }
+        explain_last_item(
+            "Routing snapshot",
+            "Writes this display's selected TOBJ, generated identity, "
+            "pending route token and GPU match state to PrismMedia.log.",
+            "Negligible", "Diagnostic only");
         ImGui::Separator();
         if (ImGui::Button("Remove this screen", ImVec2(-1.0f, 0.0f))) removeCurrent = true;
         explain_last_item("Remove screen", "Stops its source immediately and removes its saved configuration.", "Reduces resource use");
@@ -2369,7 +2472,9 @@ namespace
                     g_screens[static_cast<size_t>(selectedScreen)].type);
                 const std::string activeLabel = std::string(activeKind) +
                     "  " + std::to_string(screen_type_ordinal(
-                        static_cast<size_t>(selectedScreen)));
+                        static_cast<size_t>(selectedScreen))) +
+                    (g_screens[static_cast<size_t>(selectedScreen)].enabled
+                        ? "" : "  (off)");
                 ImGui::SetNextItemWidth(-1.0f);
                 if (ImGui::BeginCombo("##active_display", activeLabel.c_str()))
                 {
@@ -2379,7 +2484,9 @@ namespace
                         g_screens[static_cast<size_t>(i)].type);
                     const std::string label = std::string(kind) + "  " +
                         std::to_string(screen_type_ordinal(
-                            static_cast<size_t>(i)));
+                            static_cast<size_t>(i))) +
+                        (g_screens[static_cast<size_t>(i)].enabled
+                            ? "" : "  (off)");
                     if (ImGui::Selectable(label.c_str(), selectedScreen == i)) selectedScreen = i;
                 }
                     ImGui::EndCombo();
@@ -2439,6 +2546,61 @@ namespace
                 ImGui::BeginChild("page_card", ImVec2(0.0f, -1.0f),
                     ImGuiChildFlags_Borders, pageFlags);
                 bool removeCurrent = false;
+                bool displayEnabled = screen.enabled;
+                if (toggle_switch(
+                        "Enable media replacement on this display",
+                        displayEnabled))
+                {
+                    screen.enabled = displayEnabled;
+                    screen.textureRouteArmed = false;
+                    screen.textureRouteArmedTick = 0;
+                    if (!screen.enabled)
+                    {
+                        diagnostic_log::writef(
+                            "route",
+                            "Disabled %s (%s). Future %s requests pass "
+                            "through unchanged; reload textures to restore "
+                            "the native display.",
+                            screen_owner_name(screen).c_str(),
+                            screen.mediaClientId.c_str(),
+                            screen.original_texture.c_str());
+                        release_screen(screen);
+                    }
+                    else
+                    {
+                        std::string enableStatus;
+                        const bool assetsReady =
+                            !screen.original_texture.empty() &&
+                            prepare_override_assets(screen, enableStatus);
+                        if (assetsReady)
+                            rebuild_source(screen);
+                        diagnostic_log::writef(
+                            "route",
+                            "Enabled %s (%s): %s. Reload textures to bind "
+                            "the exact display route.",
+                            screen_owner_name(screen).c_str(),
+                            screen.mediaClientId.c_str(),
+                            assetsReady ? enableStatus.c_str()
+                                : "waiting for a valid unique game TOBJ");
+                    }
+                    log_route_snapshot(screen, screen.enabled
+                        ? "display enabled" : "display disabled");
+                    mark_changed(true);
+                }
+                explain_last_item(
+                    "Per-display media replacement",
+                    "Enabled displays redirect only their selected game "
+                    "TOBJ. Disabled displays stop their player and leave "
+                    "future texture requests native.",
+                    screen.enabled ? "Active source only" : "No media cost",
+                    "Requires one texture reload after changing");
+                if (!screen.enabled)
+                {
+                    ImGui::TextDisabled(
+                        "OFF - no texture redirect, media client or audio "
+                        "processing for this display.");
+                }
+                ImGui::Separator();
                 switch (selectedPage) { case 0: draw_home(screen); break; case 1: draw_media(screen); break; case 2: draw_audio(screen); break; case 3: draw_controls(); break; case 4: draw_appearance(screen); break; case 5: draw_system(screen, removeCurrent); break; }
                 ImGui::EndChild(); ImGui::PopStyleVar(); ImGui::EndChild(); ImGui::PopStyleVar(2);
 

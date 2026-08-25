@@ -96,6 +96,13 @@ namespace
             std::make_pair(width, height)) != used.end();
     }
 
+    bool generated_identity_dimensions(uint32_t width, uint32_t height)
+    {
+        return width >= 132U && width <= 384U &&
+            height >= 2052U && height <= 2304U &&
+            width % 4U == 0 && height % 4U == 0;
+    }
+
     uint32_t fnv1a(const std::string& value)
     {
         uint32_t hash = 2166136261U;
@@ -198,6 +205,10 @@ namespace override_assets
         const bool pluginManagedPath =
             screen.override_texture.rfind(
                 "/home/PrismTextureStreamer/", 0) == 0;
+        const bool hasGeneratedDimensionSignature =
+            generated_identity_dimensions(
+                screen.override_texture_size_w,
+                screen.override_texture_size_h);
         const bool invalidIdentity = stem.empty() ||
             screen.override_texture_size_w < 4 ||
             screen.override_texture_size_h < 4 ||
@@ -237,17 +248,35 @@ namespace override_assets
         {
             if (stem.empty())
                 stem = "display_" + safe_identity(screen.mediaClientId);
-            if (requireGeneratedIdentity || invalidIdentity)
+            if (requireGeneratedIdentity || invalidIdentity ||
+                !hasGeneratedDimensionSignature)
             {
-                const uint32_t firstSlot = fnv1a(screen.mediaClientId) % 384U;
-                for (uint32_t attempt = 0; attempt < 384U; ++attempt)
+                // Use a stable two-dimensional non-power-of-two signature.
+                // Older builds varied only the width while keeping 2048 as
+                // the height, which could collide with a native GPS/accessory
+                // texture during a full truck-resource reload.
+                constexpr uint32_t identitySlots = 64U * 64U;
+                const uint32_t firstSlot =
+                    fnv1a(screen.mediaClientId) % identitySlots;
+                for (uint32_t attempt = 0; attempt < identitySlots; ++attempt)
                 {
+                    const uint32_t slot =
+                        (firstSlot + attempt) % identitySlots;
                     const uint32_t width =
-                        128U + ((firstSlot + attempt) % 384U) * 4U;
-                    if (!dimensions_used(width, 2048U, usedDimensions))
+                        132U + (slot % 64U) * 4U;
+                    const uint32_t height =
+                        2052U + (slot / 64U) * 4U;
+                    if (!dimensions_used(width, height, usedDimensions))
                     {
                         screen.override_texture_size_w = width;
-                        screen.override_texture_size_h = 2048U;
+                        screen.override_texture_size_h = height;
+                        diagnostic_log::writef(
+                            "route",
+                            "Assigned stable GPU identity %ux%u to display "
+                            "%s (%s).",
+                            width, height,
+                            screen.mediaClientId.c_str(),
+                            screen.original_texture.c_str());
                         break;
                     }
                 }

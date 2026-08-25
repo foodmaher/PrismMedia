@@ -380,6 +380,8 @@ namespace settings {
 
             screen_t screen;
             screen.type = static_cast<screen_type_t>(type);
+            screen.enabled = GetPrivateProfileIntA(
+                section.c_str(), "Enabled", 1, path.c_str()) != 0;
             screen.original_texture = read_string(path, section.c_str(), "OriginalTexture");
             screen.override_texture = read_string(path, section.c_str(), "OverrideTexture");
             screen.override_texture_size_w = GetPrivateProfileIntA(section.c_str(), "OverrideWidth", 0, path.c_str());
@@ -571,7 +573,8 @@ namespace settings {
                      existing.override_texture_size_h ==
                         screen.override_texture_size_h);
                 originalTextureConflict = originalTextureConflict ||
-                    (!screen.original_texture.empty() &&
+                    (screen.enabled && existing.enabled &&
+                     !screen.original_texture.empty() &&
                      existing.original_texture == screen.original_texture);
             }
             std::string overrideStatus;
@@ -590,7 +593,8 @@ namespace settings {
                     screen.mediaClientId.c_str(),
                     screen.original_texture.c_str());
             }
-            else if (screen.contentMode == content_mode_t::INTEGRATED_MEDIA &&
+            else if (screen.enabled &&
+                screen.contentMode == content_mode_t::INTEGRATED_MEDIA &&
                 !screen.mediaUrl.empty())
             {
                 g_screen_source_creation_in_progress = true;
@@ -603,7 +607,8 @@ namespace settings {
                     screen.mediaService == media_service_t::SPOTIFY);
                 g_screen_source_creation_in_progress = false;
             }
-            else if (screen.contentMode == content_mode_t::NATIVE_DIRECT_MEDIA &&
+            else if (screen.enabled &&
+                screen.contentMode == content_mode_t::NATIVE_DIRECT_MEDIA &&
                 !screen.mediaUrl.empty())
             {
                 g_screen_source_creation_in_progress = true;
@@ -613,7 +618,8 @@ namespace settings {
                     screen.targetLiveTextureHeight);
                 g_screen_source_creation_in_progress = false;
             }
-            else if (screen.contentMode == content_mode_t::WINDOW_CAPTURE &&
+            else if (screen.enabled &&
+                screen.contentMode == content_mode_t::WINDOW_CAPTURE &&
                 !screen.source_application_name.empty())
             {
                 g_screen_source_creation_in_progress = true;
@@ -641,6 +647,18 @@ namespace settings {
                 screen.source->SetSourceBrightness(
                     screen.effectiveBrightness);
             }
+
+            diagnostic_log::writef(
+                "route",
+                "Loaded display %s: enabled=%d source=%d original='%s' "
+                "override='%s' identity=%ux%u.",
+                screen.mediaClientId.c_str(),
+                screen.enabled ? 1 : 0,
+                screen.source ? 1 : 0,
+                screen.original_texture.c_str(),
+                screen.override_texture.c_str(),
+                screen.override_texture_size_w,
+                screen.override_texture_size_h);
 
             loaded.push_back(std::move(screen));
         }
@@ -737,6 +755,7 @@ namespace settings {
             const auto& screen = g_screens[i];
             const std::string section = "Screen" + std::to_string(i);
             write_number(temporaryPath, section.c_str(), "Type", static_cast<uint32_t>(screen.type));
+            write_number(temporaryPath, section.c_str(), "Enabled", screen.enabled ? 1 : 0);
             WritePrivateProfileStringA(section.c_str(), "OriginalTexture", screen.original_texture.c_str(), temporaryPath.c_str());
             WritePrivateProfileStringA(section.c_str(), "OverrideTexture", screen.override_texture.c_str(), temporaryPath.c_str());
             write_number(temporaryPath, section.c_str(), "OverrideWidth", screen.override_texture_size_w);

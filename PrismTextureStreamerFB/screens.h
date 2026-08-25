@@ -47,6 +47,10 @@ enum class media_service_t : uint8_t {
 struct screen_t
 {
 	screen_type_t type{};
+	// Master per-display switch. When disabled the media source is stopped and
+	// the Prism3D TOBJ request is left untouched, allowing the game's native
+	// texture to load again after the next truck-texture reload.
+	bool enabled = true;
 
 	std::string original_texture; // /vehicle/truck/share/gps.tobj
 	std::string override_texture; // /home/PrismTextureStreamer/gps.tobj
@@ -137,6 +141,15 @@ struct screen_t
 	uint64_t lastIssueDiagnosticTick{};
 	uint64_t lastTextureMatchTick{};
 	uint64_t lastTextureRedirectTick{};
+	// A GPU texture may only be replaced after this exact display's TOBJ path
+	// was redirected. The arm is consumed by one matching CreateTexture2D call
+	// and expires quickly so an unrelated texture with identical dimensions
+	// cannot be claimed later.
+	bool textureRouteArmed{};
+	uint64_t textureRouteArmedTick{};
+	uint64_t textureRouteSequence{};
+	uint64_t textureRouteMatchedSequence{};
+	uint64_t lastTextureRouteSkipLogTick{};
 	bool suspiciousMagentaFrame{};
 	bool suspiciousBlackFrame{};
 	bool sourceFrameStale{};
@@ -164,5 +177,6 @@ struct screen_t
 };
 
 inline std::atomic<bool> g_screen_source_creation_in_progress{}; // Mainly for WGC to prevent deadlock on create texture 2d
+inline constexpr uint64_t kTextureRouteArmTimeoutMilliseconds = 2000;
 inline std::mutex g_screens_mutex;
 inline std::vector<screen_t> g_screens;

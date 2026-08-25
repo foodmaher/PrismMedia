@@ -221,7 +221,7 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
 
         for (screen_t& screen : g_screens)
         {
-	            if (!screen.source)
+	            if (!screen.enabled || !screen.source)
 	                continue;
 
             if (!pDesc) continue;
@@ -232,6 +232,42 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
             if (pDesc->BindFlags != D3D11_BIND_SHADER_RESOURCE) continue;
             if (pInitialData) continue;
             if (pDesc->MipLevels != 1) continue; // Dynamic textures require exactly 1 mip
+
+            const uint64_t now = GetTickCount64();
+            if (!screen.textureRouteArmed)
+            {
+                if (screen.lastTextureRouteSkipLogTick == 0 ||
+                    now - screen.lastTextureRouteSkipLogTick >= 5000)
+                {
+                    diagnostic_log::writef(
+                        "route",
+                        "Ignored unarmed %ux%u GPU texture candidate for "
+                        "display %s; no exact %s redirect is pending.",
+                        pDesc->Width, pDesc->Height,
+                        screen.mediaClientId.c_str(),
+                        screen.original_texture.c_str());
+                    screen.lastTextureRouteSkipLogTick = now;
+                }
+                continue;
+            }
+            if (now < screen.textureRouteArmedTick ||
+                now - screen.textureRouteArmedTick >
+                    kTextureRouteArmTimeoutMilliseconds)
+            {
+                diagnostic_log::writef(
+                    "route",
+                    "Rejected expired GPU candidate for route #%llu, "
+                    "display %s (%ux%u after %llums).",
+                    static_cast<unsigned long long>(
+                        screen.textureRouteSequence),
+                    screen.mediaClientId.c_str(),
+                    pDesc->Width, pDesc->Height,
+                    static_cast<unsigned long long>(
+                        now >= screen.textureRouteArmedTick
+                            ? now - screen.textureRouteArmedTick : 0));
+                screen.textureRouteArmed = false;
+                continue;
+            }
 
 
             D3D11_TEXTURE2D_DESC modifiedDesc = *pDesc;
@@ -248,6 +284,8 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
             modifiedDesc.Height = screen.targetLiveTextureHeight;
 
             HRESULT hr = CreateTexture2D_Original(pDevice, &modifiedDesc, pInitialData, ppTexture2D);
+            const uint64_t matchedRoute = screen.textureRouteSequence;
+            screen.textureRouteArmed = false;
             if (SUCCEEDED(hr) && ppTexture2D && *ppTexture2D)
             {
                 if (screen.liveTexture) screen.liveTexture->Release();
@@ -260,6 +298,7 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
                 screen.liveTextureHeight = modifiedDesc.Height;
                 screen.hasUploadedFrame = false;
                 screen.lastTextureMatchTick = GetTickCount64();
+                screen.textureRouteMatchedSequence = matchedRoute;
 
                 screen.liveTexture = *ppTexture2D;
                 screen.liveTexture->AddRef(); // own a ref independent of the games
@@ -273,17 +312,21 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
                     "(safe dynamic upload)",
                     screen.original_texture.c_str());
                 diagnostic_log::writef(
-                    "render",
-                    "Matched %s texture %s and created a %ux%u dynamic "
-                    "BGRA upload target.",
+                    "route",
+                    "Consumed exact route #%llu for %s display %s (%s); "
+                    "created a %ux%u dynamic BGRA upload target.",
+                    static_cast<unsigned long long>(matchedRoute),
                     screen_type_name(screen.type),
+                    screen.mediaClientId.c_str(),
                     screen.original_texture.c_str(),
                     modifiedDesc.Width, modifiedDesc.Height);
             }
             else {
                 scs_log(2, "[dx11::create_texture_2d] rewrite of %s FAILED, hr=0x%08X", screen.original_texture.c_str(), hr);
                 diagnostic_log::writef(
-                    "error", "Texture rewrite failed for %s (HRESULT 0x%08X).",
+                    "error", "Route #%llu texture rewrite failed for %s "
+                    "(HRESULT 0x%08X); route was consumed safely.",
+                    static_cast<unsigned long long>(matchedRoute),
                     screen.original_texture.c_str(),
                     static_cast<unsigned>(hr));
             }

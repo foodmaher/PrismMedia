@@ -9,8 +9,13 @@ or a desktop window onto supported ETS2/ATS truck displays.
   cards and simulated soft shadows, animated audio waves, mouse/gamepad
   navigation, auto-save, smooth page transitions, and a live option-effect
   inspector. The console re-reads the game viewport whenever it opens,
-  auto-centres inside a DPI-aware safe area, clamps moved windows on-screen,
+  auto-centres against the full viewport, clamps moved windows on-screen,
   can be resized, and reflows its navigation for shorter displays.
+- System > Display discovery records the `.tobj` paths actually loaded by the
+  current truck/accessories during one texture reload. Likely GPS, dashboard,
+  tablet, navigation and infotainment paths are prioritised, unusual paths can
+  be shown with **Show all**, and the selected path can be assigned and reloaded
+  without manually typing it.
 - The complete retained control set remains available: GPS/Dashboard/Custom
   displays, Pause/Freeze, media mute and volume, hotkey target selection,
   performance profiles, scaling modes, backups, adaptive audio tuning, update

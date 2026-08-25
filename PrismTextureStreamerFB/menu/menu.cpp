@@ -24,6 +24,7 @@
 #include "../hotkeys.h"
 #include "../misc/imgui_stdlib.h"
 #include "../prism/execute_command.h"
+#include "../prism/memserver_texture_queue.h"
 #include "../prism/prism.h"
 #include "../screens.h"
 #include "../settings.h"
@@ -1630,6 +1631,157 @@ namespace
             if (ImGui::Button("Open GitHub Releases")) update_checker::open_releases_page();
             ImGui::SameLine(); if (ImGui::Button("Dismiss")) update_checker::dismiss();
         }
+
+        if (ImGui::CollapsingHeader(
+                "Display discovery", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            static bool showAllLoadedTextures{};
+            static bool discoveryStarted{};
+            static int selectedDiscoveredTexture = -1;
+            static std::string discoveryScreenId;
+            static uint64_t lastDiscoveryRefreshTick{};
+            static std::vector<
+                prism::memserver_texture_queue::discovered_texture_t>
+                discoveredTextures;
+
+            if (discoveryScreenId != screen.mediaClientId)
+            {
+                discoveryScreenId = screen.mediaClientId;
+                selectedDiscoveredTexture = -1;
+            }
+
+            const uint64_t discoveryNow = GetTickCount64();
+            if (lastDiscoveryRefreshTick == 0 ||
+                discoveryNow - lastDiscoveryRefreshTick >= 250)
+            {
+                lastDiscoveryRefreshTick = discoveryNow;
+                discoveredTextures = prism::memserver_texture_queue::
+                    discovered_textures();
+                if (selectedDiscoveredTexture >=
+                    static_cast<int>(discoveredTextures.size()))
+                    selectedDiscoveredTexture = -1;
+                if (selectedDiscoveredTexture < 0)
+                {
+                    for (size_t index = 0;
+                        index < discoveredTextures.size(); ++index)
+                    {
+                        if (discoveredTextures[index].path ==
+                            screen.original_texture)
+                        {
+                            selectedDiscoveredTexture =
+                                static_cast<int>(index);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            ImGui::TextWrapped(
+                "Reloads the current truck once, then lists TOBJ textures "
+                "actually loaded by the truck and its accessories.");
+            if (ImGui::Button(
+                    "Scan current truck displays", ImVec2(-1.0f, 36.0f)))
+            {
+                prism::memserver_texture_queue::begin_display_discovery();
+                discoveredTextures.clear();
+                selectedDiscoveredTexture = -1;
+                discoveryStarted = true;
+                prism::string command("game");
+                if (prism::execute_command::call(&command, -1))
+                    criticalReloadPending = false;
+            }
+            explain_last_item(
+                "Scan current truck displays",
+                "Captures loaded TOBJ paths during one normal game texture reload. It does not scan the disk or run continuously.",
+                "Only during reload", "Results appear below");
+
+            if (prism::memserver_texture_queue::display_discovery_active())
+                ImGui::TextColored(
+                    ImVec4(0.20f, 0.88f, 0.94f, 1.0f),
+                    "Scanning... %zu unique TOBJ paths found",
+                    discoveredTextures.size());
+
+            size_t likelyCount{};
+            for (const auto& candidate : discoveredTextures)
+                likelyCount += candidate.likely_display ? 1U : 0U;
+            ImGui::TextDisabled(
+                "%zu likely display%s | %zu total loaded TOBJ%s",
+                likelyCount, likelyCount == 1 ? "" : "s",
+                discoveredTextures.size(),
+                discoveredTextures.size() == 1 ? "" : "s");
+            ImGui::Checkbox(
+                "Show all loaded TOBJ files", &showAllLoadedTextures);
+
+            if (ImGui::BeginListBox(
+                    "##discovered_tobjs", ImVec2(-1.0f, 174.0f)))
+            {
+                bool anyVisible{};
+                for (size_t index = 0;
+                    index < discoveredTextures.size(); ++index)
+                {
+                    const auto& candidate = discoveredTextures[index];
+                    if (!showAllLoadedTextures && !candidate.likely_display)
+                        continue;
+                    anyVisible = true;
+                    ImGui::PushID(static_cast<int>(index));
+                    const std::string label =
+                        std::string(candidate.likely_display
+                            ? "[DISPLAY]  " : "[OTHER]  ") +
+                        candidate.path;
+                    if (ImGui::Selectable(
+                            label.c_str(),
+                            selectedDiscoveredTexture ==
+                                static_cast<int>(index)))
+                        selectedDiscoveredTexture = static_cast<int>(index);
+                    ImGui::PopID();
+                }
+                if (!anyVisible)
+                {
+                    ImGui::TextDisabled(
+                        discoveryStarted
+                            ? "No likely display paths yet. Enable 'Show all' for unusual accessory names."
+                            : "Run the scan to discover current truck display paths.");
+                }
+                ImGui::EndListBox();
+            }
+
+            const bool validSelection = selectedDiscoveredTexture >= 0 &&
+                selectedDiscoveredTexture <
+                    static_cast<int>(discoveredTextures.size());
+            ImGui::BeginDisabled(!validSelection);
+            const float assignWidth =
+                (ImGui::GetContentRegionAvail().x - 8.0f) * 0.5f;
+            if (ImGui::Button(
+                    "Use selected", ImVec2(assignWidth, 34.0f)) &&
+                validSelection)
+            {
+                const std::string& selectedPath =
+                    discoveredTextures[
+                        static_cast<size_t>(selectedDiscoveredTexture)].path;
+                if (screen.original_texture != selectedPath)
+                {
+                    screen.original_texture = selectedPath;
+                    mark_changed(true);
+                }
+            }
+            ImGui::SameLine(0.0f, 8.0f);
+            if (ImGui::Button(
+                    "Use + reload now", ImVec2(-1.0f, 34.0f)) &&
+                validSelection)
+            {
+                screen.original_texture = discoveredTextures[
+                    static_cast<size_t>(selectedDiscoveredTexture)].path;
+                mark_changed(true);
+                prism::string command("game");
+                if (prism::execute_command::call(&command, -1))
+                    criticalReloadPending = false;
+            }
+            ImGui::EndDisabled();
+            ImGui::TextDisabled(
+                "The selected screen keeps its existing override TOBJ/DDS "
+                "pair and unique matching dimensions.");
+        }
+
         if (ImGui::CollapsingHeader("Critical texture identity"))
         {
             if (ImGui::InputText("Game texture", &screen.original_texture)) mark_changed(true);
@@ -1740,13 +1892,11 @@ namespace
         const ImGuiIO& io = ImGui::GetIO();
         const float uiScale = (std::max)(1.0f, (std::max)(
             io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y));
-        const float safeMargin = (std::clamp)(
-            32.0f * uiScale, 28.0f, 52.0f);
-        const ImVec2 safeArea(
-            (std::max)(480.0f, viewport->WorkSize.x - safeMargin * 2.0f),
-            (std::max)(420.0f, viewport->WorkSize.y - safeMargin * 2.0f));
-        const ImVec2 wanted((std::min)(1680.0f, safeArea.x),
-            (std::min)(930.0f, safeArea.y));
+        const ImVec2 availableArea(
+            (std::max)(480.0f, viewport->WorkSize.x),
+            (std::max)(420.0f, viewport->WorkSize.y));
+        const ImVec2 wanted((std::min)(1680.0f, availableArea.x),
+            (std::min)(930.0f, availableArea.y));
         static ImVec2 previousWorkSize{};
         static float previousUiScale{};
         const bool resolutionChanged = previousWorkSize.x <= 0.0f ||
@@ -1765,11 +1915,11 @@ namespace
             menuNeedsPlacement = false;
         }
         const ImVec2 minimumSize(
-            (std::min)(1040.0f, safeArea.x),
-            (std::min)(680.0f, safeArea.y));
+            (std::min)(1040.0f, availableArea.x),
+            (std::min)(680.0f, availableArea.y));
         const ImVec2 maximumSize(
-            (std::max)(minimumSize.x, safeArea.x),
-            (std::max)(minimumSize.y, safeArea.y));
+            (std::max)(minimumSize.x, availableArea.x),
+            (std::max)(minimumSize.y, availableArea.y));
         ImGui::SetNextWindowSizeConstraints(minimumSize, maximumSize);
         if (menuNeedsFocus)
         {
@@ -1840,18 +1990,17 @@ namespace
             }
             ImVec2 windowPos = ImGui::GetWindowPos();
             const ImVec2 windowSize = ImGui::GetWindowSize();
-            const ImVec2 safeMin(
-                viewport->WorkPos.x + safeMargin,
-                viewport->WorkPos.y + safeMargin);
-            const ImVec2 safeMax(
-                viewport->WorkPos.x + viewport->WorkSize.x - safeMargin,
-                viewport->WorkPos.y + viewport->WorkSize.y - safeMargin);
+            const ImVec2 viewportMin(
+                viewport->WorkPos.x, viewport->WorkPos.y);
+            const ImVec2 viewportMax(
+                viewport->WorkPos.x + viewport->WorkSize.x,
+                viewport->WorkPos.y + viewport->WorkSize.y);
             const ImVec2 maximumPosition(
-                (std::max)(safeMin.x, safeMax.x - windowSize.x),
-                (std::max)(safeMin.y, safeMax.y - windowSize.y));
+                (std::max)(viewportMin.x, viewportMax.x - windowSize.x),
+                (std::max)(viewportMin.y, viewportMax.y - windowSize.y));
             const ImVec2 clampedPosition(
-                (std::clamp)(windowPos.x, safeMin.x, maximumPosition.x),
-                (std::clamp)(windowPos.y, safeMin.y, maximumPosition.y));
+                (std::clamp)(windowPos.x, viewportMin.x, maximumPosition.x),
+                (std::clamp)(windowPos.y, viewportMin.y, maximumPosition.y));
             if (std::fabs(clampedPosition.x - windowPos.x) > 0.5f ||
                 std::fabs(clampedPosition.y - windowPos.y) > 0.5f)
             {
@@ -2070,7 +2219,7 @@ namespace
                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration |
                 ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings);
             ImGui::TextColored(ImVec4(0.35f, 0.95f, 0.45f, 1.0f),
-                "PrismTextureStreamer update available: %s", update_checker::latest_tag().c_str());
+                "PrismMedia update available: %s", update_checker::latest_tag().c_str());
             ImGui::TextUnformatted("Open the plugin menu (Ctrl+F8) for the download page.");
             ImGui::End();
         }

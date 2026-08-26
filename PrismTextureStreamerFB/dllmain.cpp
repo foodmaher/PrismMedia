@@ -222,7 +222,7 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
 {
     static bool gps_patched{};
     static bool dash_patched{};
-    static bool custom_patched{};
+    static bool custom_routing_logged{};
 
     bool has_gps{};
     bool has_dash{};
@@ -723,31 +723,16 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
         dash_patched = has_dash;
     }
 
-    if (has_custom != custom_patched)
+    if (has_custom && !custom_routing_logged)
     {
-        static uint64_t patch_addr{};
-        if (!patch_addr) {
-            patch_addr = bmem::patternScan("0F 84 ?? ?? ?? ?? 45 84 E4 4D 0F 45 FD");
-        }
-
-        DWORD oldProtect;
-        VirtualProtect((void*)patch_addr, 2, PAGE_EXECUTE_READWRITE, &oldProtect);
-
-        if (has_custom) {
-            // JMP
-            *(reinterpret_cast<uint8_t*>(patch_addr + 0)) = 0x90;
-            *(reinterpret_cast<uint8_t*>(patch_addr + 1)) = 0xE9;
-        }
-        else {
-            // JE
-            *(reinterpret_cast<uint8_t*>(patch_addr + 0)) = 0x0F;
-            *(reinterpret_cast<uint8_t*>(patch_addr + 1)) = 0x84;
-        }
-
-        VirtualProtect((void*)patch_addr, 2, oldProtect, &oldProtect);
-
-        custom_patched = has_custom;
+        diagnostic_log::write(
+            "route",
+            "Custom displays are using isolated TOBJ routing; the legacy "
+            "global cabin-display patch is disabled.");
+        custom_routing_logged = true;
     }
+    else if (!has_custom)
+        custom_routing_logged = false;
 }
 
 #pragma comment( linker, "/export:scs_telemetry_init=scs_telemetry_init" )

@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include "native_media.h"
 
+#include "../diagnostic_log.h"
 #include "../scs_logging.h"
 #include "../thread_scheduling.h"
 
@@ -20,6 +21,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -444,6 +446,12 @@ namespace sources {
             std::array<ReadbackSlot, 3> readbackSlots;
             uint32_t textureWidth{};
             uint32_t textureHeight{};
+            DWORD nativeVideoWidth{};
+            DWORD nativeVideoHeight{};
+            uint32_t loggedTargetWidth{};
+            uint32_t loggedTargetHeight{};
+            DWORD loggedVideoWidth{};
+            DWORD loggedVideoHeight{};
             size_t nextSlot{};
             auto lastFrame = std::chrono::steady_clock::now();
 
@@ -500,12 +508,74 @@ namespace sources {
                     m_vehiclePowered.load() &&
                     engine->OnVideoStreamTick(&presentationTime) == S_OK)
                 {
+                    DWORD currentVideoWidth{};
+                    DWORD currentVideoHeight{};
+                    if (SUCCEEDED(engine->GetNativeVideoSize(
+                            &currentVideoWidth, &currentVideoHeight)) &&
+                        currentVideoWidth > 0 && currentVideoHeight > 0)
+                    {
+                        nativeVideoWidth = currentVideoWidth;
+                        nativeVideoHeight = currentVideoHeight;
+                    }
+
                     MFVideoNormalizedRect sourceRect{ 0.0f, 0.0f, 1.0f, 1.0f };
                     RECT destination{
                         0, 0,
                         static_cast<LONG>(textureWidth),
                         static_cast<LONG>(textureHeight)
                     };
+                    if (nativeVideoWidth > 0 && nativeVideoHeight > 0)
+                    {
+                        const double sourceAspect =
+                            static_cast<double>(nativeVideoWidth) /
+                            static_cast<double>(nativeVideoHeight);
+                        const double targetAspect =
+                            static_cast<double>(textureWidth) /
+                            static_cast<double>(textureHeight);
+                        if (sourceAspect > targetAspect)
+                        {
+                            const LONG fittedHeight = (std::max)(
+                                1L, static_cast<LONG>(std::lround(
+                                    static_cast<double>(textureWidth) /
+                                    sourceAspect)));
+                            destination.top =
+                                (static_cast<LONG>(textureHeight) -
+                                    fittedHeight) / 2;
+                            destination.bottom =
+                                destination.top + fittedHeight;
+                        }
+                        else
+                        {
+                            const LONG fittedWidth = (std::max)(
+                                1L, static_cast<LONG>(std::lround(
+                                    static_cast<double>(textureHeight) *
+                                    sourceAspect)));
+                            destination.left =
+                                (static_cast<LONG>(textureWidth) -
+                                    fittedWidth) / 2;
+                            destination.right =
+                                destination.left + fittedWidth;
+                        }
+                    }
+                    if (nativeVideoWidth != loggedVideoWidth ||
+                        nativeVideoHeight != loggedVideoHeight ||
+                        textureWidth != loggedTargetWidth ||
+                        textureHeight != loggedTargetHeight)
+                    {
+                        diagnostic_log::writef(
+                            "render",
+                            "Native media aspect-fit: video=%lux%lu, "
+                            "target=%ux%u, destination=(%ld,%ld)-(%ld,%ld).",
+                            static_cast<unsigned long>(nativeVideoWidth),
+                            static_cast<unsigned long>(nativeVideoHeight),
+                            textureWidth, textureHeight,
+                            destination.left, destination.top,
+                            destination.right, destination.bottom);
+                        loggedVideoWidth = nativeVideoWidth;
+                        loggedVideoHeight = nativeVideoHeight;
+                        loggedTargetWidth = textureWidth;
+                        loggedTargetHeight = textureHeight;
+                    }
                     MFARGB background{ 0, 0, 0, 255 };
                     if (SUCCEEDED(engine->TransferVideoFrame(
                         renderTarget.Get(), &sourceRect, &destination, &background)))

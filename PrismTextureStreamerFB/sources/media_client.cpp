@@ -280,11 +280,25 @@ namespace {
         }
         void SetOutputSize(uint32_t width, uint32_t height) override
         {
+            width = (std::max)(1U, width);
+            height = (std::max)(1U, height);
+            const uint32_t previousWidth = m_requestedOutputWidth.exchange(width);
+            const uint32_t previousHeight = m_requestedOutputHeight.exchange(height);
+            if (previousWidth == width && previousHeight == height)
+                return;
+
             m_capture->SetOutputSize(width, height);
-            send_payload(
+            const bool delivered = send_payload(
                 m_windowTitle,
                 "resize|" + std::to_string(width) + "x" +
                 std::to_string(height));
+            diagnostic_log::writef(
+                "render",
+                "%s target viewport %ux%u (aspect %.4f): %s.",
+                m_fullSpotifyWeb ? "Spotify Web" : "YouTube/direct",
+                width, height,
+                static_cast<double>(width) / static_cast<double>(height),
+                delivered ? "delivered" : "failed");
         }
         bool CopyLatestFrame(
             std::vector<uint8_t>& destination,
@@ -507,6 +521,8 @@ namespace {
         std::string m_instanceId;
         std::string m_windowTitle;
         std::atomic<uint8_t> m_framerate{ 60 };
+        std::atomic<uint32_t> m_requestedOutputWidth{};
+        std::atomic<uint32_t> m_requestedOutputHeight{};
         std::atomic<bool> m_userCapturePaused{};
         std::atomic<bool> m_vehiclePowered{ true };
         bool m_spatialEnabled{};

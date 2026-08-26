@@ -86,6 +86,8 @@ namespace PrismMediaClient
         private double desiredBrightness = 1.0;
         private double lastLoggedBrightness = -1.0;
         private DateTime lastBrightnessLogUtc = DateTime.MinValue;
+        private int requestedViewportWidth = 1280;
+        private int requestedViewportHeight = 720;
 
         internal MainForm(
             string initialUrl,
@@ -104,7 +106,8 @@ namespace PrismMediaClient
             StartPosition = FormStartPosition.CenterScreen;
             Width = 1280;
             Height = 720;
-            MinimumSize = new System.Drawing.Size(426, 240);
+            MinimumSize = new System.Drawing.Size(64, 64);
+            AutoScaleMode = AutoScaleMode.None;
             BackColor = System.Drawing.Color.Black;
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = !silentStart;
@@ -255,6 +258,15 @@ namespace PrismMediaClient
                             ? "Spotify top-level navigation"
                             : "media navigation");
                     ready = true;
+                    if (args.IsSuccess)
+                    {
+                        await ApplyResponsiveViewportAsync(
+                            requestedViewportWidth,
+                            requestedViewportHeight,
+                            fullSpotifyWeb
+                                ? "Spotify navigation completed"
+                                : "local player navigation completed");
+                    }
                     while (pendingCommands.Count > 0)
                     {
                         await ApplyCommandAsync(pendingCommands.Dequeue());
@@ -753,6 +765,74 @@ namespace PrismMediaClient
             await Task.CompletedTask;
         }
 
+        private async Task ApplyResponsiveViewportAsync(
+            int targetWidth, int targetHeight, string reason)
+        {
+            requestedViewportWidth = Math.Max(16, Math.Min(3840, targetWidth));
+            requestedViewportHeight = Math.Max(16, Math.Min(2160, targetHeight));
+
+            System.Drawing.Rectangle workArea =
+                Screen.FromControl(this).WorkingArea;
+            int availableWidth = Math.Max(64, workArea.Width);
+            int availableHeight = Math.Max(64, workArea.Height);
+            double scale = Math.Min(
+                1.0,
+                Math.Min(
+                    availableWidth / (double)requestedViewportWidth,
+                    availableHeight / (double)requestedViewportHeight));
+            int clientWidth = Math.Max(
+                1, (int)Math.Round(requestedViewportWidth * scale));
+            int clientHeight = Math.Max(
+                1, (int)Math.Round(requestedViewportHeight * scale));
+
+            ClientSize = new System.Drawing.Size(clientWidth, clientHeight);
+            webView.Bounds = ClientRectangle;
+
+            if (!workArea.Contains(Bounds))
+            {
+                int left = Math.Max(
+                    workArea.Left,
+                    Math.Min(Left, workArea.Right - Width));
+                int top = Math.Max(
+                    workArea.Top,
+                    Math.Min(Top, workArea.Bottom - Height));
+                Location = new System.Drawing.Point(left, top);
+            }
+
+            if (webView.CoreWebView2 == null)
+                return;
+
+            try
+            {
+                webView.ZoomFactor = 1.0;
+                string metrics =
+                    "{\"width\":" + requestedViewportWidth +
+                    ",\"height\":" + requestedViewportHeight +
+                    ",\"deviceScaleFactor\":1,\"mobile\":false," +
+                    "\"screenWidth\":" + requestedViewportWidth +
+                    ",\"screenHeight\":" + requestedViewportHeight + "}";
+                await webView.CoreWebView2.CallDevToolsProtocolMethodAsync(
+                    "Emulation.setDeviceMetricsOverride", metrics);
+                string viewport = await webView.CoreWebView2.ExecuteScriptAsync(
+                    "(() => { window.dispatchEvent(new Event('resize'));" +
+                    "return {width:window.innerWidth,height:window.innerHeight," +
+                    "dpr:window.devicePixelRatio}; })()");
+                ClientDiagnosticLog.Write(
+                    "render",
+                    "Responsive viewport after " + reason + ": target=" +
+                    requestedViewportWidth + "x" + requestedViewportHeight +
+                    ", helper=" + ClientSize.Width + "x" + ClientSize.Height +
+                    ", webview=" + webView.ClientSize.Width + "x" +
+                    webView.ClientSize.Height + ", page=" + viewport + ".");
+            }
+            catch (Exception error)
+            {
+                ClientDiagnosticLog.Write(
+                    "error", "Responsive viewport update failed after " +
+                    reason + ": " + error.Message);
+            }
+        }
+
         private void SetInteractiveWindow(bool interactive)
         {
             int style = GetWindowLong(Handle, GwlExStyle);
@@ -1083,9 +1163,8 @@ namespace PrismMediaClient
                     int.TryParse(dimensions[0], out int width) &&
                     int.TryParse(dimensions[1], out int height))
                 {
-                    ClientSize = new System.Drawing.Size(
-                        Math.Max(426, Math.Min(3840, width)),
-                        Math.Max(240, Math.Min(2160, height)));
+                    await ApplyResponsiveViewportAsync(
+                        width, height, "display target changed");
                 }
                 return;
             }

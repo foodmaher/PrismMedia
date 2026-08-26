@@ -33,6 +33,97 @@ using namespace scs_logging;
 
 namespace
 {
+    uint64_t g_customRenderPatchAddress{};
+    bool g_customRenderPatchEnabled{};
+    bool g_customRenderPatchResolutionFailed{};
+
+    bool set_custom_render_patch(bool enabled)
+    {
+        if (!enabled && !g_customRenderPatchEnabled &&
+            g_customRenderPatchAddress == 0)
+            return true;
+        if (enabled == g_customRenderPatchEnabled &&
+            g_customRenderPatchAddress != 0)
+            return true;
+        if (g_customRenderPatchResolutionFailed)
+            return false;
+
+        if (g_customRenderPatchAddress == 0)
+        {
+            g_customRenderPatchAddress = bmem::patternScan(
+                "0F 84 ?? ?? ?? ?? 45 84 E4 4D 0F 45 FD");
+            if (g_customRenderPatchAddress == 0)
+            {
+                // A previous plugin build may have left the branch enabled
+                // during an in-process DLL reload. Resolve that form too so
+                // shutdown can always restore the game's original bytes.
+                g_customRenderPatchAddress = bmem::patternScan(
+                    "90 E9 ?? ?? ?? ?? 45 84 E4 4D 0F 45 FD");
+            }
+            if (g_customRenderPatchAddress == 0)
+            {
+                if (!g_customRenderPatchResolutionFailed)
+                {
+                    diagnostic_log::write(
+                        "error",
+                        "Could not resolve the custom-display render branch; "
+                        "custom textures can upload but will not be presented.");
+                    g_customRenderPatchResolutionFailed = true;
+                }
+                return false;
+            }
+        }
+
+        auto* bytes = reinterpret_cast<uint8_t*>(
+            g_customRenderPatchAddress);
+        const bool currentlyEnabled =
+            bytes[0] == 0x90 && bytes[1] == 0xE9;
+        const bool currentlyDisabled =
+            bytes[0] == 0x0F && bytes[1] == 0x84;
+        if (!currentlyEnabled && !currentlyDisabled)
+        {
+            diagnostic_log::writef(
+                "error",
+                "Custom-display render branch has unexpected bytes %02X %02X; "
+                "the plugin left it untouched.",
+                static_cast<unsigned>(bytes[0]),
+                static_cast<unsigned>(bytes[1]));
+            return false;
+        }
+        if (currentlyEnabled == enabled)
+        {
+            g_customRenderPatchEnabled = enabled;
+            return true;
+        }
+
+        DWORD oldProtect{};
+        if (!VirtualProtect(
+                bytes, 2, PAGE_EXECUTE_READWRITE, &oldProtect))
+        {
+            diagnostic_log::writef(
+                "error",
+                "Could not change custom-display render protection "
+                "(Win32 error %lu).",
+                GetLastError());
+            return false;
+        }
+
+        bytes[0] = enabled ? 0x90 : 0x0F;
+        bytes[1] = enabled ? 0xE9 : 0x84;
+        FlushInstructionCache(GetCurrentProcess(), bytes, 2);
+        DWORD ignoredProtect{};
+        VirtualProtect(bytes, 2, oldProtect, &ignoredProtect);
+        g_customRenderPatchEnabled = enabled;
+        diagnostic_log::writef(
+            "route",
+            "Custom-display render compatibility branch %s %s.",
+            enabled ? "enabled" : "restored",
+            enabled
+                ? "after an exact custom GPU route was matched"
+                : "because no matched custom display remains");
+        return true;
+    }
+
     float calculate_effective_brightness(const screen_t& screen)
     {
         float effective = (std::clamp)(
@@ -222,7 +313,6 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
 {
     static bool gps_patched{};
     static bool dash_patched{};
-    static bool custom_routing_logged{};
 
     bool has_gps{};
     bool has_dash{};
@@ -467,7 +557,8 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                 has_gps = true;
             else if (screen.type == screen_type_t::DASHBOARD)
                 has_dash = true;
-            else if (screen.type == screen_type_t::CUSTOM)
+            else if (screen.type == screen_type_t::CUSTOM &&
+                screen.liveTexture)
                 has_custom = true;
 
             if (screen.source &&
@@ -723,16 +814,7 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
         dash_patched = has_dash;
     }
 
-    if (has_custom && !custom_routing_logged)
-    {
-        diagnostic_log::write(
-            "route",
-            "Custom displays are using isolated TOBJ routing; the legacy "
-            "global cabin-display patch is disabled.");
-        custom_routing_logged = true;
-    }
-    else if (!has_custom)
-        custom_routing_logged = false;
+    set_custom_render_patch(has_custom);
 }
 
 #pragma comment( linker, "/export:scs_telemetry_init=scs_telemetry_init" )
@@ -843,6 +925,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 SCSAPI_VOID scs_telemetry_shutdown()
 {
     diagnostic_log::write("session", "Plugin shutdown started.");
+    set_custom_render_patch(false);
     sources::ShutdownMediaClient();
     update_checker::shutdown();
     settings::save();

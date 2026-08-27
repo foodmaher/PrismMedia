@@ -7,15 +7,15 @@ struct ID3D11ShaderResourceView;
 namespace custom_render_probe
 {
     // Arms one bounded diagnostic capture before the game reloads the truck
-    // and accessory models. This is deliberately synchronous so the branch
-    // cannot execute between the reload command and the next telemetry frame.
+    // and accessory models. This is deliberately synchronous so neither the
+    // empty-list branch nor the post-R9 loop can execute before it is armed.
     bool prepare_capture(
         const char* displayId,
         const char* originalTexture);
 
     // Supplies the exact live Direct3D texture after the prepared display's
-    // route is matched. Captured pre-match object pointers are correlated at
-    // this point, after the game has attached the replacement texture.
+    // route is matched. Captured pre-match list entries are fingerprinted and
+    // searched again after the game has attached the replacement texture.
     void request_capture(
         const char* displayId,
         const char* originalTexture,

@@ -7,13 +7,15 @@ The revised probe arms before the truck/accessory reload, retains the branch's
 real register and stack identities, then correlates those identities after the
 prepared display's exact Direct3D texture is created.
 
-The current 4.0.0 diagnostic records the complete instruction window in one
-queue entry, separates signatures before and after the exact texture match,
-clears the observed `+2` tag from `R9`, scans each likely object through 512
-bytes, and follows one bounded child level. It also runs several independent
-Direct3D correlations in the same test: exact SRV creation, bound-resource
-identity inspection, pixel-shader binding, all seven Direct3D 11 draw-call
-variants, game call stacks, nearest-branch timing, and object fingerprints.
+The current 4.0.0 diagnostic incorporates the result of that first wide run.
+The empty-list JE occurs roughly 22 seconds before the exact texture draw and
+its `R9` value is stale. The new second breakpoint is placed on the verified
+`mov r9,rsi` instruction inside the list loop. It emulates that instruction,
+captures every real list slot, `[RSI]`, `[[RSI]]`, `[[RSI]+8]`, adjacent entry
+words, and before/match/draw fingerprints, then correlates them with the exact
+slot-6 Direct3D draw. The earlier branch, exact SRV identity, independent
+bound-resource inspection, all seven D3D11 draw variants and call stacks remain
+active as separate checks in the same run.
 
 ## Test
 
@@ -22,21 +24,22 @@ variants, game call stacks, nearest-branch timing, and object fingerprints.
    screen visible.
 3. Enable media replacement on one custom display and make sure its unique game
    TOBJ is selected.
-4. While driving, open **System** and select **Run wide render diagnostic**
-   once.
+4. While driving, open **System** and select **Run final list-entry
+   diagnostic** once.
    Do not use the ordinary game console reload command, because the probe must
    be installed first.
 5. Wait until the truck finishes reloading and the custom screen returns, then
    close the game normally.
 6. Provide `PrismMedia.log` from the game executable directory.
 
-The diagnostic action synchronously installs the probe before the reload. It is
-bounded to 2,048 branch executions, 60 seconds overall, and 10 seconds after
-the exact texture appears. Before the match it preserves the original branch
-decision. After the match it temporarily emulates the working compatibility
-jump so the selected texture can reach the SRV/bind/draw hooks. Six correlated
-draw samples complete the test early. Temporary high-frequency hooks and the
-exception handler are then removed, and the working global fallback returns.
+The diagnostic action synchronously installs both breakpoints before the
+reload. It is bounded to 2,048 branch executions, 256 post-R9 list entries,
+60 seconds overall, and 10 seconds after the exact texture appears. Before the
+match it preserves the original branch decision. After the match it temporarily
+emulates the working compatibility jump so the selected texture can reach the
+SRV/bind/draw hooks. Six correlated draw samples complete the test early.
+Temporary high-frequency hooks and both breakpoints are then removed, and the
+working global fallback returns.
 
 Useful log records use the `[probe]` category:
 
@@ -46,15 +49,18 @@ Useful log records use the `[probe]` category:
 - `Exact custom route matched for the prepared early capture`
 - `Per-instance capture completed`
 - `branch-code[...]`
+- `List-entry correlation summary`
+- `list-entry[...]`
 - `DX correlation summary`
 - `DX sample[...]`
 - `signature[...]`
 
-Each DX sample reports whether the exact tracked SRV or independent resource
-inspection found the texture, the pixel-shader slot, the following draw type,
-bind/draw call stacks, the nearest branch timing and decision, tag-cleared R9,
-and memory fingerprints. The older register/object scan is retained as another
-independent result rather than being trusted by itself.
+Each list entry reports the owning branch, list ordinal, verified `R9 == RSI`,
+`RAX == [RSI]`, four slot words, eight entry words, memory fingerprints at
+capture/texture-match/draw time, and any exact texture path found through the
+slot, entry, next slot, or an entry-word child. Each DX sample reports whether
+the tracked SRV or independent resource inspection found the texture, the
+pixel-shader slot, following draw type, and bind/draw call stacks.
 
 The probe is diagnostic only. The final selective detour must be based on the
 captured runtime identities; this build deliberately does not guess an object

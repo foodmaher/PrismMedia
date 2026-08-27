@@ -35,6 +35,15 @@ namespace
     constexpr uint32_t kBranchLookbackEvents = 32;
     constexpr uint64_t kPostMatchTimeoutMilliseconds = 10000;
     constexpr uint64_t kPendingDrawMaximumMicroseconds = 10000;
+    // The instruction immediately after the loop setup is `mov r9,rsi`.
+    // Probing it exposes the actual list slot passed to the game call instead
+    // of the stale R9 value that exists at the earlier empty-list JE.
+    constexpr uint32_t kLoopInstructionOffset = 23;
+    constexpr uint32_t kLoopInstructionBytes = 3;
+    constexpr uint32_t kMaximumLoopEvents = 256;
+    constexpr uint32_t kLoopSlotWords = 4;
+    constexpr uint32_t kLoopObjectWords = 32;
+    constexpr uint32_t kLoopComparisonWords = 16;
 
     enum register_index_t : uint32_t
     {
@@ -105,10 +114,43 @@ namespace
         char drawKind[24]{};
     };
 
+    enum class loop_candidate_t : uint8_t
+    {
+        none,
+        slot,
+        entry,
+        slot_next,
+        entry_word
+    };
+
+    struct loop_event_t
+    {
+        probe_event_t event{};
+        uint64_t slotWords[kLoopSlotWords]{};
+        uint64_t objectWords[kLoopObjectWords]{};
+        uint64_t matchObjectWords[kLoopComparisonWords]{};
+        uint64_t drawObjectWords[kLoopComparisonWords]{};
+        uint64_t objectBase{};
+        uint64_t captureSlotHash{};
+        uint64_t captureObjectHash{};
+        uint64_t matchSlotHash{};
+        uint64_t matchObjectHash{};
+        uint64_t drawSlotHash{};
+        uint64_t drawObjectHash{};
+        uint32_t branchIndex{ UINT32_MAX };
+        uint32_t listOrdinal{ UINT32_MAX };
+        int32_t directOffset{ -1 };
+        int32_t childSlotOffset{ -1 };
+        int32_t childTextureOffset{ -1 };
+        uint16_t candidateIndex{};
+        loop_candidate_t candidate{ loop_candidate_t::none };
+    };
+
     uint64_t g_branchAddress{};
     int32_t g_originalRelativeDisplacement{};
     uint64_t g_takenAddress{};
     uint64_t g_fallthroughAddress{};
+    uint64_t g_loopProbeAddress{};
     DWORD g_originalProtection{};
     PVOID g_exceptionHandler{};
     bool g_resolutionFailed{};
@@ -125,6 +167,9 @@ namespace
     std::atomic<uint32_t> g_activeHandlers{};
     std::atomic<uint32_t> g_eventCount{};
     std::atomic<uint32_t> g_completedEventCount{};
+    std::atomic<uint32_t> g_latestBranchIndex{ UINT32_MAX };
+    std::atomic<uint32_t> g_loopEventCount{};
+    std::atomic<uint32_t> g_completedLoopEventCount{};
     std::atomic<uintptr_t> g_selectedTexture{};
     std::atomic<uintptr_t> g_selectedTextureIdentity{};
     std::atomic<uint64_t> g_textureMatchedTick{};
@@ -137,6 +182,8 @@ namespace
     std::atomic<uint32_t> g_resourceInspections{};
     std::atomic<uint32_t> g_correlationSampleCount{};
     std::atomic<uint32_t> g_drawCorrelationCount{};
+    std::atomic<bool> g_loopMatchSnapshotTaken{};
+    std::atomic<bool> g_loopDrawSnapshotTaken{};
     std::array<correlation_sample_t, kMaximumCorrelationSamples>
         g_correlationSamples{};
     std::array<std::atomic<bool>, kMaximumCorrelationSamples>
@@ -144,6 +191,8 @@ namespace
     std::array<std::atomic<bool>, kMaximumCorrelationSamples>
         g_drawSampleReady{};
     std::array<probe_event_t, kMaximumEvents> g_events{};
+    std::array<loop_event_t, kMaximumLoopEvents> g_loopEvents{};
+    std::array<std::atomic<bool>, kMaximumLoopEvents> g_loopEventReady{};
     char g_selectedDisplayId[96]{};
     char g_selectedOriginalTexture[320]{};
 
@@ -254,6 +303,47 @@ namespace
         return true;
     }
 
+    bool resolve_loop_probe()
+    {
+        if (g_loopProbeAddress != 0)
+            return true;
+        if (!resolve_branch())
+            return false;
+
+        const uint64_t candidate =
+            g_branchAddress + kLoopInstructionOffset;
+        const auto* bytes = reinterpret_cast<const uint8_t*>(candidate);
+        bool expected = false;
+        __try
+        {
+            expected = bytes[0] == 0x4C && bytes[1] == 0x8B &&
+                bytes[2] == 0xCE;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            expected = false;
+        }
+        if (!expected)
+        {
+            diagnostic_log::writef_important(
+                "error",
+                "Could not arm the list-entry probe: expected mov r9,rsi "
+                "at branch+%u (0x%llX). The compatibility fallback was "
+                "left available.",
+                kLoopInstructionOffset,
+                static_cast<unsigned long long>(candidate));
+            return false;
+        }
+        g_loopProbeAddress = candidate;
+        diagnostic_log::writef_important(
+            "probe",
+            "Resolved list-entry probe at 0x%llX (branch+%u, "
+            "instruction=mov r9,rsi).",
+            static_cast<unsigned long long>(g_loopProbeAddress),
+            kLoopInstructionOffset);
+        return true;
+    }
+
     bool write_branch(bool forceFallthrough)
     {
         if (!forceFallthrough && g_branchAddress == 0 &&
@@ -329,21 +419,164 @@ namespace
         }
     }
 
+    bool readable_pointer(uint64_t value);
+    uint64_t memory_fingerprint_words(uint64_t address, uint32_t wordCount);
+    uint64_t memory_fingerprint(uint64_t address);
+
+    void copy_registers(const CONTEXT& context, probe_event_t& event)
+    {
+        event.registers[reg_rax] = context.Rax;
+        event.registers[reg_rbx] = context.Rbx;
+        event.registers[reg_rcx] = context.Rcx;
+        event.registers[reg_rdx] = context.Rdx;
+        event.registers[reg_rsi] = context.Rsi;
+        event.registers[reg_rdi] = context.Rdi;
+        event.registers[reg_rbp] = context.Rbp;
+        event.registers[reg_rsp] = context.Rsp;
+        event.registers[reg_r8] = context.R8;
+        event.registers[reg_r9] = context.R9;
+        event.registers[reg_r10] = context.R10;
+        event.registers[reg_r11] = context.R11;
+        event.registers[reg_r12] = context.R12;
+        event.registers[reg_r13] = context.R13;
+        event.registers[reg_r14] = context.R14;
+        event.registers[reg_r15] = context.R15;
+        event.tick = GetTickCount64();
+        event.qpc = performance_counter();
+        event.threadId = GetCurrentThreadId();
+        copy_stack_words(context.Rsp, event.stack);
+    }
+
+    uint64_t snapshot_hash(const uint64_t* words, uint32_t count)
+    {
+        uint64_t hash = 1469598103934665603ULL;
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            uint64_t value = words[index];
+            for (uint32_t byte = 0; byte < sizeof(value); ++byte)
+            {
+                hash ^= static_cast<uint8_t>(value & 0xFFU);
+                hash *= 1099511628211ULL;
+                value >>= 8;
+            }
+        }
+        return hash;
+    }
+
+    void capture_loop_event(CONTEXT& context, uint32_t index)
+    {
+        // Emulate the overwritten `mov r9,rsi` before capturing registers.
+        context.R9 = context.Rsi;
+        if (index >= kMaximumLoopEvents)
+            return;
+
+        loop_event_t& loop = g_loopEvents[index];
+        copy_registers(context, loop.event);
+
+        uint32_t branchIndex = g_latestBranchIndex.load(
+            std::memory_order_acquire);
+        const uint32_t completedBranches = (std::min)(
+            g_completedEventCount.load(std::memory_order_acquire),
+            kMaximumEvents);
+        if (branchIndex >= completedBranches ||
+            g_events[branchIndex].threadId != loop.event.threadId)
+        {
+            branchIndex = UINT32_MAX;
+            for (uint32_t cursor = completedBranches;
+                cursor > 0; --cursor)
+            {
+                const uint32_t candidate = cursor - 1;
+                if (g_events[candidate].threadId == loop.event.threadId &&
+                    g_events[candidate].qpc <= loop.event.qpc)
+                {
+                    branchIndex = candidate;
+                    break;
+                }
+            }
+        }
+        if (branchIndex < completedBranches)
+        {
+            loop.branchIndex = branchIndex;
+            const uint64_t listStart =
+                g_events[branchIndex].registers[reg_rsi];
+            if (context.Rsi >= listStart &&
+                ((context.Rsi - listStart) % sizeof(uint64_t)) == 0)
+            {
+                loop.listOrdinal = static_cast<uint32_t>(
+                    (context.Rsi - listStart) / sizeof(uint64_t));
+            }
+        }
+
+        __try
+        {
+            const auto* slots = reinterpret_cast<const uint64_t*>(context.Rsi);
+            const uint64_t remainingBytes = context.R14 > context.Rsi
+                ? context.R14 - context.Rsi : sizeof(uint64_t);
+            const uint32_t availableWords = static_cast<uint32_t>((std::min)(
+                remainingBytes / sizeof(uint64_t),
+                static_cast<uint64_t>(kLoopSlotWords)));
+            for (uint32_t word = 0; word < availableWords; ++word)
+                loop.slotWords[word] = slots[word];
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+        }
+
+        loop.objectBase = loop.slotWords[0] & ~uint64_t{ 7 };
+        if (readable_pointer(loop.objectBase))
+        {
+            __try
+            {
+                const auto* object = reinterpret_cast<const uint64_t*>(
+                    loop.objectBase);
+                for (uint32_t word = 0; word < kLoopObjectWords; ++word)
+                    loop.objectWords[word] = object[word];
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+            }
+        }
+        loop.captureSlotHash = snapshot_hash(
+            loop.slotWords, kLoopSlotWords);
+        loop.captureObjectHash = snapshot_hash(
+            loop.objectWords, kLoopComparisonWords);
+        g_loopEventReady[index].store(true, std::memory_order_release);
+        g_completedLoopEventCount.store(index + 1, std::memory_order_release);
+    }
+
     LONG CALLBACK exception_handler(PEXCEPTION_POINTERS exception)
     {
         if (!exception || !exception->ExceptionRecord ||
             !exception->ContextRecord ||
             exception->ExceptionRecord->ExceptionCode !=
                 EXCEPTION_BREAKPOINT ||
-            reinterpret_cast<uint64_t>(
+            (reinterpret_cast<uint64_t>(
                 exception->ExceptionRecord->ExceptionAddress) !=
-                g_branchAddress)
+                g_branchAddress &&
+             reinterpret_cast<uint64_t>(
+                exception->ExceptionRecord->ExceptionAddress) !=
+                g_loopProbeAddress))
         {
             return EXCEPTION_CONTINUE_SEARCH;
         }
 
         CONTEXT* context = exception->ContextRecord;
         g_activeHandlers.fetch_add(1, std::memory_order_acq_rel);
+        const uint64_t exceptionAddress = reinterpret_cast<uint64_t>(
+            exception->ExceptionRecord->ExceptionAddress);
+        if (exceptionAddress == g_loopProbeAddress)
+        {
+            const bool recordEvent = g_trapArmed.load(
+                std::memory_order_acquire);
+            const uint32_t index = recordEvent
+                ? g_loopEventCount.fetch_add(1, std::memory_order_relaxed)
+                : kMaximumLoopEvents;
+            capture_loop_event(*context, index);
+            context->Rip = g_loopProbeAddress + kLoopInstructionBytes;
+            g_activeHandlers.fetch_sub(1, std::memory_order_acq_rel);
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+
         const bool recordEvent = g_trapArmed.load(
             std::memory_order_acquire);
         const uint32_t index = recordEvent
@@ -360,53 +593,25 @@ namespace
         if (recordEvent && index < kMaximumEvents)
         {
             probe_event_t& event = g_events[index];
-            event.registers[reg_rax] = context->Rax;
-            event.registers[reg_rbx] = context->Rbx;
-            event.registers[reg_rcx] = context->Rcx;
-            event.registers[reg_rdx] = context->Rdx;
-            event.registers[reg_rsi] = context->Rsi;
-            event.registers[reg_rdi] = context->Rdi;
-            event.registers[reg_rbp] = context->Rbp;
-            event.registers[reg_rsp] = context->Rsp;
-            event.registers[reg_r8] = context->R8;
-            event.registers[reg_r9] = context->R9;
-            event.registers[reg_r10] = context->R10;
-            event.registers[reg_r11] = context->R11;
-            event.registers[reg_r12] = context->R12;
-            event.registers[reg_r13] = context->R13;
-            event.registers[reg_r14] = context->R14;
-            event.registers[reg_r15] = context->R15;
-            event.tick = GetTickCount64();
-            event.qpc = performance_counter();
-            event.threadId = GetCurrentThreadId();
+            copy_registers(*context, event);
             event.branchTaken = originalTaken ? 1 : 0;
             event.emulatedTaken = emulatedTaken ? 1 : 0;
-            copy_stack_words(context->Rsp, event.stack);
             g_completedEventCount.store(
                 index + 1, std::memory_order_release);
+            g_latestBranchIndex.store(index, std::memory_order_release);
         }
 
         context->Rip = emulatedTaken
             ? g_takenAddress : g_fallthroughAddress;
 
-        if (recordEvent && index + 1 >= kMaximumEvents)
-        {
-            InterlockedExchange8(
-                reinterpret_cast<volatile char*>(g_branchAddress),
-                static_cast<char>(0x0F));
-            FlushInstructionCache(
-                GetCurrentProcess(),
-                reinterpret_cast<void*>(g_branchAddress),
-                1);
-            g_trapCompleted.store(true, std::memory_order_release);
-        }
         g_activeHandlers.fetch_sub(1, std::memory_order_acq_rel);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
     bool start_probe()
     {
-        if (g_probeInstalled || g_captureCompleted || !resolve_branch())
+        if (g_probeInstalled || g_captureCompleted ||
+            !resolve_branch() || !resolve_loop_probe())
             return false;
 
         // The probe emulates the original JE itself. Restore the branch first
@@ -427,8 +632,10 @@ namespace
             return false;
         }
 
+        constexpr SIZE_T protectedBytes =
+            kLoopInstructionOffset + kLoopInstructionBytes;
         if (!VirtualProtect(
-                bytes, 6, PAGE_EXECUTE_READWRITE,
+                bytes, protectedBytes, PAGE_EXECUTE_READWRITE,
                 &g_originalProtection))
         {
             diagnostic_log::writef(
@@ -443,7 +650,8 @@ namespace
         if (!g_exceptionHandler)
         {
             DWORD ignored{};
-            VirtualProtect(bytes, 6, g_originalProtection, &ignored);
+            VirtualProtect(
+                bytes, protectedBytes, g_originalProtection, &ignored);
             diagnostic_log::writef(
                 "error",
                 "Could not install per-instance exception handler "
@@ -454,8 +662,15 @@ namespace
 
         for (auto& event : g_events)
             event = {};
+        for (auto& event : g_loopEvents)
+            event = {};
+        for (auto& ready : g_loopEventReady)
+            ready = false;
         g_eventCount = 0;
         g_completedEventCount = 0;
+        g_latestBranchIndex = UINT32_MAX;
+        g_loopEventCount = 0;
+        g_completedLoopEventCount = 0;
         g_trapCompleted = false;
         g_probeStartedTick = GetTickCount64();
         g_probeInstalled = true;
@@ -463,17 +678,23 @@ namespace
         InterlockedExchange8(
             reinterpret_cast<volatile char*>(g_branchAddress),
             static_cast<char>(0xCC));
-        FlushInstructionCache(GetCurrentProcess(), bytes, 1);
+        InterlockedExchange8(
+            reinterpret_cast<volatile char*>(g_loopProbeAddress),
+            static_cast<char>(0xCC));
+        FlushInstructionCache(
+            GetCurrentProcess(), bytes, protectedBytes);
 
         diagnostic_log::writef(
             "probe",
             "Per-instance custom render capture started for display '%s' "
-            "(%s), selectedTexture=0x%llX. The original game branch is "
-            "being emulated for at most %u hits/%llums.",
+            "(%s), selectedTexture=0x%llX. The original game branch and "
+            "post-R9 list loop are being emulated for at most %u/%u "
+            "hits and %llums.",
             g_selectedDisplayId,
             g_selectedOriginalTexture,
             static_cast<unsigned long long>(g_selectedTexture.load()),
             kMaximumEvents,
+            kMaximumLoopEvents,
             static_cast<unsigned long long>(kProbeTimeoutMilliseconds));
         return true;
     }
@@ -597,6 +818,170 @@ namespace
         return false;
     }
 
+    bool set_loop_texture_path(
+        loop_event_t& loop,
+        loop_candidate_t candidate,
+        uint16_t candidateIndex,
+        uint64_t address,
+        uintptr_t texture)
+    {
+        address &= ~uint64_t{ 7 };
+        if (address == texture)
+        {
+            loop.candidate = candidate;
+            loop.candidateIndex = candidateIndex;
+            loop.directOffset = 0;
+            return true;
+        }
+
+        const int32_t directOffset =
+            find_texture_member(address, texture);
+        if (directOffset >= 0)
+        {
+            loop.candidate = candidate;
+            loop.candidateIndex = candidateIndex;
+            loop.directOffset = directOffset;
+            return true;
+        }
+
+        int32_t childSlotOffset = -1;
+        int32_t childTextureOffset = -1;
+        if (find_texture_child_member(
+                address, texture,
+                childSlotOffset, childTextureOffset))
+        {
+            loop.candidate = candidate;
+            loop.candidateIndex = candidateIndex;
+            loop.childSlotOffset = childSlotOffset;
+            loop.childTextureOffset = childTextureOffset;
+            return true;
+        }
+        return false;
+    }
+
+    void find_loop_texture_path(loop_event_t& loop, uintptr_t texture)
+    {
+        if (texture == 0 || loop.candidate != loop_candidate_t::none)
+            return;
+
+        if (set_loop_texture_path(
+                loop, loop_candidate_t::slot, 0,
+                loop.event.registers[reg_rsi], texture) ||
+            set_loop_texture_path(
+                loop, loop_candidate_t::entry, 0,
+                loop.objectBase, texture) ||
+            set_loop_texture_path(
+                loop, loop_candidate_t::slot_next, 1,
+                loop.slotWords[1], texture))
+        {
+            return;
+        }
+
+        // Treat the first 16 captured entry words as independent child roots.
+        // This covers [RSI], [[RSI]], [[RSI]+8], and the most likely adjacent
+        // fields without committing to one guessed Prism3D object layout.
+        for (uint16_t word = 0; word < kLoopComparisonWords; ++word)
+        {
+            if (set_loop_texture_path(
+                    loop, loop_candidate_t::entry_word, word,
+                    loop.objectWords[word], texture))
+            {
+                return;
+            }
+        }
+    }
+
+    void snapshot_loop_state(bool drawPhase, uintptr_t texture)
+    {
+        std::atomic<bool>& taken = drawPhase
+            ? g_loopDrawSnapshotTaken : g_loopMatchSnapshotTaken;
+        bool expected = false;
+        if (!taken.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel))
+        {
+            return;
+        }
+
+        const uint32_t count = (std::min)(
+            g_completedLoopEventCount.load(std::memory_order_acquire),
+            kMaximumLoopEvents);
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            if (!g_loopEventReady[index].load(std::memory_order_acquire))
+                continue;
+            loop_event_t& loop = g_loopEvents[index];
+            const uint64_t slotHash = memory_fingerprint_words(
+                loop.event.registers[reg_rsi], kLoopSlotWords);
+            const uint64_t objectHash = memory_fingerprint(loop.objectBase);
+            uint64_t* liveWords = drawPhase
+                ? loop.drawObjectWords : loop.matchObjectWords;
+            if (readable_pointer(loop.objectBase))
+            {
+                __try
+                {
+                    const auto* object = reinterpret_cast<const uint64_t*>(
+                        loop.objectBase);
+                    for (uint32_t word = 0;
+                        word < kLoopComparisonWords; ++word)
+                    {
+                        liveWords[word] = object[word];
+                    }
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                }
+            }
+            if (drawPhase)
+            {
+                loop.drawSlotHash = slotHash;
+                loop.drawObjectHash = objectHash;
+            }
+            else
+            {
+                loop.matchSlotHash = slotHash;
+                loop.matchObjectHash = objectHash;
+                find_loop_texture_path(loop, texture);
+            }
+        }
+    }
+
+    const char* loop_candidate_name(loop_candidate_t candidate)
+    {
+        switch (candidate)
+        {
+        case loop_candidate_t::slot: return "RSI-slot";
+        case loop_candidate_t::entry: return "[RSI]-entry";
+        case loop_candidate_t::slot_next: return "[RSI+8]";
+        case loop_candidate_t::entry_word: return "entry-word";
+        default: return "none";
+        }
+    }
+
+    uint32_t loop_difference_mask(
+        const uint64_t* captured,
+        const uint64_t* compared)
+    {
+        uint32_t mask{};
+        for (uint32_t word = 0; word < kLoopComparisonWords; ++word)
+        {
+            if (captured[word] != compared[word])
+                mask |= 1U << word;
+        }
+        return mask;
+    }
+
+    int32_t exact_texture_word(
+        const uint64_t* words,
+        uintptr_t texture)
+    {
+        for (uint32_t word = 0; word < kLoopComparisonWords; ++word)
+        {
+            if (words[word] == texture)
+                return static_cast<int32_t>(word);
+        }
+        return -1;
+    }
+
     texture_path_t find_texture_path(
         const probe_event_t& event,
         uintptr_t texture)
@@ -715,12 +1100,12 @@ namespace
         return false;
     }
 
-    uint64_t memory_fingerprint(uint64_t address)
+    uint64_t memory_fingerprint_words(uint64_t address, uint32_t wordCount)
     {
         address &= ~uint64_t{ 7 };
-        if (!readable_pointer(address))
+        if (!readable_pointer(address) || wordCount == 0)
             return 0;
-        constexpr uint32_t bytesToHash = 128;
+        const uint32_t bytesToHash = wordCount * sizeof(uint64_t);
         uint64_t hash = 1469598103934665603ULL;
         __try
         {
@@ -736,6 +1121,11 @@ namespace
             return 0;
         }
         return hash;
+    }
+
+    uint64_t memory_fingerprint(uint64_t address)
+    {
+        return memory_fingerprint_words(address, kLoopComparisonWords);
     }
 
     bool nearest_branch_event(
@@ -886,6 +1276,139 @@ namespace
         }
     }
 
+    void log_loop_results()
+    {
+        constexpr uint32_t maximumLoggedEntries = 64;
+        const uint32_t captured = (std::min)(
+            g_completedLoopEventCount.load(std::memory_order_acquire),
+            kMaximumLoopEvents);
+        uint32_t textureMatches{};
+        uint32_t objectChangesAtMatch{};
+        uint32_t objectChangesAtDraw{};
+        for (uint32_t index = 0; index < captured; ++index)
+        {
+            if (!g_loopEventReady[index].load(std::memory_order_acquire))
+                continue;
+            const loop_event_t& loop = g_loopEvents[index];
+            if (loop.candidate != loop_candidate_t::none)
+                ++textureMatches;
+            if (loop.matchObjectHash != 0 &&
+                loop.matchObjectHash != loop.captureObjectHash)
+            {
+                ++objectChangesAtMatch;
+            }
+            if (loop.drawObjectHash != 0 &&
+                loop.drawObjectHash != loop.captureObjectHash)
+            {
+                ++objectChangesAtDraw;
+            }
+        }
+
+        diagnostic_log::writef_important(
+            "probe",
+            "List-entry correlation summary: captured=%u logged=%u "
+            "texturePaths=%u objectChangedAtMatch=%u "
+            "objectChangedAtDraw=%u matchSnapshot=%d drawSnapshot=%d.",
+            captured, (std::min)(captured, maximumLoggedEntries),
+            textureMatches, objectChangesAtMatch, objectChangesAtDraw,
+            g_loopMatchSnapshotTaken.load() ? 1 : 0,
+            g_loopDrawSnapshotTaken.load() ? 1 : 0);
+
+        const uint32_t logged = (std::min)(captured, maximumLoggedEntries);
+        const uintptr_t selectedTexture = g_selectedTexture.load(
+            std::memory_order_acquire);
+        for (uint32_t index = 0; index < logged; ++index)
+        {
+            if (!g_loopEventReady[index].load(std::memory_order_acquire))
+                continue;
+            const loop_event_t& loop = g_loopEvents[index];
+            diagnostic_log::writef_important(
+                "probe",
+                "list-entry[%u] branch=%u ordinal=%u thread=%lu "
+                "RSI=%llX R9=%llX RAX=%llX R14=%llX "
+                "slots=%llX/%llX/%llX/%llX object=%llX.",
+                index, loop.branchIndex, loop.listOrdinal,
+                loop.event.threadId,
+                static_cast<unsigned long long>(
+                    loop.event.registers[reg_rsi]),
+                static_cast<unsigned long long>(
+                    loop.event.registers[reg_r9]),
+                static_cast<unsigned long long>(
+                    loop.event.registers[reg_rax]),
+                static_cast<unsigned long long>(
+                    loop.event.registers[reg_r14]),
+                static_cast<unsigned long long>(loop.slotWords[0]),
+                static_cast<unsigned long long>(loop.slotWords[1]),
+                static_cast<unsigned long long>(loop.slotWords[2]),
+                static_cast<unsigned long long>(loop.slotWords[3]),
+                static_cast<unsigned long long>(loop.objectBase));
+            diagnostic_log::writef_important(
+                "probe",
+                "list-entry[%u] words=%llX/%llX/%llX/%llX/"
+                "%llX/%llX/%llX/%llX hashes(slot)=%llX/%llX/%llX "
+                "hashes(object)=%llX/%llX/%llX path=%s[%u] "
+                "direct=%d childSlot=%d childTexture=%d.",
+                index,
+                static_cast<unsigned long long>(loop.objectWords[0]),
+                static_cast<unsigned long long>(loop.objectWords[1]),
+                static_cast<unsigned long long>(loop.objectWords[2]),
+                static_cast<unsigned long long>(loop.objectWords[3]),
+                static_cast<unsigned long long>(loop.objectWords[4]),
+                static_cast<unsigned long long>(loop.objectWords[5]),
+                static_cast<unsigned long long>(loop.objectWords[6]),
+                static_cast<unsigned long long>(loop.objectWords[7]),
+                static_cast<unsigned long long>(loop.captureSlotHash),
+                static_cast<unsigned long long>(loop.matchSlotHash),
+                static_cast<unsigned long long>(loop.drawSlotHash),
+                static_cast<unsigned long long>(loop.captureObjectHash),
+                static_cast<unsigned long long>(loop.matchObjectHash),
+                static_cast<unsigned long long>(loop.drawObjectHash),
+                loop_candidate_name(loop.candidate), loop.candidateIndex,
+                loop.directOffset, loop.childSlotOffset,
+                loop.childTextureOffset);
+            diagnostic_log::writef_important(
+                "probe",
+                "list-entry[%u] live(match)=%llX/%llX/%llX/%llX/"
+                "%llX/%llX/%llX/%llX live(draw)=%llX/%llX/%llX/%llX/"
+                "%llX/%llX/%llX/%llX diffMasks=%04X/%04X "
+                "exactWords=%d/%d.",
+                index,
+                static_cast<unsigned long long>(loop.matchObjectWords[0]),
+                static_cast<unsigned long long>(loop.matchObjectWords[1]),
+                static_cast<unsigned long long>(loop.matchObjectWords[2]),
+                static_cast<unsigned long long>(loop.matchObjectWords[3]),
+                static_cast<unsigned long long>(loop.matchObjectWords[4]),
+                static_cast<unsigned long long>(loop.matchObjectWords[5]),
+                static_cast<unsigned long long>(loop.matchObjectWords[6]),
+                static_cast<unsigned long long>(loop.matchObjectWords[7]),
+                static_cast<unsigned long long>(loop.drawObjectWords[0]),
+                static_cast<unsigned long long>(loop.drawObjectWords[1]),
+                static_cast<unsigned long long>(loop.drawObjectWords[2]),
+                static_cast<unsigned long long>(loop.drawObjectWords[3]),
+                static_cast<unsigned long long>(loop.drawObjectWords[4]),
+                static_cast<unsigned long long>(loop.drawObjectWords[5]),
+                static_cast<unsigned long long>(loop.drawObjectWords[6]),
+                static_cast<unsigned long long>(loop.drawObjectWords[7]),
+                loop_difference_mask(
+                    loop.objectWords, loop.matchObjectWords),
+                loop_difference_mask(
+                    loop.objectWords, loop.drawObjectWords),
+                exact_texture_word(
+                    loop.matchObjectWords, selectedTexture),
+                exact_texture_word(
+                    loop.drawObjectWords, selectedTexture));
+        }
+
+        if (captured > logged)
+        {
+            diagnostic_log::writef_important(
+                "probe",
+                "List-entry log bounded: %u additional captures omitted; "
+                "the summary still includes all captures.",
+                captured - logged);
+        }
+    }
+
     void log_probe_results()
     {
         const uint32_t captured = (std::min)(
@@ -938,10 +1461,13 @@ namespace
         diagnostic_log::writef_important(
             "probe",
             "Per-instance capture completed: display='%s' events=%u "
-            "JE-taken=%u fallthrough=%u unique=%u beforeTexture=%u "
+            "listEntries=%u JE-taken=%u fallthrough=%u unique=%u "
+            "beforeTexture=%u "
             "afterTexture=%u emulatedTaken=%u selectedTexture=0x%llX "
             "matchTick=%llu.",
-            g_selectedDisplayId, captured, takenCount,
+            g_selectedDisplayId, captured,
+            (std::min)(g_loopEventCount.load(), kMaximumLoopEvents),
+            takenCount,
             captured - takenCount, uniqueCount,
             beforeTextureCount, afterTextureCount,
             emulatedTakenCount,
@@ -949,6 +1475,7 @@ namespace
             static_cast<unsigned long long>(textureMatchedTick));
 
         log_dx_correlations();
+        log_loop_results();
 
         for (uint32_t index = 0; index < uniqueCount; ++index)
         {
@@ -1034,6 +1561,8 @@ namespace
         g_resourceInspections = 0;
         g_correlationSampleCount = 0;
         g_drawCorrelationCount = 0;
+        g_loopMatchSnapshotTaken = false;
+        g_loopDrawSnapshotTaken = false;
         for (auto& sample : g_correlationSamples)
             sample = {};
         for (auto& ready : g_correlationSampleReady)
@@ -1075,11 +1604,18 @@ namespace
         }
 
         auto* bytes = reinterpret_cast<uint8_t*>(g_branchAddress);
+        auto* loopBytes = reinterpret_cast<uint8_t*>(g_loopProbeAddress);
+        InterlockedExchange8(
+            reinterpret_cast<volatile char*>(loopBytes),
+            static_cast<char>(0x4C));
         InterlockedExchange8(
             reinterpret_cast<volatile char*>(g_branchAddress),
             static_cast<char>(0x0F));
         bytes[1] = 0x84;
-        FlushInstructionCache(GetCurrentProcess(), bytes, 2);
+        constexpr SIZE_T protectedBytes =
+            kLoopInstructionOffset + kLoopInstructionBytes;
+        FlushInstructionCache(
+            GetCurrentProcess(), bytes, protectedBytes);
         const uint64_t waitStarted = GetTickCount64();
         while (g_activeHandlers.load(std::memory_order_acquire) != 0 &&
             GetTickCount64() - waitStarted < 100)
@@ -1093,7 +1629,8 @@ namespace
             g_exceptionHandler = nullptr;
         }
         DWORD ignored{};
-        VirtualProtect(bytes, 6, g_originalProtection, &ignored);
+        VirtualProtect(
+            bytes, protectedBytes, g_originalProtection, &ignored);
         g_probeInstalled = false;
         g_captureDataReady.store(true, std::memory_order_release);
         g_trapCompleted = false;
@@ -1101,10 +1638,12 @@ namespace
 
         diagnostic_log::writef(
             "probe",
-            "Early branch capture phase completed: display='%s' events=%u "
-            "textureReady=%d dxCorrelated=%d. %s",
+            "Early branch/list capture phase completed: display='%s' "
+            "branchEvents=%u listEntries=%u textureReady=%d "
+            "dxCorrelated=%d. %s",
             g_selectedDisplayId,
             (std::min)(g_eventCount.load(), kMaximumEvents),
+            (std::min)(g_loopEventCount.load(), kMaximumLoopEvents),
             g_textureReady.load() ? 1 : 0,
             g_dxCorrelationComplete.load() ? 1 : 0,
             g_textureReady.load()
@@ -1223,6 +1762,8 @@ namespace custom_render_probe
         }
         g_textureReady.store(true, std::memory_order_release);
         g_dxCorrelationActive.store(true, std::memory_order_release);
+        snapshot_loop_state(false, g_selectedTexture.load(
+            std::memory_order_acquire));
         diagnostic_log::writef(
             "probe",
             "Exact custom route matched for the prepared early capture: "
@@ -1307,6 +1848,8 @@ namespace custom_render_probe
 
         if (matchedView != UINT32_MAX)
         {
+            snapshot_loop_state(true, g_selectedTexture.load(
+                std::memory_order_acquire));
             const uint32_t sampleIndex = g_correlationSampleCount.fetch_add(
                 1, std::memory_order_acq_rel);
             if (sampleIndex < kMaximumCorrelationSamples)

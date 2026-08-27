@@ -1,38 +1,38 @@
 # PrismMedia 4.0.0
 
-This diagnostic source revision includes the revised bounded custom-display
-per-instance render probe described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md).
-It arms before the installed truck/accessory reload, captures the relevant game
-branch during model creation, then correlates the retained object state after
-the exact custom-screen texture match. The working compatibility fallback is
-restored automatically.
+This diagnostic source revision includes the final broad custom-display
+list-entry probe described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md).
+It arms before the installed truck/accessory reload, captures the verified
+post-`R9 = RSI` list entries during model creation, then correlates their object
+state with the exact custom-screen slot-6 draw. The working compatibility
+fallback is restored automatically.
 
 PrismMedia streams YouTube, Spotify Web, local media, direct streams,
 or a desktop window onto supported ETS2/ATS truck displays.
 
 ## Current diagnostic revision
 
-- System now includes a dedicated **Run wide render diagnostic** action while
-  driving. It arms the breakpoint before issuing the truck reload command, so
-  the model-creation branch cannot run before the probe is installed.
-- The one-click capture is bounded to 2,048 branch events, 60 seconds overall,
-  and 10 seconds after the exact texture match. After that match the probe
-  temporarily emulates the working compatibility decision so the selected
-  texture reaches the Direct3D bind/draw path, then restores the normal
-  fallback automatically.
+- System now includes a dedicated **Run final list-entry diagnostic** action
+  while driving. It arms both bounded breakpoints before issuing the truck
+  reload command, so the model-creation loop cannot run before the probe is
+  installed.
+- The one-click capture is bounded to 2,048 branch events, 256 post-R9 list
+  entries, 60 seconds overall, and 10 seconds after the exact texture match.
+  After that match the probe temporarily emulates the working compatibility
+  decision so the selected texture reaches the Direct3D bind/draw path, then
+  restores the normal fallback automatically.
 - The earlier post-match 1.5-second probe is replaced because runtime testing
   proved that it armed too late and captured zero branch executions.
-- The successful early capture is now split into before/after-texture counts.
-  It records the complete bounded 128-byte machine-code window in one log line,
-  removes the observed low-bit tag from `R9`, scans 512 bytes of each likely
-  object, and follows one bounded level of child pointers looking for the exact
-  custom Direct3D texture.
+- The successful early capture proved that the global JE is an empty-list test
+  and occurs about 22 seconds before the exact draw. The new probe therefore
+  instruments the verified `mov r9,rsi` loop instruction, records up to 256
+  real list entries, and compares `[RSI]`, `[[RSI]]`, `[[RSI]+8]`, adjacent
+  entry words, one child level, and capture/match/draw fingerprints in one run.
 - The primary correlation follows the exact replacement texture through
   `CreateShaderResourceView` and `PSSetShaderResources`. Independent fallback
   resource inspection and all standard, instanced, automatic, and indirect
   draw hooks capture multiple real draw samples, game-relative call stacks,
-  the nearest branch event, and 128-byte fingerprints of its `R9`, `RSI`, and
-  `R14` objects.
+  the earlier branch event and the captured post-R9 list-entry identities.
   These high-frequency hooks are disabled outside the bounded diagnostic.
 
 ## Retained features

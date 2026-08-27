@@ -1613,7 +1613,7 @@ namespace
         diagnostic_log::write(
             "route",
             requireNewDiagnostic
-                ? "Preparing the wide custom-render diagnostic before "
+                ? "Preparing the final list-entry diagnostic before "
                   "executing the truck-texture reload command."
                 : "Preparing a normal truck-texture reload without arming "
                   "the one-shot diagnostic.");
@@ -1654,7 +1654,7 @@ namespace
                 "error",
                 diagnosticPrepared
                     ? "Game rejected the truck-texture reload command after "
-                      "the wide probe was armed. The probe remains bounded "
+                      "the list-entry probe was armed. It remains bounded "
                       "and will restore the branch automatically."
                     : "Game rejected the normal truck-texture reload "
                       "command.");
@@ -2188,22 +2188,22 @@ namespace
 
         ImGui::SeparatorText("Per-instance render diagnostic");
         ImGui::TextWrapped(
-            "Runs one wide capture across the game branch, exact Direct3D "
-            "resource, shader binding and real draw call. Run once and "
-            "provide PrismMedia.log.");
+            "Runs the final wide capture across each post-R9 list entry, "
+            "the exact Direct3D resource, shader slot and real draw call. "
+            "Run once and provide PrismMedia.log.");
         ImGui::BeginDisabled(
             !g_telemetry_driving.load(std::memory_order_acquire));
         if (ImGui::Button(
-                "Run wide render diagnostic", ImVec2(-1.0f, 36.0f)))
+                "Run final list-entry diagnostic", ImVec2(-1.0f, 36.0f)))
         {
             run_early_custom_probe_reload(
                 "before diagnostic reload", true);
         }
         ImGui::EndDisabled();
         explain_last_item(
-            "Wide custom-render diagnostic",
-            "Reloads only after the bounded branch and temporary Direct3D "
-            "correlation hooks are armed.",
+            "Final custom-render diagnostic",
+            "Reloads only after the bounded branch, post-R9 list-entry "
+            "probe and temporary Direct3D correlation hooks are armed.",
             "Temporary loading interruption", "One diagnostic per session");
         if (!g_telemetry_driving.load(std::memory_order_acquire))
             ImGui::TextDisabled("Enter the truck before running the diagnostic.");

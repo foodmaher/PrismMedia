@@ -1,21 +1,26 @@
-# Custom-display per-instance diagnostic
+# Custom-display targeted-fix test
 
-This source revision contains a bounded early diagnostic probe for the global
+This source revision contains a bounded early probe for the global
 custom-display render branch. Runtime testing of the previous revision showed
 that arming only after the exact GPU texture match was too late (`events=0`).
 The revised probe arms before the truck/accessory reload, retains the branch's
 real register and stack identities, then correlates those identities after the
 prepared display's exact Direct3D texture is created.
 
-The current 4.0.0 diagnostic incorporates the result of that first wide run.
-The empty-list JE occurs roughly 22 seconds before the exact texture draw and
-its `R9` value is stale. The new second breakpoint is placed on the verified
-`mov r9,rsi` instruction inside the list loop. It emulates that instruction,
-captures every real list slot, `[RSI]`, `[[RSI]]`, `[[RSI]+8]`, adjacent entry
-words, and before/match/draw fingerprints, then correlates them with the exact
-slot-6 Direct3D draw. The earlier branch, exact SRV identity, independent
-bound-resource inspection, all seven D3D11 draw variants and call stacks remain
-active as separate checks in the same run.
+The current 4.0.0 targeted-fix test incorporates the next runtime result. The
+loop captured two cleanup entries, and both had their first two fields cleared
+roughly 20 seconds before the new texture existed. Therefore the relevant
+identity is the old live texture from before reload, not the replacement
+texture created afterward.
+
+The test now carries both the raw old `ID3D11Texture2D*` and its canonical
+`IUnknown` identity into the verified `mov r9,rsi` loop. It does not retain an
+extra COM reference. Each entry is searched independently through a bounded
+three-child pointer graph. Only an exact old-texture pointer match can mark an
+entry for skipping. Even then, skipping is enabled only if the plugin also
+verifies the game's native `add/lea RSI,+8`, compare, and backedge sequence;
+the handler rejoins that native sequence instead of guessing loop-exit register
+state. Unmatched entries always execute normally.
 
 ## Test
 
@@ -24,22 +29,20 @@ active as separate checks in the same run.
    screen visible.
 3. Enable media replacement on one custom display and make sure its unique game
    TOBJ is selected.
-4. While driving, open **System** and select **Run final list-entry
-   diagnostic** once.
+4. While driving, open **System** and select **Run targeted fix test** once.
    Do not use the ordinary game console reload command, because the probe must
    be installed first.
 5. Wait until the truck finishes reloading and the custom screen returns, then
    close the game normally.
 6. Provide `PrismMedia.log` from the game executable directory.
 
-The diagnostic action synchronously installs both breakpoints before the
-reload. It is bounded to 2,048 branch executions, 256 post-R9 list entries,
-60 seconds overall, and 10 seconds after the exact texture appears. Before the
-match it preserves the original branch decision. After the match it temporarily
-emulates the working compatibility jump so the selected texture can reach the
-SRV/bind/draw hooks. Six correlated draw samples complete the test early.
-Temporary high-frequency hooks and both breakpoints are then removed, and the
-working global fallback returns.
+The action synchronously records the old live texture and installs both
+breakpoints before reload. It is bounded to 2,048 branch executions, 256
+post-R9 list entries, 60 seconds overall, and 10 seconds after the replacement
+texture appears. Exact old-texture matches selectively bypass only their
+cleanup bodies through the verified native loop advance. Six correlated draws
+complete the test early. Temporary hooks and both breakpoints are then removed,
+and the working global fallback returns regardless of the match result.
 
 Useful log records use the `[probe]` category:
 
@@ -56,12 +59,12 @@ Useful log records use the `[probe]` category:
 - `signature[...]`
 
 Each list entry reports the owning branch, list ordinal, verified `R9 == RSI`,
-`RAX == [RSI]`, four slot words, eight entry words, memory fingerprints at
-capture/texture-match/draw time, and any exact texture path found through the
-slot, entry, next slot, or an entry-word child. Each DX sample reports whether
-the tracked SRV or independent resource inspection found the texture, the
-pixel-shader slot, following draw type, and bind/draw call stacks.
+`RAX == [RSI]`, captured fields, fingerprints, old-texture path depth and
+offsets, whether the raw or canonical identity matched, and whether the entry
+was selectively skipped. Each DX sample still confirms the replacement texture
+on pixel-shader slot 6 and its following draw.
 
-The probe is diagnostic only. The final selective detour must be based on the
-captured runtime identities; this build deliberately does not guess an object
-layout or force only one unverified pointer.
+This is a guarded targeted-fix test. No entry is skipped on a heuristic,
+fingerprint, ordinal, or guessed layout. Failure to verify either the exact old
+texture path or the game's native advance sequence leaves original behavior
+untouched and restores the existing compatibility fallback.

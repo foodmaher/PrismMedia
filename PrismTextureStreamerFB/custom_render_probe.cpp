@@ -25,7 +25,9 @@ namespace
     constexpr uint32_t kStackWords = 8;
     constexpr uint32_t kObjectScanWords = 64;
     constexpr uint32_t kBranchBytesBefore = 64;
-    constexpr uint32_t kBranchBytesAfter = 64;
+    // Include the full loop body and its native advance/backedge so a failed
+    // runtime verification can be diagnosed from this same test.
+    constexpr uint32_t kBranchBytesAfter = 160;
     constexpr uint32_t kBranchWindowBytes =
         kBranchBytesBefore + kBranchBytesAfter;
     constexpr uint32_t kMaximumCorrelationSamples = 12;
@@ -144,6 +146,12 @@ namespace
         int32_t childTextureOffset{ -1 };
         uint16_t candidateIndex{};
         loop_candidate_t candidate{ loop_candidate_t::none };
+        int32_t oldPathFirstOffset{ -1 };
+        int32_t oldPathSecondOffset{ -1 };
+        int32_t oldPathThirdOffset{ -1 };
+        uint8_t oldPathDepth{};
+        uint8_t oldPathTargetKind{};
+        uint8_t selectivelySkipped{};
     };
 
     uint64_t g_branchAddress{};
@@ -151,6 +159,7 @@ namespace
     uint64_t g_takenAddress{};
     uint64_t g_fallthroughAddress{};
     uint64_t g_loopProbeAddress{};
+    uint64_t g_loopAdvanceAddress{};
     DWORD g_originalProtection{};
     PVOID g_exceptionHandler{};
     bool g_resolutionFailed{};
@@ -171,6 +180,8 @@ namespace
     std::atomic<uint32_t> g_loopEventCount{};
     std::atomic<uint32_t> g_completedLoopEventCount{};
     std::atomic<uintptr_t> g_selectedTexture{};
+    std::atomic<uintptr_t> g_previousTexture{};
+    std::atomic<uintptr_t> g_previousTextureIdentity{};
     std::atomic<uintptr_t> g_selectedTextureIdentity{};
     std::atomic<uint64_t> g_textureMatchedTick{};
     std::atomic<uint64_t> g_textureMatchedQpc{};
@@ -182,6 +193,8 @@ namespace
     std::atomic<uint32_t> g_resourceInspections{};
     std::atomic<uint32_t> g_correlationSampleCount{};
     std::atomic<uint32_t> g_drawCorrelationCount{};
+    std::atomic<uint32_t> g_oldTexturePathCount{};
+    std::atomic<uint32_t> g_selectiveSkipCount{};
     std::atomic<bool> g_loopMatchSnapshotTaken{};
     std::atomic<bool> g_loopDrawSnapshotTaken{};
     std::array<correlation_sample_t, kMaximumCorrelationSamples>
@@ -335,12 +348,90 @@ namespace
             return false;
         }
         g_loopProbeAddress = candidate;
+        g_loopAdvanceAddress = 0;
+        __try
+        {
+            const uint64_t searchStart =
+                candidate + kLoopInstructionBytes;
+            const uint64_t searchEnd = g_takenAddress;
+            for (uint64_t address = searchStart;
+                address + 9 <= searchEnd; ++address)
+            {
+                const auto* instruction =
+                    reinterpret_cast<const uint8_t*>(address);
+                const bool advancesRsiByEight =
+                    (instruction[0] == 0x48 &&
+                     instruction[1] == 0x83 &&
+                     instruction[2] == 0xC6 &&
+                     instruction[3] == 0x08) ||
+                    (instruction[0] == 0x48 &&
+                     instruction[1] == 0x8D &&
+                     instruction[2] == 0x76 &&
+                     instruction[3] == 0x08);
+                if (!advancesRsiByEight)
+                    continue;
+
+                const uint64_t compareEnd = (std::min)(
+                    address + 20, searchEnd);
+                for (uint64_t compare = address + 4;
+                    compare + 5 <= compareEnd; ++compare)
+                {
+                    const auto* compareBytes =
+                        reinterpret_cast<const uint8_t*>(compare);
+                    if (compareBytes[0] != 0x49 ||
+                        compareBytes[1] != 0x3B ||
+                        compareBytes[2] != 0xF6)
+                    {
+                        continue;
+                    }
+
+                    uint64_t jumpTarget{};
+                    if (compareBytes[3] == 0x75)
+                    {
+                        jumpTarget = compare + 5 +
+                            static_cast<int8_t>(compareBytes[4]);
+                    }
+                    else if (compare + 9 <= searchEnd &&
+                        compareBytes[3] == 0x0F &&
+                        compareBytes[4] == 0x85)
+                    {
+                        int32_t displacement{};
+                        std::memcpy(
+                            &displacement, compareBytes + 5,
+                            sizeof(displacement));
+                        jumpTarget = compare + 9 +
+                            static_cast<int64_t>(displacement);
+                    }
+                    if (jumpTarget >= g_fallthroughAddress &&
+                        jumpTarget <= g_loopProbeAddress)
+                    {
+                        g_loopAdvanceAddress = address;
+                        break;
+                    }
+                }
+                if (g_loopAdvanceAddress != 0)
+                    break;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            g_loopAdvanceAddress = 0;
+        }
         diagnostic_log::writef_important(
             "probe",
             "Resolved list-entry probe at 0x%llX (branch+%u, "
-            "instruction=mov r9,rsi).",
+            "instruction=mov r9,rsi, nativeAdvance=0x%llX).",
             static_cast<unsigned long long>(g_loopProbeAddress),
-            kLoopInstructionOffset);
+            kLoopInstructionOffset,
+            static_cast<unsigned long long>(g_loopAdvanceAddress));
+        if (g_loopAdvanceAddress == 0)
+        {
+            diagnostic_log::write_important(
+                "probe",
+                "Native RSI loop-advance sequence was not verified; this "
+                "run will capture old-texture paths but will not skip any "
+                "entry. The compatibility fallback remains available.");
+        }
         return true;
     }
 
@@ -422,6 +513,127 @@ namespace
     bool readable_pointer(uint64_t value);
     uint64_t memory_fingerprint_words(uint64_t address, uint32_t wordCount);
     uint64_t memory_fingerprint(uint64_t address);
+
+    bool readable_graph_pointer(uint64_t value)
+    {
+        value &= ~uint64_t{ 7 };
+        if (value < 0x10000ULL)
+            return false;
+        MEMORY_BASIC_INFORMATION region{};
+        if (VirtualQuery(
+                reinterpret_cast<const void*>(value),
+                &region, sizeof(region)) != sizeof(region) ||
+            region.State != MEM_COMMIT ||
+            (region.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0)
+        {
+            return false;
+        }
+        const DWORD access = region.Protect & 0xFFU;
+        return access == PAGE_READONLY || access == PAGE_READWRITE ||
+            access == PAGE_WRITECOPY;
+    }
+
+    bool read_graph_word(
+        uint64_t address,
+        uint32_t wordIndex,
+        uint64_t& value)
+    {
+        address &= ~uint64_t{ 7 };
+        bool read = false;
+        __try
+        {
+            value = reinterpret_cast<const uint64_t*>(address)[wordIndex];
+            read = true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            value = 0;
+        }
+        return read;
+    }
+
+    bool find_previous_texture_path(
+        loop_event_t& loop,
+        uintptr_t previousTexture)
+    {
+        if (previousTexture == 0 || loop.objectBase == 0)
+            return false;
+        if (loop.objectBase == previousTexture)
+        {
+            loop.oldPathDepth = 1;
+            return true;
+        }
+
+        // Search only the current entry object, never the surrounding list.
+        // An exact pointer match is required before any entry is skipped.
+        constexpr uint32_t rootWords = kLoopObjectWords;
+        constexpr uint32_t childWords = 32;
+        constexpr uint32_t grandchildWords = 16;
+        for (uint32_t first = 0; first < rootWords; ++first)
+        {
+            const uint64_t firstValue = loop.objectWords[first];
+            if (firstValue == previousTexture)
+            {
+                loop.oldPathDepth = 2;
+                loop.oldPathFirstOffset = static_cast<int32_t>(
+                    first * sizeof(uint64_t));
+                return true;
+            }
+
+            const uint64_t child = firstValue & ~uint64_t{ 7 };
+            if (!readable_graph_pointer(child) ||
+                child == loop.objectBase)
+            {
+                continue;
+            }
+            for (uint32_t second = 0; second < childWords; ++second)
+            {
+                uint64_t secondValue{};
+                if (!read_graph_word(child, second, secondValue))
+                    break;
+                if (secondValue == previousTexture)
+                {
+                    loop.oldPathDepth = 3;
+                    loop.oldPathFirstOffset = static_cast<int32_t>(
+                        first * sizeof(uint64_t));
+                    loop.oldPathSecondOffset = static_cast<int32_t>(
+                        second * sizeof(uint64_t));
+                    return true;
+                }
+
+                const uint64_t grandchild =
+                    secondValue & ~uint64_t{ 7 };
+                if (!readable_graph_pointer(grandchild) ||
+                    grandchild == child ||
+                    grandchild == loop.objectBase)
+                {
+                    continue;
+                }
+                for (uint32_t third = 0;
+                    third < grandchildWords; ++third)
+                {
+                    uint64_t thirdValue{};
+                    if (!read_graph_word(
+                            grandchild, third, thirdValue))
+                    {
+                        break;
+                    }
+                    if (thirdValue == previousTexture)
+                    {
+                        loop.oldPathDepth = 4;
+                        loop.oldPathFirstOffset = static_cast<int32_t>(
+                            first * sizeof(uint64_t));
+                        loop.oldPathSecondOffset = static_cast<int32_t>(
+                            second * sizeof(uint64_t));
+                        loop.oldPathThirdOffset = static_cast<int32_t>(
+                            third * sizeof(uint64_t));
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
 
     void copy_registers(const CONTEXT& context, probe_event_t& event)
     {
@@ -540,6 +752,33 @@ namespace
             loop.slotWords, kLoopSlotWords);
         loop.captureObjectHash = snapshot_hash(
             loop.objectWords, kLoopComparisonWords);
+        const uintptr_t previousTexture = g_previousTexture.load(
+            std::memory_order_acquire);
+        const uintptr_t previousIdentity = g_previousTextureIdentity.load(
+            std::memory_order_acquire);
+        bool oldPathFound = find_previous_texture_path(
+            loop, previousTexture);
+        if (oldPathFound)
+            loop.oldPathTargetKind = 1;
+        else if (previousIdentity != 0 &&
+            previousIdentity != previousTexture)
+        {
+            oldPathFound = find_previous_texture_path(
+                loop, previousIdentity);
+            if (oldPathFound)
+                loop.oldPathTargetKind = 2;
+        }
+        if (oldPathFound)
+        {
+            g_oldTexturePathCount.fetch_add(
+                1, std::memory_order_acq_rel);
+            if (g_loopAdvanceAddress != 0)
+            {
+                loop.selectivelySkipped = 1;
+                g_selectiveSkipCount.fetch_add(
+                    1, std::memory_order_acq_rel);
+            }
+        }
         g_loopEventReady[index].store(true, std::memory_order_release);
         g_completedLoopEventCount.store(index + 1, std::memory_order_release);
     }
@@ -572,7 +811,20 @@ namespace
                 ? g_loopEventCount.fetch_add(1, std::memory_order_relaxed)
                 : kMaximumLoopEvents;
             capture_loop_event(*context, index);
-            context->Rip = g_loopProbeAddress + kLoopInstructionBytes;
+            const bool skipEntry = index < kMaximumLoopEvents &&
+                g_loopEvents[index].selectivelySkipped != 0;
+            if (skipEntry)
+            {
+                // Rejoin the game's verified native add-RSI/compare/backedge
+                // sequence. This preserves its exact loop-exit register state
+                // while bypassing only the matched entry's cleanup body.
+                context->Rip = g_loopAdvanceAddress;
+            }
+            else
+            {
+                context->Rip =
+                    g_loopProbeAddress + kLoopInstructionBytes;
+            }
             g_activeHandlers.fetch_sub(1, std::memory_order_acq_rel);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
@@ -671,6 +923,8 @@ namespace
         g_latestBranchIndex = UINT32_MAX;
         g_loopEventCount = 0;
         g_completedLoopEventCount = 0;
+        g_oldTexturePathCount = 0;
+        g_selectiveSkipCount = 0;
         g_trapCompleted = false;
         g_probeStartedTick = GetTickCount64();
         g_probeInstalled = true;
@@ -687,11 +941,13 @@ namespace
         diagnostic_log::writef(
             "probe",
             "Per-instance custom render capture started for display '%s' "
-            "(%s), selectedTexture=0x%llX. The original game branch and "
+            "(%s), previousTexture=0x%llX selectedTexture=0x%llX. "
+            "The original game branch and "
             "post-R9 list loop are being emulated for at most %u/%u "
             "hits and %llums.",
             g_selectedDisplayId,
             g_selectedOriginalTexture,
+            static_cast<unsigned long long>(g_previousTexture.load()),
             static_cast<unsigned long long>(g_selectedTexture.load()),
             kMaximumEvents,
             kMaximumLoopEvents,
@@ -1308,9 +1564,16 @@ namespace
             "probe",
             "List-entry correlation summary: captured=%u logged=%u "
             "texturePaths=%u objectChangedAtMatch=%u "
-            "objectChangedAtDraw=%u matchSnapshot=%d drawSnapshot=%d.",
+            "objectChangedAtDraw=%u oldTexture=0x%llX "
+            "oldIdentity=0x%llX oldPaths=%u "
+            "selectiveSkips=%u matchSnapshot=%d drawSnapshot=%d.",
             captured, (std::min)(captured, maximumLoggedEntries),
             textureMatches, objectChangesAtMatch, objectChangesAtDraw,
+            static_cast<unsigned long long>(g_previousTexture.load()),
+            static_cast<unsigned long long>(
+                g_previousTextureIdentity.load()),
+            g_oldTexturePathCount.load(),
+            g_selectiveSkipCount.load(),
             g_loopMatchSnapshotTaken.load() ? 1 : 0,
             g_loopDrawSnapshotTaken.load() ? 1 : 0);
 
@@ -1347,7 +1610,9 @@ namespace
                 "list-entry[%u] words=%llX/%llX/%llX/%llX/"
                 "%llX/%llX/%llX/%llX hashes(slot)=%llX/%llX/%llX "
                 "hashes(object)=%llX/%llX/%llX path=%s[%u] "
-                "direct=%d childSlot=%d childTexture=%d.",
+                "direct=%d childSlot=%d childTexture=%d "
+                "oldPathDepth=%u oldTarget=%u oldOffsets=%d/%d/%d "
+                "skipped=%u.",
                 index,
                 static_cast<unsigned long long>(loop.objectWords[0]),
                 static_cast<unsigned long long>(loop.objectWords[1]),
@@ -1365,7 +1630,10 @@ namespace
                 static_cast<unsigned long long>(loop.drawObjectHash),
                 loop_candidate_name(loop.candidate), loop.candidateIndex,
                 loop.directOffset, loop.childSlotOffset,
-                loop.childTextureOffset);
+                loop.childTextureOffset, loop.oldPathDepth,
+                loop.oldPathTargetKind,
+                loop.oldPathFirstOffset, loop.oldPathSecondOffset,
+                loop.oldPathThirdOffset, loop.selectivelySkipped);
             diagnostic_log::writef_important(
                 "probe",
                 "list-entry[%u] live(match)=%llX/%llX/%llX/%llX/"
@@ -1464,6 +1732,7 @@ namespace
             "listEntries=%u JE-taken=%u fallthrough=%u unique=%u "
             "beforeTexture=%u "
             "afterTexture=%u emulatedTaken=%u selectedTexture=0x%llX "
+            "previousTexture=0x%llX oldPaths=%u selectiveSkips=%u "
             "matchTick=%llu.",
             g_selectedDisplayId, captured,
             (std::min)(g_loopEventCount.load(), kMaximumLoopEvents),
@@ -1472,6 +1741,9 @@ namespace
             beforeTextureCount, afterTextureCount,
             emulatedTakenCount,
             static_cast<unsigned long long>(selectedTexture),
+            static_cast<unsigned long long>(g_previousTexture.load()),
+            g_oldTexturePathCount.load(),
+            g_selectiveSkipCount.load(),
             static_cast<unsigned long long>(textureMatchedTick));
 
         log_dx_correlations();
@@ -1639,11 +1911,13 @@ namespace
         diagnostic_log::writef(
             "probe",
             "Early branch/list capture phase completed: display='%s' "
-            "branchEvents=%u listEntries=%u textureReady=%d "
-            "dxCorrelated=%d. %s",
+            "branchEvents=%u listEntries=%u oldPaths=%u selectiveSkips=%u "
+            "textureReady=%d dxCorrelated=%d. %s",
             g_selectedDisplayId,
             (std::min)(g_eventCount.load(), kMaximumEvents),
             (std::min)(g_loopEventCount.load(), kMaximumLoopEvents),
+            g_oldTexturePathCount.load(),
+            g_selectiveSkipCount.load(),
             g_textureReady.load() ? 1 : 0,
             g_dxCorrelationComplete.load() ? 1 : 0,
             g_textureReady.load()
@@ -1664,11 +1938,13 @@ namespace custom_render_probe
 {
     bool prepare_capture(
         const char* displayId,
-        const char* originalTexture)
+        const char* originalTexture,
+        ID3D11Texture2D* currentLiveTexture)
     {
         if (g_captureCompleted.load(std::memory_order_acquire) ||
             g_probeInstalled.load(std::memory_order_acquire) ||
-            g_captureDataReady.load(std::memory_order_acquire))
+            g_captureDataReady.load(std::memory_order_acquire) ||
+            !currentLiveTexture)
         {
             return false;
         }
@@ -1687,6 +1963,24 @@ namespace custom_render_probe
                 ? originalTexture : "unknown",
             _TRUNCATE);
         g_selectedTexture.store(0, std::memory_order_release);
+        g_previousTexture.store(
+            reinterpret_cast<uintptr_t>(currentLiveTexture),
+            std::memory_order_release);
+        g_previousTextureIdentity.store(0, std::memory_order_release);
+        IUnknown* previousIdentity{};
+        if (SUCCEEDED(currentLiveTexture->QueryInterface(
+                __uuidof(IUnknown),
+                reinterpret_cast<void**>(&previousIdentity))) &&
+            previousIdentity)
+        {
+            g_previousTextureIdentity.store(
+                reinterpret_cast<uintptr_t>(previousIdentity),
+                std::memory_order_release);
+            // Preserve only the numeric canonical identity. The screen still
+            // owns the live texture; retaining an extra COM reference would
+            // mask the cleanup behavior this test must observe.
+            previousIdentity->Release();
+        }
         g_textureMatchedTick.store(0, std::memory_order_release);
         g_textureMatchedQpc.store(0, std::memory_order_release);
         g_textureReady.store(false, std::memory_order_release);
@@ -1696,9 +1990,15 @@ namespace custom_render_probe
         diagnostic_log::writef(
             "probe",
             "Preparing early per-instance render capture before truck "
-            "reload: display='%s' texture='%s'.",
+            "reload: display='%s' texture='%s' oldLiveTexture=0x%llX "
+            "oldIdentity=0x%llX. "
+            "Only an entry with an exact bounded path to this old texture "
+            "may be skipped.",
             g_selectedDisplayId,
-            g_selectedOriginalTexture);
+            g_selectedOriginalTexture,
+            static_cast<unsigned long long>(g_previousTexture.load()),
+            static_cast<unsigned long long>(
+                g_previousTextureIdentity.load()));
 
         const bool dxHooksReady =
             dx11::create_texture_2d::set_custom_probe_hooks_enabled(true);
@@ -1706,7 +2006,7 @@ namespace custom_render_probe
         {
             diagnostic_log::write(
                 "error",
-                "The wide diagnostic could not enable all temporary "
+                "The targeted test could not enable all temporary "
                 "Direct3D correlation hooks; the branch capture will "
                 "continue with reduced coverage.");
         }

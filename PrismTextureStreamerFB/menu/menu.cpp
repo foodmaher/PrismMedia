@@ -1613,7 +1613,7 @@ namespace
         diagnostic_log::write(
             "route",
             requireNewDiagnostic
-                ? "Preparing the final list-entry diagnostic before "
+                ? "Preparing the targeted old-texture fix test before "
                   "executing the truck-texture reload command."
                 : "Preparing a normal truck-texture reload without arming "
                   "the one-shot diagnostic.");
@@ -1627,12 +1627,14 @@ namespace
             {
                 if (candidate.enabled &&
                     candidate.type == screen_type_t::CUSTOM &&
-                    !candidate.original_texture.empty())
+                    !candidate.original_texture.empty() &&
+                    candidate.liveTexture)
                 {
                     diagnosticPrepared =
                         custom_render_probe::prepare_capture(
                             candidate.mediaClientId.c_str(),
-                            candidate.original_texture.c_str());
+                            candidate.original_texture.c_str(),
+                            candidate.liveTexture);
                     if (diagnosticPrepared)
                         break;
                 }
@@ -1643,7 +1645,7 @@ namespace
             diagnostic_log::write(
                 "probe",
                 "Early capture was not armed (already completed/active, or "
-                "no enabled custom display has a game texture)." );
+                "no enabled custom display has an active live texture)." );
             return false;
         }
 
@@ -1664,8 +1666,8 @@ namespace
         diagnostic_log::write(
             "route",
             diagnosticPrepared
-                ? "Game accepted the truck-texture reload command; the wide "
-                  "probe is recording before the exact TOBJ/GPU match."
+                ? "Game accepted the truck-texture reload command; the "
+                  "targeted old-texture probe is active before cleanup."
                 : "Game accepted the normal truck-texture reload command.");
         return true;
     }
@@ -2188,21 +2190,21 @@ namespace
 
         ImGui::SeparatorText("Per-instance render diagnostic");
         ImGui::TextWrapped(
-            "Runs the final wide capture across each post-R9 list entry, "
-            "the exact Direct3D resource, shader slot and real draw call. "
-            "Run once and provide PrismMedia.log.");
+            "Tests the selective fix against the old live texture. Only a "
+            "list entry with an exact bounded pointer path may be skipped; "
+            "the working fallback returns automatically.");
         ImGui::BeginDisabled(
             !g_telemetry_driving.load(std::memory_order_acquire));
         if (ImGui::Button(
-                "Run final list-entry diagnostic", ImVec2(-1.0f, 36.0f)))
+                "Run targeted fix test", ImVec2(-1.0f, 36.0f)))
         {
             run_early_custom_probe_reload(
                 "before diagnostic reload", true);
         }
         ImGui::EndDisabled();
         explain_last_item(
-            "Final custom-render diagnostic",
-            "Reloads only after the bounded branch, post-R9 list-entry "
+            "Targeted custom-render fix test",
+            "Reloads only after the old live texture, bounded list-entry "
             "probe and temporary Direct3D correlation hooks are armed.",
             "Temporary loading interruption", "One diagnostic per session");
         if (!g_telemetry_driving.load(std::memory_order_acquire))

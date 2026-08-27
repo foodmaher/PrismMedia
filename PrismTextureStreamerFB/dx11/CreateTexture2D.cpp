@@ -1003,7 +1003,7 @@ namespace dx11::create_texture_2d {
         {
             diagnostic_log::writef(
                 "error",
-                "Could not prepare all temporary wide diagnostic hooks "
+                "Could not prepare all temporary targeted-test hooks "
                 "(CreateSRV=%d PSSetSRV=%d DrawIndexed=%d Draw=%d "
                 "DrawIndexedInstanced=%d DrawInstanced=%d DrawAuto=%d "
                 "DrawIndexedIndirect=%d DrawIndirect=%d).",
@@ -1053,7 +1053,7 @@ namespace dx11::create_texture_2d {
                         MH_DisableHook(rollback);
                     diagnostic_log::writef(
                         "error",
-                        "Could not enable the temporary wide diagnostic "
+                        "Could not enable the temporary targeted-test "
                         "hooks (MinHook status %d).",
                         static_cast<int>(result));
                     g_customProbeHooksEnabled = false;

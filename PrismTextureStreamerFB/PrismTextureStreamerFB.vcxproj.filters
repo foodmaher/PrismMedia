@@ -35,6 +35,9 @@
     <ClCompile Include="camera_bridge_client.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="custom_render_probe.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="diagnostic_log.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -98,6 +101,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="camera_bridge_client.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="custom_render_probe.h">
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="engine_standby.h">

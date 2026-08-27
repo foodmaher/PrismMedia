@@ -10,6 +10,7 @@
 using namespace scs_logging;
 
 #include "../diagnostic_log.h"
+#include "../custom_render_probe.h"
 #include "../engine_standby.h"
 #include "../screens.h"
 #include "../telemetry_state.h"
@@ -320,6 +321,13 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
                     screen.mediaClientId.c_str(),
                     screen.original_texture.c_str(),
                     modifiedDesc.Width, modifiedDesc.Height);
+                if (screen.type == screen_type_t::CUSTOM)
+                {
+                    custom_render_probe::request_capture(
+                        screen.mediaClientId.c_str(),
+                        screen.original_texture.c_str(),
+                        screen.liveTexture);
+                }
             }
             else {
                 scs_log(2, "[dx11::create_texture_2d] rewrite of %s FAILED, hr=0x%08X", screen.original_texture.c_str(), hr);

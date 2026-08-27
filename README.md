@@ -1,5 +1,10 @@
 # PrismMedia 4.0.0
 
+This diagnostic source revision includes the bounded custom-display
+per-instance render probe described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md).
+It captures one short runtime sample after the first exact custom-screen match,
+then restores the working compatibility fallback automatically.
+
 PrismMedia streams YouTube, Spotify Web, local media, direct streams,
 or a desktop window onto supported ETS2/ATS truck displays.
 

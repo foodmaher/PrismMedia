@@ -7,6 +7,13 @@ The revised probe arms before the truck/accessory reload, retains the branch's
 real register and stack identities, then correlates those identities after the
 prepared display's exact Direct3D texture is created.
 
+The current 4.0.0 diagnostic also records the instructions surrounding the
+branch, separates signatures that execute before and after the exact texture
+match, clears the observed `+2` tag from `R9`, scans each likely object through
+512 bytes, and follows one bounded level of child pointers. This is intended to
+identify a stable per-instance predicate without guessing from `RDI` or another
+unverified value.
+
 ## Test
 
 1. Build and install `PrismMedia.dll` normally.
@@ -36,11 +43,12 @@ Useful log records use the `[probe]` category:
 - `Early branch capture phase completed`
 - `Exact custom route matched for the prepared early capture`
 - `Per-instance capture completed`
+- `branch-code[...]`
 - `signature[...]`
 
-Each signature includes the original branch decision, relevant registers, an
-exact match against the selected Direct3D texture pointer, and whether a likely
-object register contains that texture pointer within its first 256 bytes.
+Each signature includes the original branch decision, before/after-match hit
+counts, relevant registers, the tag-cleared `R9` base, and any direct or
+one-child object path to the selected Direct3D texture.
 
 The probe is diagnostic only. The final selective detour must be based on the
 captured runtime identities; this build deliberately does not guess an object

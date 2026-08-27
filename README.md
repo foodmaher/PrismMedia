@@ -1,4 +1,4 @@
-# PrismMedia 4.0.1 Early Render Probe
+# PrismMedia 4.0.0
 
 This diagnostic source revision includes the revised bounded custom-display
 per-instance render probe described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md).
@@ -10,7 +10,7 @@ restored automatically.
 PrismMedia streams YouTube, Spotify Web, local media, direct streams,
 or a desktop window onto supported ETS2/ATS truck displays.
 
-## What changed in 4.0.1 diagnostic revision
+## Current diagnostic revision
 
 - System now includes a dedicated **Run early render diagnostic** action while
   driving. It arms the breakpoint before issuing the truck reload command, so
@@ -22,8 +22,13 @@ or a desktop window onto supported ETS2/ATS truck displays.
   branch executes.
 - The earlier post-match 1.5-second probe is replaced because runtime testing
   proved that it armed too late and captured zero branch executions.
+- The successful early capture is now split into before/after-texture counts.
+  It records a bounded 128-byte machine-code window around the game branch,
+  removes the observed low-bit tag from `R9`, scans 512 bytes of each likely
+  object, and follows one bounded level of child pointers looking for the exact
+  custom Direct3D texture.
 
-## Retained 4.0.0 changes
+## Retained features
 
 - New hybrid dashboard UI with a Home overview, custom vector icons, elevated
   cards and simulated soft shadows, animated audio waves, mouse/gamepad

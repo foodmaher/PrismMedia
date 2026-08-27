@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 namespace
@@ -20,6 +21,10 @@ namespace
     // limit and restores the original JE itself after the final event.
     constexpr uint64_t kProbeTimeoutMilliseconds = 60000;
     constexpr uint32_t kStackWords = 8;
+    constexpr uint32_t kObjectScanWords = 64;
+    constexpr uint32_t kBranchBytesBefore = 64;
+    constexpr uint32_t kBranchBytesAfter = 64;
+    constexpr uint32_t kBranchBytesPerLine = 32;
 
     enum register_index_t : uint32_t
     {
@@ -55,6 +60,17 @@ namespace
     {
         probe_event_t event{};
         uint32_t hits{};
+        uint32_t beforeTextureHits{};
+        uint32_t afterTextureHits{};
+    };
+
+    struct texture_path_t
+    {
+        const char* registerName = "none";
+        uint64_t object{};
+        int32_t directOffset = -1;
+        int32_t childSlotOffset = -1;
+        int32_t childTextureOffset = -1;
     };
 
     uint64_t g_branchAddress{};
@@ -77,9 +93,68 @@ namespace
     std::atomic<uint32_t> g_activeHandlers{};
     std::atomic<uint32_t> g_eventCount{};
     std::atomic<uintptr_t> g_selectedTexture{};
+    std::atomic<uint64_t> g_textureMatchedTick{};
     std::array<probe_event_t, kMaximumEvents> g_events{};
     char g_selectedDisplayId[96]{};
     char g_selectedOriginalTexture[320]{};
+
+    void log_branch_code_window()
+    {
+        const uint64_t moduleStart = bmem::moduleBase;
+        const uint64_t moduleEnd = moduleStart + bmem::moduleSize;
+        if (moduleStart == 0 || moduleEnd <= moduleStart)
+            return;
+
+        const uint64_t requestedStart =
+            g_branchAddress > kBranchBytesBefore
+                ? g_branchAddress - kBranchBytesBefore
+                : moduleStart;
+        const uint64_t start = (std::max)(requestedStart, moduleStart);
+        const uint64_t end = (std::min)(
+            g_branchAddress + kBranchBytesAfter, moduleEnd);
+
+        for (uint64_t address = start; address < end;
+            address += kBranchBytesPerLine)
+        {
+            char bytesText[kBranchBytesPerLine * 3 + 1]{};
+            size_t cursor{};
+            const uint32_t count = static_cast<uint32_t>((std::min)(
+                static_cast<uint64_t>(kBranchBytesPerLine), end - address));
+            bool readable = true;
+            __try
+            {
+                const auto* bytes = reinterpret_cast<const uint8_t*>(address);
+                for (uint32_t index = 0; index < count; ++index)
+                {
+                    const int written = std::snprintf(
+                        bytesText + cursor,
+                        sizeof(bytesText) - cursor,
+                        "%02X%s",
+                        static_cast<unsigned>(bytes[index]),
+                        index + 1 == count ? "" : " ");
+                    if (written <= 0)
+                    {
+                        readable = false;
+                        break;
+                    }
+                    cursor += static_cast<size_t>(written);
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                readable = false;
+            }
+
+            diagnostic_log::writef(
+                "probe",
+                "branch-code[0x%llX]%s %s",
+                static_cast<unsigned long long>(address),
+                address <= g_branchAddress &&
+                    g_branchAddress < address + count
+                        ? " <contains-branch>" : "",
+                readable ? bytesText : "<unreadable>");
+        }
+    }
 
     bool resolve_branch()
     {
@@ -121,6 +196,7 @@ namespace
             static_cast<unsigned long long>(g_branchAddress),
             static_cast<unsigned long long>(g_takenAddress),
             static_cast<unsigned long long>(g_fallthroughAddress));
+        log_branch_code_window();
         return true;
     }
 
@@ -367,6 +443,8 @@ namespace
             if (event.registers[index] == texture)
                 return names[index];
         }
+        if ((event.registers[reg_r9] & ~uint64_t{ 7 }) == texture)
+            return "R9(tag-cleared)";
         for (uint32_t index = 0; index < kStackWords; ++index)
         {
             if (event.stack[index] == texture)
@@ -401,7 +479,7 @@ namespace
         __try
         {
             const auto* words = reinterpret_cast<const uintptr_t*>(object);
-            for (uint32_t index = 0; index < 32; ++index)
+            for (uint32_t index = 0; index < kObjectScanWords; ++index)
             {
                 if (words[index] == texture)
                     return static_cast<int32_t>(index * sizeof(uintptr_t));
@@ -414,6 +492,92 @@ namespace
         return -1;
     }
 
+    bool find_texture_child_member(
+        uint64_t object,
+        uintptr_t texture,
+        int32_t& childSlotOffset,
+        int32_t& childTextureOffset)
+    {
+        if (!readable_pointer(object))
+            return false;
+
+        __try
+        {
+            const auto* words = reinterpret_cast<const uintptr_t*>(object);
+            for (uint32_t index = 0; index < kObjectScanWords; ++index)
+            {
+                // Prism3D commonly stores tag bits in the low end of an
+                // otherwise aligned object pointer. Clearing only three bits
+                // preserves the allocation while removing the observed R9 +2
+                // tag from this ETS2 build.
+                const uint64_t child =
+                    static_cast<uint64_t>(words[index]) & ~uint64_t{ 7 };
+                const int32_t offset =
+                    find_texture_member(child, texture);
+                if (offset >= 0)
+                {
+                    childSlotOffset = static_cast<int32_t>(
+                        index * sizeof(uintptr_t));
+                    childTextureOffset = offset;
+                    return true;
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+        return false;
+    }
+
+    texture_path_t find_texture_path(
+        const probe_event_t& event,
+        uintptr_t texture)
+    {
+        static constexpr register_index_t candidates[] = {
+            reg_r9, reg_rsi, reg_r14, reg_rbx, reg_rcx, reg_rdx,
+            reg_rdi, reg_r8, reg_r12, reg_r13, reg_r15
+        };
+        static constexpr const char* candidateNames[] = {
+            "R9(tag-cleared)", "RSI", "R14", "RBX", "RCX", "RDX",
+            "RDI", "R8", "R12", "R13", "R15"
+        };
+
+        texture_path_t result{};
+        for (uint32_t candidate = 0;
+            candidate < sizeof(candidates) / sizeof(candidates[0]);
+            ++candidate)
+        {
+            uint64_t object = event.registers[candidates[candidate]];
+            if (candidates[candidate] == reg_r9)
+                object &= ~uint64_t{ 7 };
+
+            const int32_t directOffset =
+                find_texture_member(object, texture);
+            if (directOffset >= 0)
+            {
+                result.registerName = candidateNames[candidate];
+                result.object = object;
+                result.directOffset = directOffset;
+                return result;
+            }
+
+            int32_t childSlotOffset = -1;
+            int32_t childTextureOffset = -1;
+            if (find_texture_child_member(
+                    object, texture,
+                    childSlotOffset, childTextureOffset))
+            {
+                result.registerName = candidateNames[candidate];
+                result.object = object;
+                result.childSlotOffset = childSlotOffset;
+                result.childTextureOffset = childTextureOffset;
+                return result;
+            }
+        }
+        return result;
+    }
+
     void log_probe_results()
     {
         const uint32_t captured = (std::min)(
@@ -421,11 +585,20 @@ namespace
         std::array<unique_signature_t, kMaximumUniqueSignatures> unique{};
         uint32_t uniqueCount{};
         uint32_t takenCount{};
+        uint32_t beforeTextureCount{};
+        uint32_t afterTextureCount{};
+        const uint64_t textureMatchedTick = g_textureMatchedTick.load();
         for (uint32_t index = 0; index < captured; ++index)
         {
             const probe_event_t& event = g_events[index];
+            const bool afterTexture = textureMatchedTick != 0 &&
+                event.tick >= textureMatchedTick;
             if (event.branchTaken)
                 ++takenCount;
+            if (afterTexture)
+                ++afterTextureCount;
+            else
+                ++beforeTextureCount;
             uint32_t signature{};
             for (; signature < uniqueCount; ++signature)
             {
@@ -435,11 +608,17 @@ namespace
             if (signature < uniqueCount)
             {
                 ++unique[signature].hits;
+                if (afterTexture)
+                    ++unique[signature].afterTextureHits;
+                else
+                    ++unique[signature].beforeTextureHits;
             }
             else if (uniqueCount < kMaximumUniqueSignatures)
             {
                 unique[uniqueCount].event = event;
                 unique[uniqueCount].hits = 1;
+                unique[uniqueCount].afterTextureHits = afterTexture ? 1 : 0;
+                unique[uniqueCount].beforeTextureHits = afterTexture ? 0 : 1;
                 ++uniqueCount;
             }
         }
@@ -448,44 +627,37 @@ namespace
         diagnostic_log::writef(
             "probe",
             "Per-instance capture completed: display='%s' events=%u "
-            "JE-taken=%u fallthrough=%u unique=%u selectedTexture=0x%llX.",
+            "JE-taken=%u fallthrough=%u unique=%u beforeTexture=%u "
+            "afterTexture=%u selectedTexture=0x%llX matchTick=%llu.",
             g_selectedDisplayId, captured, takenCount,
             captured - takenCount, uniqueCount,
-            static_cast<unsigned long long>(selectedTexture));
+            beforeTextureCount, afterTextureCount,
+            static_cast<unsigned long long>(selectedTexture),
+            static_cast<unsigned long long>(textureMatchedTick));
 
         for (uint32_t index = 0; index < uniqueCount; ++index)
         {
             const probe_event_t& event = unique[index].event;
-            int32_t memberOffset = -1;
-            const char* memberRegister = "none";
-            static constexpr register_index_t candidates[] = {
-                reg_rbx, reg_rcx, reg_rdx, reg_rsi, reg_rdi,
-                reg_r8, reg_r9, reg_r12, reg_r13, reg_r14, reg_r15
-            };
-            static constexpr const char* candidateNames[] = {
-                "RBX", "RCX", "RDX", "RSI", "RDI",
-                "R8", "R9", "R12", "R13", "R14", "R15"
-            };
-            for (uint32_t candidate = 0;
-                candidate < sizeof(candidates) / sizeof(candidates[0]);
-                ++candidate)
-            {
-                memberOffset = find_texture_member(
-                    event.registers[candidates[candidate]], selectedTexture);
-                if (memberOffset >= 0)
-                {
-                    memberRegister = candidateNames[candidate];
-                    break;
-                }
-            }
+            const texture_path_t texturePath =
+                find_texture_path(event, selectedTexture);
+            const int64_t matchDelta = textureMatchedTick == 0
+                ? 0
+                : static_cast<int64_t>(event.tick) -
+                    static_cast<int64_t>(textureMatchedTick);
 
             diagnostic_log::writef(
                 "probe",
-                "signature[%u] hits=%u thread=%lu decision=%s "
+                "signature[%u] hits=%u before=%u after=%u firstDelta=%lldms "
+                "thread=%lu decision=%s "
                 "RCX=%llX RDX=%llX R8=%llX R9=%llX RBX=%llX RSI=%llX "
                 "RDI=%llX R12=%llX R13=%llX R14=%llX R15=%llX "
-                "directTexture=%s textureMember=%s offset=%d.",
-                index, unique[index].hits, event.threadId,
+                "directTexture=%s R9base=%llX texturePath=%s object=%llX "
+                "directOffset=%d childSlot=%d childOffset=%d.",
+                index, unique[index].hits,
+                unique[index].beforeTextureHits,
+                unique[index].afterTextureHits,
+                static_cast<long long>(matchDelta),
+                event.threadId,
                 event.branchTaken ? "JE-taken" : "fallthrough",
                 static_cast<unsigned long long>(
                     event.registers[reg_rcx]),
@@ -510,8 +682,13 @@ namespace
                 static_cast<unsigned long long>(
                     event.registers[reg_r15]),
                 direct_texture_match(event, selectedTexture),
-                memberOffset >= 0 ? memberRegister : "none",
-                memberOffset);
+                static_cast<unsigned long long>(
+                    event.registers[reg_r9] & ~uint64_t{ 7 }),
+                texturePath.registerName,
+                static_cast<unsigned long long>(texturePath.object),
+                texturePath.directOffset,
+                texturePath.childSlotOffset,
+                texturePath.childTextureOffset);
         }
     }
 
@@ -609,6 +786,7 @@ namespace custom_render_probe
                 ? originalTexture : "unknown",
             _TRUNCATE);
         g_selectedTexture.store(0, std::memory_order_release);
+        g_textureMatchedTick.store(0, std::memory_order_release);
         g_textureReady.store(false, std::memory_order_release);
         g_captureDataReady.store(false, std::memory_order_release);
 
@@ -651,6 +829,8 @@ namespace custom_render_probe
         g_selectedTexture.store(
             reinterpret_cast<uintptr_t>(liveTexture),
             std::memory_order_release);
+        g_textureMatchedTick.store(
+            GetTickCount64(), std::memory_order_release);
         g_textureReady.store(true, std::memory_order_release);
         diagnostic_log::writef(
             "probe",

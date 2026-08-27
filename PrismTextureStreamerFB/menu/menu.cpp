@@ -1612,34 +1612,39 @@ namespace
     {
         diagnostic_log::write(
             "route",
-            "Preparing the early custom-render diagnostic before executing "
-            "the truck-texture reload command.");
+            requireNewDiagnostic
+                ? "Preparing the wide custom-render diagnostic before "
+                  "executing the truck-texture reload command."
+                : "Preparing a normal truck-texture reload without arming "
+                  "the one-shot diagnostic.");
         for (const auto& candidate : g_screens)
             log_route_snapshot(candidate, snapshotReason);
 
         bool diagnosticPrepared = false;
-        for (const auto& candidate : g_screens)
+        if (requireNewDiagnostic)
         {
-            if (candidate.enabled &&
-                candidate.type == screen_type_t::CUSTOM &&
-                !candidate.original_texture.empty())
+            for (const auto& candidate : g_screens)
             {
-                diagnosticPrepared =
-                    custom_render_probe::prepare_capture(
-                        candidate.mediaClientId.c_str(),
-                        candidate.original_texture.c_str());
-                if (diagnosticPrepared)
-                    break;
+                if (candidate.enabled &&
+                    candidate.type == screen_type_t::CUSTOM &&
+                    !candidate.original_texture.empty())
+                {
+                    diagnosticPrepared =
+                        custom_render_probe::prepare_capture(
+                            candidate.mediaClientId.c_str(),
+                            candidate.original_texture.c_str());
+                    if (diagnosticPrepared)
+                        break;
+                }
             }
         }
-        if (!diagnosticPrepared)
+        if (requireNewDiagnostic && !diagnosticPrepared)
         {
             diagnostic_log::write(
                 "probe",
                 "Early capture was not armed (already completed/active, or "
                 "no enabled custom display has a game texture)." );
-            if (requireNewDiagnostic)
-                return false;
+            return false;
         }
 
         prism::string command("game");
@@ -1647,16 +1652,21 @@ namespace
         {
             diagnostic_log::write(
                 "error",
-                "Game rejected the truck-texture reload command after the "
-                "early probe was armed. The probe remains bounded and will "
-                "restore the branch automatically.");
+                diagnosticPrepared
+                    ? "Game rejected the truck-texture reload command after "
+                      "the wide probe was armed. The probe remains bounded "
+                      "and will restore the branch automatically."
+                    : "Game rejected the normal truck-texture reload "
+                      "command.");
             return false;
         }
 
         diagnostic_log::write(
             "route",
-            "Game accepted the truck-texture reload command; the early probe "
-            "is recording the branch before the exact TOBJ/GPU match.");
+            diagnosticPrepared
+                ? "Game accepted the truck-texture reload command; the wide "
+                  "probe is recording before the exact TOBJ/GPU match."
+                : "Game accepted the normal truck-texture reload command.");
         return true;
     }
 
@@ -2178,22 +2188,22 @@ namespace
 
         ImGui::SeparatorText("Per-instance render diagnostic");
         ImGui::TextWrapped(
-            "Arms the branch probe before reloading the installed truck, then "
-            "correlates the captured object state with the exact custom "
-            "texture match. Run once and provide PrismMedia.log.");
+            "Runs one wide capture across the game branch, exact Direct3D "
+            "resource, shader binding and real draw call. Run once and "
+            "provide PrismMedia.log.");
         ImGui::BeginDisabled(
             !g_telemetry_driving.load(std::memory_order_acquire));
         if (ImGui::Button(
-                "Run early render diagnostic", ImVec2(-1.0f, 36.0f)))
+                "Run wide render diagnostic", ImVec2(-1.0f, 36.0f)))
         {
             run_early_custom_probe_reload(
                 "before diagnostic reload", true);
         }
         ImGui::EndDisabled();
         explain_last_item(
-            "Early custom-render diagnostic",
-            "Reloads the currently installed truck only after the bounded "
-            "probe is armed.",
+            "Wide custom-render diagnostic",
+            "Reloads only after the bounded branch and temporary Direct3D "
+            "correlation hooks are armed.",
             "Temporary loading interruption", "One diagnostic per session");
         if (!g_telemetry_driving.load(std::memory_order_acquire))
             ImGui::TextDisabled("Enter the truck before running the diagnostic.");

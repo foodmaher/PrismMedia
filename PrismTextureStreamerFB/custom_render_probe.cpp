@@ -3,8 +3,10 @@
 
 #include "bmem.h"
 #include "diagnostic_log.h"
+#include "dx11/CreateTexture2D.h"
 
 #include <Windows.h>
+#include <d3d11.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -14,7 +16,7 @@
 
 namespace
 {
-    constexpr uint32_t kMaximumEvents = 192;
+    constexpr uint32_t kMaximumEvents = 2048;
     constexpr uint32_t kMaximumUniqueSignatures = 48;
     // Mod-heavy truck reloads can take more than 20 seconds before the exact
     // custom TOBJ is recreated. The breakpoint is still bounded by the event
@@ -24,7 +26,15 @@ namespace
     constexpr uint32_t kObjectScanWords = 64;
     constexpr uint32_t kBranchBytesBefore = 64;
     constexpr uint32_t kBranchBytesAfter = 64;
-    constexpr uint32_t kBranchBytesPerLine = 32;
+    constexpr uint32_t kBranchWindowBytes =
+        kBranchBytesBefore + kBranchBytesAfter;
+    constexpr uint32_t kMaximumCorrelationSamples = 12;
+    constexpr uint32_t kTargetCorrelationSamples = 6;
+    constexpr uint32_t kMaximumTrackedSrvs = 8;
+    constexpr uint32_t kStackFrames = 12;
+    constexpr uint32_t kBranchLookbackEvents = 32;
+    constexpr uint64_t kPostMatchTimeoutMilliseconds = 10000;
+    constexpr uint64_t kPendingDrawMaximumMicroseconds = 10000;
 
     enum register_index_t : uint32_t
     {
@@ -52,8 +62,10 @@ namespace
         uint64_t registers[register_count]{};
         uint64_t stack[kStackWords]{};
         uint64_t tick{};
+        uint64_t qpc{};
         uint32_t threadId{};
         uint8_t branchTaken{};
+        uint8_t emulatedTaken{};
     };
 
     struct unique_signature_t
@@ -71,6 +83,26 @@ namespace
         int32_t directOffset = -1;
         int32_t childSlotOffset = -1;
         int32_t childTextureOffset = -1;
+    };
+
+    struct correlation_sample_t
+    {
+        probe_event_t branch{};
+        uint64_t bindQpc{};
+        uint64_t drawQpc{};
+        uint64_t r9Hash{};
+        uint64_t rsiHash{};
+        uint64_t r14Hash{};
+        uint64_t bindStack[kStackFrames]{};
+        uint64_t drawStack[kStackFrames]{};
+        uint32_t branchIndex{ UINT32_MAX };
+        uint32_t threadId{};
+        uint32_t startSlot{};
+        uint32_t matchedSlot{};
+        uint16_t bindStackCount{};
+        uint16_t drawStackCount{};
+        uint8_t matchedByResourceInspection{};
+        char drawKind[24]{};
     };
 
     uint64_t g_branchAddress{};
@@ -92,11 +124,37 @@ namespace
     std::atomic<bool> g_trapCompleted{};
     std::atomic<uint32_t> g_activeHandlers{};
     std::atomic<uint32_t> g_eventCount{};
+    std::atomic<uint32_t> g_completedEventCount{};
     std::atomic<uintptr_t> g_selectedTexture{};
+    std::atomic<uintptr_t> g_selectedTextureIdentity{};
     std::atomic<uint64_t> g_textureMatchedTick{};
+    std::atomic<uint64_t> g_textureMatchedQpc{};
+    std::atomic<bool> g_dxCorrelationActive{};
+    std::atomic<bool> g_dxCorrelationComplete{};
+    std::atomic<uint32_t> g_dxCallbacks{};
+    std::atomic<uint32_t> g_selectedSrvCount{};
+    std::array<std::atomic<uintptr_t>, kMaximumTrackedSrvs> g_selectedSrvs{};
+    std::atomic<uint32_t> g_resourceInspections{};
+    std::atomic<uint32_t> g_correlationSampleCount{};
+    std::atomic<uint32_t> g_drawCorrelationCount{};
+    std::array<correlation_sample_t, kMaximumCorrelationSamples>
+        g_correlationSamples{};
+    std::array<std::atomic<bool>, kMaximumCorrelationSamples>
+        g_correlationSampleReady{};
+    std::array<std::atomic<bool>, kMaximumCorrelationSamples>
+        g_drawSampleReady{};
     std::array<probe_event_t, kMaximumEvents> g_events{};
     char g_selectedDisplayId[96]{};
     char g_selectedOriginalTexture[320]{};
+
+    thread_local uint32_t t_pendingCorrelationSample = UINT32_MAX;
+
+    uint64_t performance_counter()
+    {
+        LARGE_INTEGER counter{};
+        QueryPerformanceCounter(&counter);
+        return static_cast<uint64_t>(counter.QuadPart);
+    }
 
     void log_branch_code_window()
     {
@@ -113,47 +171,43 @@ namespace
         const uint64_t end = (std::min)(
             g_branchAddress + kBranchBytesAfter, moduleEnd);
 
-        for (uint64_t address = start; address < end;
-            address += kBranchBytesPerLine)
+        char bytesText[kBranchWindowBytes * 3 + 1]{};
+        size_t cursor{};
+        const uint32_t count = static_cast<uint32_t>(end - start);
+        bool readable = true;
+        __try
         {
-            char bytesText[kBranchBytesPerLine * 3 + 1]{};
-            size_t cursor{};
-            const uint32_t count = static_cast<uint32_t>((std::min)(
-                static_cast<uint64_t>(kBranchBytesPerLine), end - address));
-            bool readable = true;
-            __try
+            const auto* bytes = reinterpret_cast<const uint8_t*>(start);
+            for (uint32_t index = 0; index < count; ++index)
             {
-                const auto* bytes = reinterpret_cast<const uint8_t*>(address);
-                for (uint32_t index = 0; index < count; ++index)
+                const int written = std::snprintf(
+                    bytesText + cursor,
+                    sizeof(bytesText) - cursor,
+                    "%02X%s",
+                    static_cast<unsigned>(bytes[index]),
+                    index + 1 == count ? "" : " ");
+                if (written <= 0)
                 {
-                    const int written = std::snprintf(
-                        bytesText + cursor,
-                        sizeof(bytesText) - cursor,
-                        "%02X%s",
-                        static_cast<unsigned>(bytes[index]),
-                        index + 1 == count ? "" : " ");
-                    if (written <= 0)
-                    {
-                        readable = false;
-                        break;
-                    }
-                    cursor += static_cast<size_t>(written);
+                    readable = false;
+                    break;
                 }
+                cursor += static_cast<size_t>(written);
             }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                readable = false;
-            }
-
-            diagnostic_log::writef(
-                "probe",
-                "branch-code[0x%llX]%s %s",
-                static_cast<unsigned long long>(address),
-                address <= g_branchAddress &&
-                    g_branchAddress < address + count
-                        ? " <contains-branch>" : "",
-                readable ? bytesText : "<unreadable>");
         }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            readable = false;
+        }
+
+        // One queue entry prevents the critical instruction immediately
+        // before the JE from being lost when several diagnostic lines arrive
+        // in the same millisecond.
+        diagnostic_log::writef_important(
+            "probe",
+            "branch-code start=0x%llX branchOffset=%llu bytes=%s",
+            static_cast<unsigned long long>(start),
+            static_cast<unsigned long long>(g_branchAddress - start),
+            readable ? bytesText : "<unreadable>");
     }
 
     bool resolve_branch()
@@ -295,6 +349,14 @@ namespace
         const uint32_t index = recordEvent
             ? g_eventCount.fetch_add(1, std::memory_order_relaxed)
             : kMaximumEvents;
+        const bool originalTaken = (context->EFlags & 0x40U) != 0;
+        // Once the exact replacement texture exists, temporarily emulate the
+        // working compatibility jump. That makes the selected texture reach
+        // the Direct3D bind/draw hooks while the INT3 remains in place, which
+        // is what lets one test connect the global branch to one real display.
+        const bool emulatedTaken =
+            g_textureReady.load(std::memory_order_acquire)
+                ? true : originalTaken;
         if (recordEvent && index < kMaximumEvents)
         {
             probe_event_t& event = g_events[index];
@@ -315,13 +377,17 @@ namespace
             event.registers[reg_r14] = context->R14;
             event.registers[reg_r15] = context->R15;
             event.tick = GetTickCount64();
+            event.qpc = performance_counter();
             event.threadId = GetCurrentThreadId();
-            event.branchTaken = (context->EFlags & 0x40U) != 0 ? 1 : 0;
+            event.branchTaken = originalTaken ? 1 : 0;
+            event.emulatedTaken = emulatedTaken ? 1 : 0;
             copy_stack_words(context->Rsp, event.stack);
+            g_completedEventCount.store(
+                index + 1, std::memory_order_release);
         }
 
-        const bool taken = (context->EFlags & 0x40U) != 0;
-        context->Rip = taken ? g_takenAddress : g_fallthroughAddress;
+        context->Rip = emulatedTaken
+            ? g_takenAddress : g_fallthroughAddress;
 
         if (recordEvent && index + 1 >= kMaximumEvents)
         {
@@ -389,6 +455,7 @@ namespace
         for (auto& event : g_events)
             event = {};
         g_eventCount = 0;
+        g_completedEventCount = 0;
         g_trapCompleted = false;
         g_probeStartedTick = GetTickCount64();
         g_probeInstalled = true;
@@ -578,6 +645,247 @@ namespace
         return result;
     }
 
+    bool matches_selected_resource(IUnknown* resource)
+    {
+        if (!resource)
+            return false;
+        const uintptr_t selectedTexture = g_selectedTexture.load(
+            std::memory_order_acquire);
+        if (reinterpret_cast<uintptr_t>(resource) == selectedTexture)
+            return true;
+
+        const uintptr_t selectedIdentity = g_selectedTextureIdentity.load(
+            std::memory_order_acquire);
+        if (selectedIdentity == 0)
+            return false;
+
+        IUnknown* identity{};
+        const HRESULT result = resource->QueryInterface(
+            __uuidof(IUnknown), reinterpret_cast<void**>(&identity));
+        if (FAILED(result) || !identity)
+            return false;
+        const bool match = reinterpret_cast<uintptr_t>(identity) ==
+            selectedIdentity;
+        identity->Release();
+        return match;
+    }
+
+    bool track_selected_srv(ID3D11ShaderResourceView* view)
+    {
+        if (!view)
+            return false;
+        const uintptr_t value = reinterpret_cast<uintptr_t>(view);
+        const uint32_t existingCount = (std::min)(
+            g_selectedSrvCount.load(std::memory_order_acquire),
+            kMaximumTrackedSrvs);
+        for (uint32_t index = 0; index < existingCount; ++index)
+        {
+            if (g_selectedSrvs[index].load(
+                    std::memory_order_acquire) == value)
+                return true;
+        }
+
+        uint32_t slot = g_selectedSrvCount.fetch_add(
+            1, std::memory_order_acq_rel);
+        if (slot >= kMaximumTrackedSrvs)
+        {
+            g_selectedSrvCount.store(
+                kMaximumTrackedSrvs, std::memory_order_release);
+            return false;
+        }
+        view->AddRef();
+        g_selectedSrvs[slot].store(value, std::memory_order_release);
+        return true;
+    }
+
+    bool is_tracked_srv(ID3D11ShaderResourceView* view)
+    {
+        if (!view)
+            return false;
+        const uintptr_t value = reinterpret_cast<uintptr_t>(view);
+        const uint32_t count = (std::min)(
+            g_selectedSrvCount.load(std::memory_order_acquire),
+            kMaximumTrackedSrvs);
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            if (g_selectedSrvs[index].load(
+                    std::memory_order_acquire) == value)
+                return true;
+        }
+        return false;
+    }
+
+    uint64_t memory_fingerprint(uint64_t address)
+    {
+        address &= ~uint64_t{ 7 };
+        if (!readable_pointer(address))
+            return 0;
+        constexpr uint32_t bytesToHash = 128;
+        uint64_t hash = 1469598103934665603ULL;
+        __try
+        {
+            const auto* bytes = reinterpret_cast<const uint8_t*>(address);
+            for (uint32_t index = 0; index < bytesToHash; ++index)
+            {
+                hash ^= bytes[index];
+                hash *= 1099511628211ULL;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return 0;
+        }
+        return hash;
+    }
+
+    bool nearest_branch_event(
+        uint32_t threadId,
+        uint64_t bindQpc,
+        probe_event_t& event,
+        uint32_t& eventIndex)
+    {
+        const uint32_t completed = (std::min)(
+            g_completedEventCount.load(std::memory_order_acquire),
+            kMaximumEvents);
+        const uint32_t first = completed > kBranchLookbackEvents
+            ? completed - kBranchLookbackEvents : 0;
+        for (uint32_t cursor = completed; cursor > first; --cursor)
+        {
+            const uint32_t index = cursor - 1;
+            const probe_event_t& candidate = g_events[index];
+            if (candidate.threadId == threadId &&
+                candidate.qpc != 0 && candidate.qpc <= bindQpc)
+            {
+                event = candidate;
+                eventIndex = index;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    int64_t qpc_delta_microseconds(uint64_t later, uint64_t earlier)
+    {
+        if (later == 0 || earlier == 0 || later < earlier)
+            return -1;
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        if (frequency.QuadPart <= 0)
+            return -1;
+        return static_cast<int64_t>(
+            ((later - earlier) * 1000000ULL) /
+            static_cast<uint64_t>(frequency.QuadPart));
+    }
+
+    void append_stack_text(
+        char* destination,
+        size_t capacity,
+        const uint64_t* frames,
+        uint32_t count)
+    {
+        size_t cursor{};
+        const uint64_t moduleStart = bmem::moduleBase;
+        const uint64_t moduleEnd = moduleStart + bmem::moduleSize;
+        for (uint32_t index = 0; index < count && cursor < capacity; ++index)
+        {
+            const uint64_t address = frames[index];
+            const bool inGame = address >= moduleStart && address < moduleEnd;
+            const int written = std::snprintf(
+                destination + cursor,
+                capacity - cursor,
+                "%s%s%llX",
+                index == 0 ? "" : ",",
+                inGame ? "game+0x" : "0x",
+                static_cast<unsigned long long>(
+                    inGame ? address - moduleStart : address));
+            if (written <= 0)
+                break;
+            cursor += static_cast<size_t>(written);
+        }
+    }
+
+    void log_dx_correlations()
+    {
+        const uint32_t samples = (std::min)(
+            g_correlationSampleCount.load(std::memory_order_acquire),
+            kMaximumCorrelationSamples);
+        diagnostic_log::writef_important(
+            "probe",
+            "DX correlation summary: trackedSRVs=%u bindSamples=%u "
+            "drawSamples=%u resourceInspections=%u target=%u.",
+            (std::min)(g_selectedSrvCount.load(), kMaximumTrackedSrvs),
+            samples,
+            g_drawCorrelationCount.load(),
+            g_resourceInspections.load(),
+            kTargetCorrelationSamples);
+
+        for (uint32_t index = 0; index < samples; ++index)
+        {
+            if (!g_correlationSampleReady[index].load(
+                    std::memory_order_acquire))
+                continue;
+            const correlation_sample_t& sample =
+                g_correlationSamples[index];
+            const bool hasBranch = sample.branchIndex != UINT32_MAX;
+            diagnostic_log::writef_important(
+                "probe",
+                "DX sample[%u] method=%s slot=%u thread=%lu branch=%s "
+                "branchIndex=%u bindDelta=%lldus original=%s emulated=%s "
+                "R9=%llX R9base=%llX RSI=%llX R14=%llX "
+                "hashes=%llX/%llX/%llX draw=%s drawDelta=%lldus.",
+                index,
+                sample.matchedByResourceInspection
+                    ? "bound-resource" : "tracked-SRV",
+                sample.matchedSlot,
+                sample.threadId,
+                hasBranch ? "matched" : "none",
+                sample.branchIndex,
+                hasBranch
+                    ? static_cast<long long>(qpc_delta_microseconds(
+                        sample.bindQpc, sample.branch.qpc)) : -1LL,
+                hasBranch && sample.branch.branchTaken
+                    ? "JE-taken" : "fallthrough",
+                hasBranch && sample.branch.emulatedTaken
+                    ? "JE-taken" : "fallthrough",
+                static_cast<unsigned long long>(
+                    hasBranch ? sample.branch.registers[reg_r9] : 0),
+                static_cast<unsigned long long>(
+                    hasBranch
+                        ? sample.branch.registers[reg_r9] & ~uint64_t{ 7 }
+                        : 0),
+                static_cast<unsigned long long>(
+                    hasBranch ? sample.branch.registers[reg_rsi] : 0),
+                static_cast<unsigned long long>(
+                    hasBranch ? sample.branch.registers[reg_r14] : 0),
+                static_cast<unsigned long long>(sample.r9Hash),
+                static_cast<unsigned long long>(sample.rsiHash),
+                static_cast<unsigned long long>(sample.r14Hash),
+                sample.drawKind[0] ? sample.drawKind : "none",
+                sample.drawQpc != 0
+                    ? static_cast<long long>(qpc_delta_microseconds(
+                        sample.drawQpc, sample.bindQpc)) : -1LL);
+
+            char bindStackText[768]{};
+            append_stack_text(
+                bindStackText, sizeof(bindStackText),
+                sample.bindStack, sample.bindStackCount);
+            diagnostic_log::writef_important(
+                "probe", "DX sample[%u] bind-stack=%s",
+                index, bindStackText[0] ? bindStackText : "none");
+
+            if (sample.drawStackCount != 0)
+            {
+                char drawStackText[768]{};
+                append_stack_text(
+                    drawStackText, sizeof(drawStackText),
+                    sample.drawStack, sample.drawStackCount);
+                diagnostic_log::writef_important(
+                    "probe", "DX sample[%u] draw-stack=%s",
+                    index, drawStackText[0] ? drawStackText : "none");
+            }
+        }
+    }
+
     void log_probe_results()
     {
         const uint32_t captured = (std::min)(
@@ -585,6 +893,7 @@ namespace
         std::array<unique_signature_t, kMaximumUniqueSignatures> unique{};
         uint32_t uniqueCount{};
         uint32_t takenCount{};
+        uint32_t emulatedTakenCount{};
         uint32_t beforeTextureCount{};
         uint32_t afterTextureCount{};
         const uint64_t textureMatchedTick = g_textureMatchedTick.load();
@@ -595,6 +904,8 @@ namespace
                 event.tick >= textureMatchedTick;
             if (event.branchTaken)
                 ++takenCount;
+            if (event.emulatedTaken)
+                ++emulatedTakenCount;
             if (afterTexture)
                 ++afterTextureCount;
             else
@@ -624,16 +935,20 @@ namespace
         }
 
         const uintptr_t selectedTexture = g_selectedTexture.load();
-        diagnostic_log::writef(
+        diagnostic_log::writef_important(
             "probe",
             "Per-instance capture completed: display='%s' events=%u "
             "JE-taken=%u fallthrough=%u unique=%u beforeTexture=%u "
-            "afterTexture=%u selectedTexture=0x%llX matchTick=%llu.",
+            "afterTexture=%u emulatedTaken=%u selectedTexture=0x%llX "
+            "matchTick=%llu.",
             g_selectedDisplayId, captured, takenCount,
             captured - takenCount, uniqueCount,
             beforeTextureCount, afterTextureCount,
+            emulatedTakenCount,
             static_cast<unsigned long long>(selectedTexture),
             static_cast<unsigned long long>(textureMatchedTick));
+
+        log_dx_correlations();
 
         for (uint32_t index = 0; index < uniqueCount; ++index)
         {
@@ -692,6 +1007,42 @@ namespace
         }
     }
 
+    void release_dx_correlation_resources()
+    {
+        for (auto& value : g_selectedSrvs)
+        {
+            const uintptr_t pointer = value.exchange(
+                0, std::memory_order_acq_rel);
+            if (pointer != 0)
+            {
+                reinterpret_cast<ID3D11ShaderResourceView*>(pointer)->Release();
+            }
+        }
+        const uintptr_t identity = g_selectedTextureIdentity.exchange(
+            0, std::memory_order_acq_rel);
+        if (identity != 0)
+            reinterpret_cast<IUnknown*>(identity)->Release();
+    }
+
+    void reset_dx_correlation()
+    {
+        release_dx_correlation_resources();
+        g_dxCorrelationActive = false;
+        g_dxCorrelationComplete = false;
+        g_dxCallbacks = 0;
+        g_selectedSrvCount = 0;
+        g_resourceInspections = 0;
+        g_correlationSampleCount = 0;
+        g_drawCorrelationCount = 0;
+        for (auto& sample : g_correlationSamples)
+            sample = {};
+        for (auto& ready : g_correlationSampleReady)
+            ready = false;
+        for (auto& ready : g_drawSampleReady)
+            ready = false;
+        t_pendingCorrelationSample = UINT32_MAX;
+    }
+
     void finalize_results()
     {
         if (!g_captureDataReady.load(std::memory_order_acquire) ||
@@ -713,6 +1064,15 @@ namespace
     {
         if (!g_probeInstalled)
             return;
+
+        g_dxCorrelationActive.store(false, std::memory_order_release);
+        dx11::create_texture_2d::set_custom_probe_hooks_enabled(false);
+        const uint64_t callbackWaitStarted = GetTickCount64();
+        while (g_dxCallbacks.load(std::memory_order_acquire) != 0 &&
+            GetTickCount64() - callbackWaitStarted < 100)
+        {
+            Sleep(0);
+        }
 
         auto* bytes = reinterpret_cast<uint8_t*>(g_branchAddress);
         InterlockedExchange8(
@@ -742,10 +1102,11 @@ namespace
         diagnostic_log::writef(
             "probe",
             "Early branch capture phase completed: display='%s' events=%u "
-            "textureReady=%d. %s",
+            "textureReady=%d dxCorrelated=%d. %s",
             g_selectedDisplayId,
             (std::min)(g_eventCount.load(), kMaximumEvents),
             g_textureReady.load() ? 1 : 0,
+            g_dxCorrelationComplete.load() ? 1 : 0,
             g_textureReady.load()
                 ? "Correlating against the exact matched texture."
                 : "Waiting for the exact custom texture match before "
@@ -756,6 +1117,7 @@ namespace
         // be used to implement the final selective detour.
         write_branch(customDisplayActive || g_captureReserved.load());
         finalize_results();
+        release_dx_correlation_resources();
     }
 }
 
@@ -787,8 +1149,10 @@ namespace custom_render_probe
             _TRUNCATE);
         g_selectedTexture.store(0, std::memory_order_release);
         g_textureMatchedTick.store(0, std::memory_order_release);
+        g_textureMatchedQpc.store(0, std::memory_order_release);
         g_textureReady.store(false, std::memory_order_release);
         g_captureDataReady.store(false, std::memory_order_release);
+        reset_dx_correlation();
 
         diagnostic_log::writef(
             "probe",
@@ -797,9 +1161,21 @@ namespace custom_render_probe
             g_selectedDisplayId,
             g_selectedOriginalTexture);
 
+        const bool dxHooksReady =
+            dx11::create_texture_2d::set_custom_probe_hooks_enabled(true);
+        if (!dxHooksReady)
+        {
+            diagnostic_log::write(
+                "error",
+                "The wide diagnostic could not enable all temporary "
+                "Direct3D correlation hooks; the branch capture will "
+                "continue with reduced coverage.");
+        }
+
         if (start_probe())
             return true;
 
+        dx11::create_texture_2d::set_custom_probe_hooks_enabled(false);
         g_captureReserved.store(false, std::memory_order_release);
         g_captureCompleted.store(true, std::memory_order_release);
         return false;
@@ -831,11 +1207,27 @@ namespace custom_render_probe
             std::memory_order_release);
         g_textureMatchedTick.store(
             GetTickCount64(), std::memory_order_release);
+        g_textureMatchedQpc.store(
+            performance_counter(), std::memory_order_release);
+
+        IUnknown* identity{};
+        if (SUCCEEDED(liveTexture->QueryInterface(
+                __uuidof(IUnknown),
+                reinterpret_cast<void**>(&identity))) && identity)
+        {
+            const uintptr_t oldIdentity = g_selectedTextureIdentity.exchange(
+                reinterpret_cast<uintptr_t>(identity),
+                std::memory_order_acq_rel);
+            if (oldIdentity != 0)
+                reinterpret_cast<IUnknown*>(oldIdentity)->Release();
+        }
         g_textureReady.store(true, std::memory_order_release);
+        g_dxCorrelationActive.store(true, std::memory_order_release);
         diagnostic_log::writef(
             "probe",
             "Exact custom route matched for the prepared early capture: "
-            "display='%s' texture='%s' liveTexture=0x%llX captureReady=%d.",
+            "display='%s' texture='%s' liveTexture=0x%llX captureReady=%d. "
+            "Wide DX correlation is now active.",
             g_selectedDisplayId,
             g_selectedOriginalTexture,
             static_cast<unsigned long long>(g_selectedTexture.load()),
@@ -843,14 +1235,183 @@ namespace custom_render_probe
         finalize_results();
     }
 
+    void notify_shader_resource_view(
+        ID3D11Resource* resource,
+        ID3D11ShaderResourceView* view)
+    {
+        if (!g_dxCorrelationActive.load(std::memory_order_acquire) ||
+            !resource || !view)
+            return;
+
+        g_dxCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        if (g_dxCorrelationActive.load(std::memory_order_acquire) &&
+            matches_selected_resource(resource))
+        {
+            track_selected_srv(view);
+        }
+        g_dxCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    void notify_pixel_shader_resources(
+        unsigned int startSlot,
+        unsigned int viewCount,
+        ID3D11ShaderResourceView* const* views)
+    {
+        if (!g_dxCorrelationActive.load(std::memory_order_acquire) ||
+            !views || viewCount == 0)
+            return;
+
+        g_dxCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        if (!g_dxCorrelationActive.load(std::memory_order_acquire))
+        {
+            g_dxCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+            return;
+        }
+
+        uint32_t matchedView = UINT32_MAX;
+        bool resourceInspectionMatch = false;
+        for (uint32_t index = 0; index < viewCount; ++index)
+        {
+            if (is_tracked_srv(views[index]))
+            {
+                matchedView = index;
+                break;
+            }
+        }
+
+        // Independent fallback: if CreateShaderResourceView was missed or
+        // returned a different COM interface pointer, ask each bound SRV for
+        // its underlying resource and compare canonical IUnknown identity.
+        if (matchedView == UINT32_MAX)
+        {
+            for (uint32_t index = 0; index < viewCount; ++index)
+            {
+                if (!views[index])
+                    continue;
+                ID3D11Resource* resource{};
+                views[index]->GetResource(&resource);
+                g_resourceInspections.fetch_add(1,
+                    std::memory_order_relaxed);
+                const bool match = matches_selected_resource(resource);
+                if (resource)
+                    resource->Release();
+                if (match)
+                {
+                    track_selected_srv(views[index]);
+                    matchedView = index;
+                    resourceInspectionMatch = true;
+                    break;
+                }
+            }
+        }
+
+        if (matchedView != UINT32_MAX)
+        {
+            const uint32_t sampleIndex = g_correlationSampleCount.fetch_add(
+                1, std::memory_order_acq_rel);
+            if (sampleIndex < kMaximumCorrelationSamples)
+            {
+                correlation_sample_t& sample =
+                    g_correlationSamples[sampleIndex];
+                sample.bindQpc = performance_counter();
+                sample.threadId = GetCurrentThreadId();
+                sample.startSlot = startSlot;
+                sample.matchedSlot = startSlot + matchedView;
+                sample.matchedByResourceInspection =
+                    resourceInspectionMatch ? 1 : 0;
+                nearest_branch_event(
+                    sample.threadId, sample.bindQpc,
+                    sample.branch, sample.branchIndex);
+                if (sample.branchIndex != UINT32_MAX)
+                {
+                    sample.r9Hash = memory_fingerprint(
+                        sample.branch.registers[reg_r9]);
+                    sample.rsiHash = memory_fingerprint(
+                        sample.branch.registers[reg_rsi]);
+                    sample.r14Hash = memory_fingerprint(
+                        sample.branch.registers[reg_r14]);
+                }
+                sample.bindStackCount = static_cast<uint16_t>(
+                    CaptureStackBackTrace(
+                        2, kStackFrames,
+                        reinterpret_cast<void**>(sample.bindStack),
+                        nullptr));
+                g_correlationSampleReady[sampleIndex].store(
+                    true, std::memory_order_release);
+                t_pendingCorrelationSample = sampleIndex;
+            }
+            else
+            {
+                g_correlationSampleCount.store(
+                    kMaximumCorrelationSamples,
+                    std::memory_order_release);
+            }
+        }
+
+        g_dxCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    void notify_draw(const char* drawKind)
+    {
+        if (!g_dxCorrelationActive.load(std::memory_order_acquire) ||
+            t_pendingCorrelationSample >= kMaximumCorrelationSamples)
+            return;
+
+        g_dxCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        const uint32_t sampleIndex = t_pendingCorrelationSample;
+        t_pendingCorrelationSample = UINT32_MAX;
+        if (!g_dxCorrelationActive.load(std::memory_order_acquire) ||
+            !g_correlationSampleReady[sampleIndex].load(
+                std::memory_order_acquire))
+        {
+            g_dxCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+            return;
+        }
+
+        correlation_sample_t& sample = g_correlationSamples[sampleIndex];
+        const uint64_t nowQpc = performance_counter();
+        const int64_t delay = qpc_delta_microseconds(
+            nowQpc, sample.bindQpc);
+        if (delay >= 0 &&
+            static_cast<uint64_t>(delay) <=
+                kPendingDrawMaximumMicroseconds)
+        {
+            sample.drawQpc = nowQpc;
+            strncpy_s(
+                sample.drawKind,
+                drawKind && drawKind[0] ? drawKind : "draw",
+                _TRUNCATE);
+            sample.drawStackCount = static_cast<uint16_t>(
+                CaptureStackBackTrace(
+                    2, kStackFrames,
+                    reinterpret_cast<void**>(sample.drawStack),
+                    nullptr));
+            g_drawSampleReady[sampleIndex].store(
+                true, std::memory_order_release);
+            const uint32_t completed = g_drawCorrelationCount.fetch_add(
+                1, std::memory_order_acq_rel) + 1;
+            if (completed >= kTargetCorrelationSamples)
+            {
+                g_dxCorrelationComplete.store(
+                    true, std::memory_order_release);
+                g_trapCompleted.store(true, std::memory_order_release);
+            }
+        }
+        g_dxCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
     void update(bool customDisplayActive)
     {
         if (g_probeInstalled)
         {
             const uint64_t now = GetTickCount64();
+            const uint64_t matched = g_textureMatchedTick.load(
+                std::memory_order_acquire);
             if (g_trapCompleted.load(std::memory_order_acquire) ||
                 now < g_probeStartedTick ||
-                now - g_probeStartedTick >= kProbeTimeoutMilliseconds)
+                now - g_probeStartedTick >= kProbeTimeoutMilliseconds ||
+                (matched != 0 && now >= matched &&
+                    now - matched >= kPostMatchTimeoutMilliseconds))
             {
                 finish_probe(customDisplayActive);
             }
@@ -868,7 +1429,11 @@ namespace custom_render_probe
         if (g_probeInstalled)
             finish_probe(false);
         else
+        {
+            g_dxCorrelationActive = false;
+            dx11::create_texture_2d::set_custom_probe_hooks_enabled(false);
             write_branch(false);
+        }
         if (g_captureDataReady.load() && !g_textureReady.load() &&
             !g_resultsLogged.load())
         {
@@ -879,5 +1444,6 @@ namespace custom_render_probe
                 (std::min)(g_eventCount.load(), kMaximumEvents));
         }
         g_captureReserved = false;
+        release_dx_correlation_resources();
     }
 }

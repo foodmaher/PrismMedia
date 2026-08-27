@@ -204,4 +204,36 @@ namespace diagnostic_log
 		va_end(arguments);
 		write(category, message);
 	}
+
+	void write_important(const char* category, const char* message)
+	{
+		if (!g_running.load() || !message)
+			return;
+
+		std::lock_guard<std::mutex> lock(g_queue_mutex);
+		if (g_lines.size() >= kMaximumQueuedLines)
+		{
+			g_dropped_lines.fetch_add(1);
+			return;
+		}
+
+		std::string line(category ? category : "info");
+		line.push_back('\t');
+		line += message;
+		g_lines.emplace_back(std::move(line));
+		g_queue_ready.notify_one();
+	}
+
+	void writef_important(const char* category, const char* format, ...)
+	{
+		if (!g_running.load() || !format)
+			return;
+
+		char message[1024]{};
+		va_list arguments;
+		va_start(arguments, format);
+		std::vsnprintf(message, sizeof(message), format, arguments);
+		va_end(arguments);
+		write_important(category, message);
+	}
 }

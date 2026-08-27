@@ -12,21 +12,28 @@ or a desktop window onto supported ETS2/ATS truck displays.
 
 ## Current diagnostic revision
 
-- System now includes a dedicated **Run early render diagnostic** action while
+- System now includes a dedicated **Run wide render diagnostic** action while
   driving. It arms the breakpoint before issuing the truck reload command, so
   the model-creation branch cannot run before the probe is installed.
-- The capture remains bounded to 192 events and 60 seconds. Once branch events
-  are retained, the exception hook is removed and the working global fallback
-  is restored. Pointer correlation waits for the prepared display's exact GPU
-  texture match instead of requiring that pointer to exist when the earlier
-  branch executes.
+- The one-click capture is bounded to 2,048 branch events, 60 seconds overall,
+  and 10 seconds after the exact texture match. After that match the probe
+  temporarily emulates the working compatibility decision so the selected
+  texture reaches the Direct3D bind/draw path, then restores the normal
+  fallback automatically.
 - The earlier post-match 1.5-second probe is replaced because runtime testing
   proved that it armed too late and captured zero branch executions.
 - The successful early capture is now split into before/after-texture counts.
-  It records a bounded 128-byte machine-code window around the game branch,
+  It records the complete bounded 128-byte machine-code window in one log line,
   removes the observed low-bit tag from `R9`, scans 512 bytes of each likely
   object, and follows one bounded level of child pointers looking for the exact
   custom Direct3D texture.
+- The primary correlation follows the exact replacement texture through
+  `CreateShaderResourceView` and `PSSetShaderResources`. Independent fallback
+  resource inspection and all standard, instanced, automatic, and indirect
+  draw hooks capture multiple real draw samples, game-relative call stacks,
+  the nearest branch event, and 128-byte fingerprints of its `R9`, `RSI`, and
+  `R14` objects.
+  These high-frequency hooks are disabled outside the bounded diagnostic.
 
 ## Retained features
 

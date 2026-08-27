@@ -18,6 +18,46 @@ using namespace scs_logging;
 
 typedef HRESULT(__stdcall* CreateTexture2D_t)(ID3D11Device*, const D3D11_TEXTURE2D_DESC*, const D3D11_SUBRESOURCE_DATA*, ID3D11Texture2D**);
 static CreateTexture2D_t CreateTexture2D_Original = nullptr;
+typedef HRESULT(__stdcall* CreateShaderResourceView_t)(
+    ID3D11Device*, ID3D11Resource*,
+    const D3D11_SHADER_RESOURCE_VIEW_DESC*, ID3D11ShaderResourceView**);
+typedef void(__stdcall* PSSetShaderResources_t)(
+    ID3D11DeviceContext*, UINT, UINT,
+    ID3D11ShaderResourceView* const*);
+typedef void(__stdcall* DrawIndexed_t)(
+    ID3D11DeviceContext*, UINT, UINT, INT);
+typedef void(__stdcall* Draw_t)(
+    ID3D11DeviceContext*, UINT, UINT);
+typedef void(__stdcall* DrawIndexedInstanced_t)(
+    ID3D11DeviceContext*, UINT, UINT, UINT, INT, UINT);
+typedef void(__stdcall* DrawInstanced_t)(
+    ID3D11DeviceContext*, UINT, UINT, UINT, UINT);
+typedef void(__stdcall* DrawAuto_t)(ID3D11DeviceContext*);
+typedef void(__stdcall* DrawIndexedInstancedIndirect_t)(
+    ID3D11DeviceContext*, ID3D11Buffer*, UINT);
+typedef void(__stdcall* DrawInstancedIndirect_t)(
+    ID3D11DeviceContext*, ID3D11Buffer*, UINT);
+
+static CreateShaderResourceView_t CreateShaderResourceView_Original{};
+static PSSetShaderResources_t PSSetShaderResources_Original{};
+static DrawIndexed_t DrawIndexed_Original{};
+static Draw_t Draw_Original{};
+static DrawIndexedInstanced_t DrawIndexedInstanced_Original{};
+static DrawInstanced_t DrawInstanced_Original{};
+static DrawAuto_t DrawAuto_Original{};
+static DrawIndexedInstancedIndirect_t DrawIndexedInstancedIndirect_Original{};
+static DrawInstancedIndirect_t DrawInstancedIndirect_Original{};
+static void* g_createShaderResourceViewAddress{};
+static void* g_psSetShaderResourcesAddress{};
+static void* g_drawIndexedAddress{};
+static void* g_drawAddress{};
+static void* g_drawIndexedInstancedAddress{};
+static void* g_drawInstancedAddress{};
+static void* g_drawAutoAddress{};
+static void* g_drawIndexedInstancedIndirectAddress{};
+static void* g_drawInstancedIndirectAddress{};
+static bool g_customProbeHooksCreated{};
+static bool g_customProbeHooksEnabled{};
 
 namespace
 {
@@ -213,6 +253,103 @@ namespace
             screen.lastIssueDiagnosticTick = now;
         }
     }
+}
+
+HRESULT __stdcall HookedCreateShaderResourceView(
+    ID3D11Device* device,
+    ID3D11Resource* resource,
+    const D3D11_SHADER_RESOURCE_VIEW_DESC* description,
+    ID3D11ShaderResourceView** view)
+{
+    const HRESULT result = CreateShaderResourceView_Original(
+        device, resource, description, view);
+    if (SUCCEEDED(result) && view && *view)
+        custom_render_probe::notify_shader_resource_view(resource, *view);
+    return result;
+}
+
+void __stdcall HookedPSSetShaderResources(
+    ID3D11DeviceContext* context,
+    UINT startSlot,
+    UINT viewCount,
+    ID3D11ShaderResourceView* const* views)
+{
+    PSSetShaderResources_Original(
+        context, startSlot, viewCount, views);
+    custom_render_probe::notify_pixel_shader_resources(
+        startSlot, viewCount, views);
+}
+
+void __stdcall HookedDrawIndexed(
+    ID3D11DeviceContext* context,
+    UINT indexCount,
+    UINT startIndexLocation,
+    INT baseVertexLocation)
+{
+    custom_render_probe::notify_draw("DrawIndexed");
+    DrawIndexed_Original(
+        context, indexCount, startIndexLocation, baseVertexLocation);
+}
+
+void __stdcall HookedDraw(
+    ID3D11DeviceContext* context,
+    UINT vertexCount,
+    UINT startVertexLocation)
+{
+    custom_render_probe::notify_draw("Draw");
+    Draw_Original(context, vertexCount, startVertexLocation);
+}
+
+void __stdcall HookedDrawIndexedInstanced(
+    ID3D11DeviceContext* context,
+    UINT indexCountPerInstance,
+    UINT instanceCount,
+    UINT startIndexLocation,
+    INT baseVertexLocation,
+    UINT startInstanceLocation)
+{
+    custom_render_probe::notify_draw("DrawIndexedInstanced");
+    DrawIndexedInstanced_Original(
+        context, indexCountPerInstance, instanceCount,
+        startIndexLocation, baseVertexLocation, startInstanceLocation);
+}
+
+void __stdcall HookedDrawInstanced(
+    ID3D11DeviceContext* context,
+    UINT vertexCountPerInstance,
+    UINT instanceCount,
+    UINT startVertexLocation,
+    UINT startInstanceLocation)
+{
+    custom_render_probe::notify_draw("DrawInstanced");
+    DrawInstanced_Original(
+        context, vertexCountPerInstance, instanceCount,
+        startVertexLocation, startInstanceLocation);
+}
+
+void __stdcall HookedDrawAuto(ID3D11DeviceContext* context)
+{
+    custom_render_probe::notify_draw("DrawAuto");
+    DrawAuto_Original(context);
+}
+
+void __stdcall HookedDrawIndexedInstancedIndirect(
+    ID3D11DeviceContext* context,
+    ID3D11Buffer* arguments,
+    UINT alignedByteOffset)
+{
+    custom_render_probe::notify_draw("DrawIndexedIndirect");
+    DrawIndexedInstancedIndirect_Original(
+        context, arguments, alignedByteOffset);
+}
+
+void __stdcall HookedDrawInstancedIndirect(
+    ID3D11DeviceContext* context,
+    ID3D11Buffer* arguments,
+    UINT alignedByteOffset)
+{
+    custom_render_probe::notify_draw("DrawInstancedIndirect");
+    DrawInstancedIndirect_Original(context, arguments, alignedByteOffset);
 }
 
 HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData, ID3D11Texture2D** ppTexture2D)
@@ -771,7 +908,7 @@ namespace dx11::create_texture_2d {
 
         MH_STATUS hookResult = MH_CreateHook(
             createTexture2DAddr,
-            &HookedCreateTexture2D,
+            reinterpret_cast<LPVOID>(&HookedCreateTexture2D),
             reinterpret_cast<LPVOID*>(
                 &CreateTexture2D_Original));
         if (hookResult != MH_OK)
@@ -799,9 +936,144 @@ namespace dx11::create_texture_2d {
             return false;
         }
 
+        void** contextVtbl = *reinterpret_cast<void***>(pDummyContext);
+        g_createShaderResourceViewAddress = deviceVtbl[7];
+        g_psSetShaderResourcesAddress = contextVtbl[8];
+        g_drawIndexedAddress = contextVtbl[12];
+        g_drawAddress = contextVtbl[13];
+        g_drawIndexedInstancedAddress = contextVtbl[20];
+        g_drawInstancedAddress = contextVtbl[21];
+        g_drawAutoAddress = contextVtbl[38];
+        g_drawIndexedInstancedIndirectAddress = contextVtbl[39];
+        g_drawInstancedIndirectAddress = contextVtbl[40];
+
+        const MH_STATUS createSrvResult = MH_CreateHook(
+            g_createShaderResourceViewAddress,
+            reinterpret_cast<LPVOID>(&HookedCreateShaderResourceView),
+            reinterpret_cast<LPVOID*>(
+                &CreateShaderResourceView_Original));
+        const MH_STATUS psSetResult = MH_CreateHook(
+            g_psSetShaderResourcesAddress,
+            reinterpret_cast<LPVOID>(&HookedPSSetShaderResources),
+            reinterpret_cast<LPVOID*>(
+                &PSSetShaderResources_Original));
+        const MH_STATUS drawIndexedResult = MH_CreateHook(
+            g_drawIndexedAddress,
+            reinterpret_cast<LPVOID>(&HookedDrawIndexed),
+            reinterpret_cast<LPVOID*>(
+                &DrawIndexed_Original));
+        const MH_STATUS drawResult = MH_CreateHook(
+            g_drawAddress,
+            reinterpret_cast<LPVOID>(&HookedDraw),
+            reinterpret_cast<LPVOID*>(
+                &Draw_Original));
+        const MH_STATUS drawIndexedInstancedResult = MH_CreateHook(
+            g_drawIndexedInstancedAddress,
+            reinterpret_cast<LPVOID>(&HookedDrawIndexedInstanced),
+            reinterpret_cast<LPVOID*>(
+                &DrawIndexedInstanced_Original));
+        const MH_STATUS drawInstancedResult = MH_CreateHook(
+            g_drawInstancedAddress,
+            reinterpret_cast<LPVOID>(&HookedDrawInstanced),
+            reinterpret_cast<LPVOID*>(
+                &DrawInstanced_Original));
+        const MH_STATUS drawAutoResult = MH_CreateHook(
+            g_drawAutoAddress,
+            reinterpret_cast<LPVOID>(&HookedDrawAuto),
+            reinterpret_cast<LPVOID*>(&DrawAuto_Original));
+        const MH_STATUS drawIndexedIndirectResult = MH_CreateHook(
+            g_drawIndexedInstancedIndirectAddress,
+            reinterpret_cast<LPVOID>(
+                &HookedDrawIndexedInstancedIndirect),
+            reinterpret_cast<LPVOID*>(
+                &DrawIndexedInstancedIndirect_Original));
+        const MH_STATUS drawIndirectResult = MH_CreateHook(
+            g_drawInstancedIndirectAddress,
+            reinterpret_cast<LPVOID>(&HookedDrawInstancedIndirect),
+            reinterpret_cast<LPVOID*>(
+                &DrawInstancedIndirect_Original));
+        g_customProbeHooksCreated =
+            createSrvResult == MH_OK && psSetResult == MH_OK &&
+            drawIndexedResult == MH_OK && drawResult == MH_OK &&
+            drawIndexedInstancedResult == MH_OK &&
+            drawInstancedResult == MH_OK && drawAutoResult == MH_OK &&
+            drawIndexedIndirectResult == MH_OK &&
+            drawIndirectResult == MH_OK;
+        if (!g_customProbeHooksCreated)
+        {
+            diagnostic_log::writef(
+                "error",
+                "Could not prepare all temporary wide diagnostic hooks "
+                "(CreateSRV=%d PSSetSRV=%d DrawIndexed=%d Draw=%d "
+                "DrawIndexedInstanced=%d DrawInstanced=%d DrawAuto=%d "
+                "DrawIndexedIndirect=%d DrawIndirect=%d).",
+                static_cast<int>(createSrvResult),
+                static_cast<int>(psSetResult),
+                static_cast<int>(drawIndexedResult),
+                static_cast<int>(drawResult),
+                static_cast<int>(drawIndexedInstancedResult),
+                static_cast<int>(drawInstancedResult),
+                static_cast<int>(drawAutoResult),
+                static_cast<int>(drawIndexedIndirectResult),
+                static_cast<int>(drawIndirectResult));
+        }
+
         pDummyContext->Release();
         pDummyDevice->Release();
 
         return true;
 	}
+
+    bool set_custom_probe_hooks_enabled(bool enabled)
+    {
+        if (!g_customProbeHooksCreated)
+            return !enabled;
+        if (g_customProbeHooksEnabled == enabled)
+            return true;
+
+        void* const addresses[] = {
+            g_createShaderResourceViewAddress,
+            g_psSetShaderResourcesAddress,
+            g_drawIndexedAddress,
+            g_drawAddress,
+            g_drawIndexedInstancedAddress,
+            g_drawInstancedAddress,
+            g_drawAutoAddress,
+            g_drawIndexedInstancedIndirectAddress,
+            g_drawInstancedIndirectAddress
+        };
+        if (enabled)
+        {
+            for (void* address : addresses)
+            {
+                const MH_STATUS result = MH_EnableHook(address);
+                if (result != MH_OK && result != MH_ERROR_ENABLED)
+                {
+                    for (void* rollback : addresses)
+                        MH_DisableHook(rollback);
+                    diagnostic_log::writef(
+                        "error",
+                        "Could not enable the temporary wide diagnostic "
+                        "hooks (MinHook status %d).",
+                        static_cast<int>(result));
+                    g_customProbeHooksEnabled = false;
+                    return false;
+                }
+            }
+            g_customProbeHooksEnabled = true;
+            diagnostic_log::write(
+                "probe",
+                "Temporary CreateSRV/PSSetSRV/Draw diagnostic hooks "
+                "enabled for this one capture.");
+            return true;
+        }
+
+        for (void* address : addresses)
+            MH_DisableHook(address);
+        g_customProbeHooksEnabled = false;
+        diagnostic_log::write(
+            "probe",
+            "Temporary high-frequency Direct3D diagnostic hooks disabled.");
+        return true;
+    }
 }

@@ -15,7 +15,10 @@ namespace
 {
     constexpr uint32_t kMaximumEvents = 192;
     constexpr uint32_t kMaximumUniqueSignatures = 48;
-    constexpr uint64_t kProbeTimeoutMilliseconds = 1500;
+    // Mod-heavy truck reloads can take more than 20 seconds before the exact
+    // custom TOBJ is recreated. The breakpoint is still bounded by the event
+    // limit and restores the original JE itself after the final event.
+    constexpr uint64_t kProbeTimeoutMilliseconds = 60000;
     constexpr uint32_t kStackWords = 8;
 
     enum register_index_t : uint32_t
@@ -64,8 +67,10 @@ namespace
     bool g_patchEnabled{};
     std::atomic<bool> g_probeInstalled{};
     std::atomic<bool> g_captureCompleted{};
+    std::atomic<bool> g_captureDataReady{};
+    std::atomic<bool> g_textureReady{};
+    std::atomic<bool> g_resultsLogged{};
     uint64_t g_probeStartedTick{};
-    std::atomic<bool> g_capturePending{};
     std::atomic<bool> g_captureReserved{};
     std::atomic<bool> g_trapArmed{};
     std::atomic<bool> g_trapCompleted{};
@@ -510,6 +515,23 @@ namespace
         }
     }
 
+    void finalize_results()
+    {
+        if (!g_captureDataReady.load(std::memory_order_acquire) ||
+            !g_textureReady.load(std::memory_order_acquire))
+        {
+            return;
+        }
+
+        bool expected = false;
+        if (!g_resultsLogged.compare_exchange_strong(expected, true))
+            return;
+
+        log_probe_results();
+        g_captureCompleted.store(true, std::memory_order_release);
+        g_captureReserved.store(false, std::memory_order_release);
+    }
+
     void finish_probe(bool customDisplayActive)
     {
         if (!g_probeInstalled)
@@ -536,31 +558,46 @@ namespace
         DWORD ignored{};
         VirtualProtect(bytes, 6, g_originalProtection, &ignored);
         g_probeInstalled = false;
-        g_captureCompleted = true;
+        g_captureDataReady.store(true, std::memory_order_release);
         g_trapCompleted = false;
         g_patchEnabled = false;
-        log_probe_results();
+
+        diagnostic_log::writef(
+            "probe",
+            "Early branch capture phase completed: display='%s' events=%u "
+            "textureReady=%d. %s",
+            g_selectedDisplayId,
+            (std::min)(g_eventCount.load(), kMaximumEvents),
+            g_textureReady.load() ? 1 : 0,
+            g_textureReady.load()
+                ? "Correlating against the exact matched texture."
+                : "Waiting for the exact custom texture match before "
+                  "correlation.");
 
         // Preserve the user's working custom display after diagnostics. This
         // fallback is intentionally restored until the captured pointers can
         // be used to implement the final selective detour.
-        write_branch(customDisplayActive);
+        write_branch(customDisplayActive || g_captureReserved.load());
+        finalize_results();
     }
 }
 
 namespace custom_render_probe
 {
-    void request_capture(
+    bool prepare_capture(
         const char* displayId,
-        const char* originalTexture,
-        ID3D11Texture2D* liveTexture)
+        const char* originalTexture)
     {
-        if (g_captureCompleted || g_probeInstalled)
-            return;
+        if (g_captureCompleted.load(std::memory_order_acquire) ||
+            g_probeInstalled.load(std::memory_order_acquire) ||
+            g_captureDataReady.load(std::memory_order_acquire))
+        {
+            return false;
+        }
 
         bool expected = false;
         if (!g_captureReserved.compare_exchange_strong(expected, true))
-            return;
+            return false;
 
         strncpy_s(
             g_selectedDisplayId,
@@ -571,17 +608,59 @@ namespace custom_render_probe
             originalTexture && originalTexture[0]
                 ? originalTexture : "unknown",
             _TRUNCATE);
+        g_selectedTexture.store(0, std::memory_order_release);
+        g_textureReady.store(false, std::memory_order_release);
+        g_captureDataReady.store(false, std::memory_order_release);
+
+        diagnostic_log::writef(
+            "probe",
+            "Preparing early per-instance render capture before truck "
+            "reload: display='%s' texture='%s'.",
+            g_selectedDisplayId,
+            g_selectedOriginalTexture);
+
+        if (start_probe())
+            return true;
+
+        g_captureReserved.store(false, std::memory_order_release);
+        g_captureCompleted.store(true, std::memory_order_release);
+        return false;
+    }
+
+    void request_capture(
+        const char* displayId,
+        const char* originalTexture,
+        ID3D11Texture2D* liveTexture)
+    {
+        if (!g_captureReserved.load(std::memory_order_acquire) ||
+            g_captureCompleted.load(std::memory_order_acquire) ||
+            !liveTexture)
+            return;
+
+        const char* candidateDisplay =
+            displayId && displayId[0] ? displayId : "custom";
+        const char* candidateTexture =
+            originalTexture && originalTexture[0]
+                ? originalTexture : "unknown";
+        if (std::strcmp(candidateDisplay, g_selectedDisplayId) != 0 ||
+            std::strcmp(candidateTexture, g_selectedOriginalTexture) != 0)
+        {
+            return;
+        }
+
         g_selectedTexture.store(
             reinterpret_cast<uintptr_t>(liveTexture),
             std::memory_order_release);
-        g_capturePending.store(true, std::memory_order_release);
+        g_textureReady.store(true, std::memory_order_release);
         diagnostic_log::writef(
             "probe",
-            "Queued one per-instance render capture after exact custom route "
-            "match: display='%s' texture='%s' liveTexture=0x%llX.",
+            "Exact custom route matched for the prepared early capture: "
+            "display='%s' texture='%s' liveTexture=0x%llX captureReady=%d.",
             g_selectedDisplayId,
             g_selectedOriginalTexture,
-            static_cast<unsigned long long>(g_selectedTexture.load()));
+            static_cast<unsigned long long>(g_selectedTexture.load()),
+            g_captureDataReady.load() ? 1 : 0);
+        finalize_results();
     }
 
     void update(bool customDisplayActive)
@@ -598,18 +677,10 @@ namespace custom_render_probe
             return;
         }
 
-        if (customDisplayActive && !g_captureCompleted &&
-            g_capturePending.exchange(false))
-        {
-            if (!start_probe())
-            {
-                g_captureCompleted = true;
-                write_branch(customDisplayActive);
-            }
-            return;
-        }
-
-        write_branch(customDisplayActive);
+        write_branch(
+            customDisplayActive ||
+            (g_captureReserved.load(std::memory_order_acquire) &&
+                g_captureDataReady.load(std::memory_order_acquire)));
     }
 
     void shutdown()
@@ -618,7 +689,15 @@ namespace custom_render_probe
             finish_probe(false);
         else
             write_branch(false);
-        g_capturePending = false;
+        if (g_captureDataReady.load() && !g_textureReady.load() &&
+            !g_resultsLogged.load())
+        {
+            diagnostic_log::writef(
+                "probe",
+                "Diagnostic session ended before the prepared display's "
+                "exact texture matched; retained branch events=%u.",
+                (std::min)(g_eventCount.load(), kMaximumEvents));
+        }
         g_captureReserved = false;
     }
 }

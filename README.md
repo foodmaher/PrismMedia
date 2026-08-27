@@ -1,14 +1,29 @@
-# PrismMedia 4.0.0
+# PrismMedia 4.0.1 Early Render Probe
 
-This diagnostic source revision includes the bounded custom-display
+This diagnostic source revision includes the revised bounded custom-display
 per-instance render probe described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md).
-It captures one short runtime sample after the first exact custom-screen match,
-then restores the working compatibility fallback automatically.
+It arms before the installed truck/accessory reload, captures the relevant game
+branch during model creation, then correlates the retained object state after
+the exact custom-screen texture match. The working compatibility fallback is
+restored automatically.
 
 PrismMedia streams YouTube, Spotify Web, local media, direct streams,
 or a desktop window onto supported ETS2/ATS truck displays.
 
-## What changed in 4.0.0
+## What changed in 4.0.1 diagnostic revision
+
+- System now includes a dedicated **Run early render diagnostic** action while
+  driving. It arms the breakpoint before issuing the truck reload command, so
+  the model-creation branch cannot run before the probe is installed.
+- The capture remains bounded to 192 events and 60 seconds. Once branch events
+  are retained, the exception hook is removed and the working global fallback
+  is restored. Pointer correlation waits for the prepared display's exact GPU
+  texture match instead of requiring that pointer to exist when the earlier
+  branch executes.
+- The earlier post-match 1.5-second probe is replaced because runtime testing
+  proved that it armed too late and captured zero branch executions.
+
+## Retained 4.0.0 changes
 
 - New hybrid dashboard UI with a Home overview, custom vector icons, elevated
   cards and simulated soft shadows, animated audio waves, mouse/gamepad
@@ -102,7 +117,7 @@ or a desktop window onto supported ETS2/ATS truck displays.
    `PrismMedia` folder.
 4. Open the UI with `Ctrl+F8` or the configured gamepad chord.
 
-`config-recommended.ini` is a sanitized copy of the recommended 4.0.0 profile.
+`config-recommended.ini` is a sanitized copy of the recommended 4.0 profile.
 It contains no media URL or account data.
 
 ## Playback choices

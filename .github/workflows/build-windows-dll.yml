@@ -1,4 +1,4 @@
-name: Build Windows 4.0.0
+name: Build Windows 4.0.1 Early Render Probe
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       - name: Build x64 Release
         shell: pwsh
         run: msbuild PrismTextureStreamerFB.sln /m /restore /t:Build /p:Configuration=Release /p:Platform=x64
-      - name: Assemble 4.0.0 package
+      - name: Assemble 4.0.1 diagnostic package
         shell: pwsh
         run: |
           $Package = 'package'
@@ -39,7 +39,7 @@ jobs:
           Copy-Item 'PERFORMANCE-NOTES.md' $Runtime
           Copy-Item 'README.md' $Package
           @"
-          PrismMedia 4.0.0
+          PrismMedia 4.0.1 Early Render Probe
           Remove the old PrismTextureStreamerFB.dll, then copy PrismMedia.dll
           and the PrismMedia folder to:
           <ETS2 or ATS>\bin\win_x64\plugins
@@ -47,7 +47,7 @@ jobs:
           "@ | Set-Content "$Package\INSTALL.txt"
       - uses: actions/upload-artifact@v4
         with:
-          name: PrismMedia-4.0.0
+          name: PrismMedia-4.0.1-early-render-probe
           path: package
           if-no-files-found: error
           retention-days: 30

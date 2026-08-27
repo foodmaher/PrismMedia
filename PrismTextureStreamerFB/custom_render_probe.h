@@ -4,9 +4,16 @@ struct ID3D11Texture2D;
 
 namespace custom_render_probe
 {
-    // Requests one bounded diagnostic capture after an exact custom-display
-    // texture route has been matched. Only the first request in a plugin
-    // session is recorded to avoid repeated exception-probe overhead.
+    // Arms one bounded diagnostic capture before the game reloads the truck
+    // and accessory models. This is deliberately synchronous so the branch
+    // cannot execute between the reload command and the next telemetry frame.
+    bool prepare_capture(
+        const char* displayId,
+        const char* originalTexture);
+
+    // Supplies the exact live Direct3D texture after the prepared display's
+    // route is matched. Captured pre-match object pointers are correlated at
+    // this point, after the game has attached the replacement texture.
     void request_capture(
         const char* displayId,
         const char* originalTexture,

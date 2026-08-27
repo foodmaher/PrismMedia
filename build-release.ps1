@@ -21,7 +21,7 @@ foreach ($required in @($Dll, $BridgeDll, (Join-Path $ClientDirectory 'PrismMedi
     if (-not (Test-Path $required)) { throw "Expected build output is missing: $required" }
 }
 
-$Package = Join-Path $Output 'PrismMedia-4.0.0'
+$Package = Join-Path $Output 'PrismMedia-4.0.1-early-render-probe'
 if (Test-Path $Package) { Remove-Item $Package -Recurse -Force }
 New-Item -ItemType Directory -Path $Package | Out-Null
 $Runtime = Join-Path $Package 'PrismMedia'
@@ -39,7 +39,7 @@ Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Runtime
 Copy-Item (Join-Path $ProjectRoot 'README.md') $Package
 
 @"
-PrismMedia 4.0.0
+PrismMedia 4.0.1 Early Render Probe
 
 Remove the old PrismTextureStreamerFB.dll, then copy PrismMedia.dll and the
 PrismMedia folder into:

@@ -1,31 +1,40 @@
 # Custom-display per-instance diagnostic
 
-This source revision contains a bounded diagnostic probe for the global custom
-display render branch. It is intended to determine whether ETS2/ATS exposes a
-stable screen, material, or texture-related pointer that can replace the legacy
-global `JE` to `JMP` patch with a selective per-display detour.
+This source revision contains a bounded early diagnostic probe for the global
+custom-display render branch. Runtime testing of the previous revision showed
+that arming only after the exact GPU texture match was too late (`events=0`).
+The revised probe arms before the truck/accessory reload, retains the branch's
+real register and stack identities, then correlates those identities after the
+prepared display's exact Direct3D texture is created.
 
 ## Test
 
 1. Build and install `PrismMedia.dll` normally.
 2. Start the game with the primary GPS and at least one native cabin accessory
    screen visible.
-3. Enable media replacement on one custom display and reload installed truck
-   textures once.
-4. Wait at least three seconds, then close the game normally.
-5. Provide `PrismMedia.log` from the game executable directory.
+3. Enable media replacement on one custom display and make sure its unique game
+   TOBJ is selected.
+4. While driving, open **System** and select **Run early render diagnostic**.
+   Do not use the ordinary game console reload command, because the probe must
+   be installed first.
+5. Wait until the truck finishes reloading and the custom screen returns, then
+   close the game normally.
+6. Provide `PrismMedia.log` from the game executable directory.
 
-The probe starts automatically after the first exact custom TOBJ/GPU texture
-match in each plugin session. For at most 192 branch executions or 1.5 seconds,
-it restores and emulates the game's original conditional branch while recording
-CPU register and stack identities. It then removes itself and restores the
-working global compatibility patch, so custom media should return after the
-brief diagnostic window.
+The diagnostic action synchronously installs the probe before the reload. For
+at most 192 branch executions or 60 seconds, it restores and emulates the
+game's original conditional branch while recording CPU register and stack
+identities. The exception hook is removed as soon as either bound is reached,
+and the working global compatibility patch is restored. If the exact GPU
+texture appears later, correlation is performed then without reinstalling the
+exception hook.
 
 Useful log records use the `[probe]` category:
 
-- `Queued one per-instance render capture`
+- `Preparing early per-instance render capture`
 - `Per-instance custom render capture started`
+- `Early branch capture phase completed`
+- `Exact custom route matched for the prepared early capture`
 - `Per-instance capture completed`
 - `signature[...]`
 

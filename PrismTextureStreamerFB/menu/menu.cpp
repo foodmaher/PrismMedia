@@ -20,6 +20,7 @@
 #include <ImGui/imgui_impl_win32.h>
 
 #include "../dinput8/dinput8.h"
+#include "../custom_render_probe.h"
 #include "../diagnostic_log.h"
 #include "../dx11/present.h"
 #include "../environment_audio.h"
@@ -1605,6 +1606,60 @@ namespace
             static_cast<unsigned long long>(screen.lastTextureMatchTick));
     }
 
+    bool run_early_custom_probe_reload(
+        const char* snapshotReason,
+        bool requireNewDiagnostic)
+    {
+        diagnostic_log::write(
+            "route",
+            "Preparing the early custom-render diagnostic before executing "
+            "the truck-texture reload command.");
+        for (const auto& candidate : g_screens)
+            log_route_snapshot(candidate, snapshotReason);
+
+        bool diagnosticPrepared = false;
+        for (const auto& candidate : g_screens)
+        {
+            if (candidate.enabled &&
+                candidate.type == screen_type_t::CUSTOM &&
+                !candidate.original_texture.empty())
+            {
+                diagnosticPrepared =
+                    custom_render_probe::prepare_capture(
+                        candidate.mediaClientId.c_str(),
+                        candidate.original_texture.c_str());
+                if (diagnosticPrepared)
+                    break;
+            }
+        }
+        if (!diagnosticPrepared)
+        {
+            diagnostic_log::write(
+                "probe",
+                "Early capture was not armed (already completed/active, or "
+                "no enabled custom display has a game texture)." );
+            if (requireNewDiagnostic)
+                return false;
+        }
+
+        prism::string command("game");
+        if (!prism::execute_command::call(&command, -1))
+        {
+            diagnostic_log::write(
+                "error",
+                "Game rejected the truck-texture reload command after the "
+                "early probe was armed. The probe remains bounded and will "
+                "restore the branch automatically.");
+            return false;
+        }
+
+        diagnostic_log::write(
+            "route",
+            "Game accepted the truck-texture reload command; the early probe "
+            "is recording the branch before the exact TOBJ/GPU match.");
+        return true;
+    }
+
     bool prepare_override_assets(screen_t& screen, std::string& status)
     {
         std::string originalLower;
@@ -2109,33 +2164,40 @@ namespace
                     "Reload installed truck textures", ImVec2(-1.0f, 34.0f)))
             {
                 diagnostic_log::write(
-                    "route",
-                    "User requested a truck-texture reload. Recording all "
-                    "display routes before executing the game command.");
-                for (const auto& candidate : g_screens)
-                    log_route_snapshot(candidate, "before texture reload");
-                prism::string command("game");
-                if (prism::execute_command::call(&command, -1))
+                    "route", "User requested a truck-texture reload.");
+                if (run_early_custom_probe_reload(
+                        "before texture reload", false))
                 {
-                    diagnostic_log::write(
-                        "route",
-                        "Game accepted the truck-texture reload command; "
-                        "enabled displays are waiting for exact TOBJ "
-                        "redirects and one-shot GPU matches.");
                     criticalReloadPending = false;
                     accessoryOrderConfirmed = false;
-                }
-                else
-                {
-                    diagnostic_log::write(
-                        "error",
-                        "Game rejected the truck-texture reload command; "
-                        "no route state was assumed to have changed.");
                 }
             }
             ImGui::EndDisabled();
             explain_last_item("Reload game textures", "Runs the game reload only after the accessory is installed and the texture identity is saved.", "Brief loading interruption", "Manual critical action");
         }
+
+        ImGui::SeparatorText("Per-instance render diagnostic");
+        ImGui::TextWrapped(
+            "Arms the branch probe before reloading the installed truck, then "
+            "correlates the captured object state with the exact custom "
+            "texture match. Run once and provide PrismMedia.log.");
+        ImGui::BeginDisabled(
+            !g_telemetry_driving.load(std::memory_order_acquire));
+        if (ImGui::Button(
+                "Run early render diagnostic", ImVec2(-1.0f, 36.0f)))
+        {
+            run_early_custom_probe_reload(
+                "before diagnostic reload", true);
+        }
+        ImGui::EndDisabled();
+        explain_last_item(
+            "Early custom-render diagnostic",
+            "Reloads the currently installed truck only after the bounded "
+            "probe is armed.",
+            "Temporary loading interruption", "One diagnostic per session");
+        if (!g_telemetry_driving.load(std::memory_order_acquire))
+            ImGui::TextDisabled("Enter the truck before running the diagnostic.");
+
         if (ImGui::CollapsingHeader("Configuration backups"))
         {
             static int backup{};

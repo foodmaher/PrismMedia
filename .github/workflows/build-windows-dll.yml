@@ -24,11 +24,12 @@ jobs:
           $Package = 'package'
           $Runtime = "$Package\PrismMedia"
           $Client = 'PrismMediaClient\bin\x64\Release\net48'
-          foreach ($File in @('x64\Release\PrismMedia.dll','x64\Release\PrismCameraBridge.dll',"$Client\PrismMediaClient.exe")) {
+          foreach ($File in @('x64\Release\PrismMedia.dll','x64\Release\PrismCameraBridge.dll','x64\Release\PrismDiagnosticConsole.exe',"$Client\PrismMediaClient.exe")) {
             if (-not (Test-Path $File)) { throw "Missing build output: $File" }
           }
           New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
           Copy-Item 'x64\Release\PrismMedia.dll' $Package
+          Copy-Item 'x64\Release\PrismDiagnosticConsole.exe' $Package
           Copy-Item "$Client\*" $Runtime -Recurse
           Get-ChildItem $Runtime -Recurse -File | Where-Object { $_.Extension -in '.pdb','.xml' } | Remove-Item -Force
           $Bridge = "$Runtime\SPF-OPTIONAL\PrismCameraBridge"
@@ -38,12 +39,16 @@ jobs:
           Copy-Item 'config-recommended.ini' $Runtime
           Copy-Item 'PERFORMANCE-NOTES.md' $Runtime
           Copy-Item 'README.md' $Package
+          Copy-Item 'DIAGNOSTIC-CONSOLE.md' $Package
           @"
           PrismMedia 4.0.0
           Remove the old PrismTextureStreamerFB.dll, then copy PrismMedia.dll
           and the PrismMedia folder to:
           <ETS2 or ATS>\bin\win_x64\plugins
           Open the UI with Ctrl+F8.
+
+          PrismDiagnosticConsole.exe is optional. Start the game first, then
+          run the console from anywhere. See DIAGNOSTIC-CONSOLE.md.
           "@ | Set-Content "$Package\INSTALL.txt"
       - uses: actions/upload-artifact@v4
         with:

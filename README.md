@@ -2,8 +2,8 @@
 
 This 4.0.0 source revision includes the guarded combined one-cycle test
 described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md). One reload now
-captures the list entries, both verified native cleanup calls, the exact old
-texture's COM `Release`, and the replacement texture's bind/draw path. An
+captures the list entries, the exact old texture's standard COM `Release`, and
+the replacement texture's bind/draw path. An
 entry is still bypassed only after an exact bounded match through the game's
 own loop-advance sequence. The working compatibility fallback is restored
 automatically.
@@ -15,8 +15,8 @@ or a desktop window onto supported ETS2/ATS truck displays.
 
 - System now includes a dedicated **Run combined one-cycle test** action while
   driving. It requires an active old live custom texture and arms the bounded
-  breakpoints, both cleanup-call detours, exact COM `Release` correlation and
-  Direct3D correlation before issuing one truck reload command.
+  breakpoints, exact COM `Release` correlation and Direct3D correlation before
+  issuing one truck reload command. It never detours a private cleanup function.
 - The one-click capture is bounded to 2,048 branch events, 256 post-R9 list
   entries, 60 seconds overall, and 10 seconds after the exact texture match.
   After that match the probe temporarily emulates the working compatibility
@@ -30,11 +30,12 @@ or a desktop window onto supported ETS2/ATS truck displays.
   equality and a verified native RSI-advance/backedge before selectively
   bypassing an entry; unmatched entries retain original game behavior.
 - Because the bounded pointer graph did not expose the old texture in either
-  Custom 1 or Custom 2, this revision also resolves and observes both native
-  calls in each cleanup body. A temporary hook on the old texture's real COM
-  `Release` function associates an exact release with the active cleanup call
-  and records its arguments plus before/after entry words. These hooks never
-  suppress a release and are removed with the same bounded window.
+  Custom 1 or Custom 2, a temporary hook on the old texture's standard COM
+  `Release` function associates an exact release with the list entry most
+  recently captured on the same thread. It records the list index and release
+  stack, never suppresses a release, and is removed with the bounded window.
+  The earlier experimental private cleanup-function detours were removed after
+  runtime testing showed that entering that path could terminate the game.
 - The primary correlation follows the exact replacement texture through
   `CreateShaderResourceView` and `PSSetShaderResources`. Independent fallback
   resource inspection and all standard, instanced, automatic, and indirect

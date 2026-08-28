@@ -1667,8 +1667,7 @@ namespace
             "route",
             diagnosticPrepared
                 ? "Game accepted the truck-texture reload command; the "
-                  "combined list/cleanup/Release probe is active before "
-                  "cleanup."
+                  "safe list/Release probe is active before cleanup."
                 : "Game accepted the normal truck-texture reload command.");
         return true;
     }
@@ -2191,10 +2190,9 @@ namespace
 
         ImGui::SeparatorText("Combined per-instance diagnostic");
         ImGui::TextWrapped(
-            "Runs the list-entry, both native cleanup-call, exact COM "
-            "Release and Direct3D draw checks in one reload. Only an exact "
-            "match may be changed; the working fallback returns "
-            "automatically.");
+            "Runs the stable list-entry breakpoint, exact COM Release and "
+            "Direct3D draw checks in one reload. Private cleanup functions "
+            "are not detoured; the working fallback returns automatically.");
         ImGui::BeginDisabled(
             !g_telemetry_driving.load(std::memory_order_acquire));
         if (ImGui::Button(
@@ -2207,8 +2205,8 @@ namespace
         explain_last_item(
             "Combined custom-render test",
             "One reload arms the old texture, bounded list-entry probe, "
-            "both cleanup calls, exact COM Release and Direct3D draw "
-            "correlation.",
+            "exact COM Release and Direct3D draw correlation without "
+            "detouring private cleanup functions.",
             "Temporary loading interruption", "One diagnostic per session");
         if (!g_telemetry_driving.load(std::memory_order_acquire))
             ImGui::TextDisabled("Enter the truck before running the diagnostic.");

@@ -47,13 +47,9 @@ namespace
     constexpr uint32_t kLoopSlotWords = 4;
     constexpr uint32_t kLoopObjectWords = 32;
     constexpr uint32_t kLoopComparisonWords = 16;
-    // The expanded code window verified both native calls in the list body.
-    // Hooking their resolved targets lets one run correlate opaque game
-    // wrappers with the exact Direct3D Release of the selected old texture.
-    constexpr uint32_t kFirstCleanupCallOffset = 42;
-    constexpr uint32_t kSecondCleanupCallOffset = 82;
-    constexpr uint32_t kMaximumCleanupSamples = 64;
-    constexpr uint32_t kCleanupSnapshotWords = 8;
+    // A standard COM Release hook is correlated with the already-stable list
+    // breakpoint. No private game cleanup function is detoured.
+    constexpr uint32_t kMaximumReleaseSamples = 16;
 
     enum register_index_t : uint32_t
     {
@@ -162,26 +158,16 @@ namespace
         uint8_t selectivelySkipped{};
     };
 
-    struct cleanup_sample_t
+    struct release_sample_t
     {
-        uint64_t arguments[8]{};
-        uint64_t entrySlot{};
-        uint64_t entryObject{};
-        uint64_t objectWordsBefore[kCleanupSnapshotWords]{};
-        uint64_t objectWordsAfter[kCleanupSnapshotWords]{};
         uint64_t releaseThis{};
         uint64_t qpc{};
+        uint64_t stack[kStackFrames]{};
+        uint32_t loopIndex{ UINT32_MAX };
         uint32_t threadId{};
-        uint32_t nestedReleaseCalls{};
-        uint8_t stage{};
-        uint8_t exactOldRelease{};
+        uint16_t stackCount{};
     };
 
-    using first_cleanup_t = uint64_t(__fastcall*)(
-        uint64_t, uint64_t, uint64_t, uint64_t);
-    using second_cleanup_t = uint64_t(__fastcall*)(
-        uint64_t, uint64_t, uint64_t, uint64_t,
-        uint64_t, uint64_t, uint64_t);
     using release_t = ULONG(__stdcall*)(IUnknown*);
 
     uint64_t g_branchAddress{};
@@ -190,13 +176,7 @@ namespace
     uint64_t g_fallthroughAddress{};
     uint64_t g_loopProbeAddress{};
     uint64_t g_loopAdvanceAddress{};
-    uint64_t g_firstCleanupCallAddress{};
-    uint64_t g_secondCleanupCallAddress{};
-    void* g_firstCleanupTarget{};
-    void* g_secondCleanupTarget{};
     void* g_releaseTarget{};
-    first_cleanup_t g_firstCleanupOriginal{};
-    second_cleanup_t g_secondCleanupOriginal{};
     release_t g_releaseOriginal{};
     DWORD g_originalProtection{};
     PVOID g_exceptionHandler{};
@@ -233,9 +213,9 @@ namespace
     std::atomic<uint32_t> g_drawCorrelationCount{};
     std::atomic<uint32_t> g_oldTexturePathCount{};
     std::atomic<uint32_t> g_selectiveSkipCount{};
-    std::atomic<bool> g_deepHooksActive{};
-    std::atomic<uint32_t> g_deepCallbacks{};
-    std::atomic<uint32_t> g_cleanupSampleCount{};
+    std::atomic<bool> g_releaseHookActive{};
+    std::atomic<uint32_t> g_releaseCallbacks{};
+    std::atomic<uint32_t> g_releaseSampleCount{};
     std::atomic<uint32_t> g_exactOldReleaseCount{};
     std::atomic<uint32_t> g_unscopedOldReleaseCount{};
     std::atomic<bool> g_loopMatchSnapshotTaken{};
@@ -249,18 +229,14 @@ namespace
     std::array<probe_event_t, kMaximumEvents> g_events{};
     std::array<loop_event_t, kMaximumLoopEvents> g_loopEvents{};
     std::array<std::atomic<bool>, kMaximumLoopEvents> g_loopEventReady{};
-    std::array<cleanup_sample_t, kMaximumCleanupSamples> g_cleanupSamples{};
-    std::array<std::atomic<bool>, kMaximumCleanupSamples>
-        g_cleanupSampleReady{};
+    std::array<release_sample_t, kMaximumReleaseSamples> g_releaseSamples{};
+    std::array<std::atomic<bool>, kMaximumReleaseSamples>
+        g_releaseSampleReady{};
     char g_selectedDisplayId[96]{};
     char g_selectedOriginalTexture[320]{};
 
     thread_local uint32_t t_pendingCorrelationSample = UINT32_MAX;
-    thread_local cleanup_sample_t* t_cleanupSample{};
-    thread_local uint64_t t_lastCleanupSlot{};
-    thread_local uint64_t t_lastCleanupObject{};
-    thread_local uint64_t t_lastCleanupWord0{};
-    thread_local uint64_t t_lastCleanupWord1{};
+    thread_local uint32_t t_activeLoopIndex = UINT32_MAX;
 
     uint64_t performance_counter()
     {
@@ -486,287 +462,75 @@ namespace
         return true;
     }
 
-    bool resolve_cleanup_calls()
-    {
-        if (g_firstCleanupTarget && g_secondCleanupTarget)
-            return true;
-        if (!resolve_loop_probe())
-            return false;
-
-        g_firstCleanupCallAddress =
-            g_branchAddress + kFirstCleanupCallOffset;
-        g_secondCleanupCallAddress =
-            g_branchAddress + kSecondCleanupCallOffset;
-        bool valid = false;
-        __try
-        {
-            const auto resolveTarget = [](uint64_t callAddress) -> void*
-            {
-                const auto* bytes = reinterpret_cast<const uint8_t*>(
-                    callAddress);
-                if (bytes[0] != 0xE8)
-                    return nullptr;
-                int32_t displacement{};
-                std::memcpy(&displacement, bytes + 1, sizeof(displacement));
-                return reinterpret_cast<void*>(
-                    callAddress + 5 + static_cast<int64_t>(displacement));
-            };
-            g_firstCleanupTarget = resolveTarget(g_firstCleanupCallAddress);
-            g_secondCleanupTarget = resolveTarget(g_secondCleanupCallAddress);
-            valid = g_firstCleanupTarget && g_secondCleanupTarget &&
-                g_firstCleanupTarget != g_secondCleanupTarget;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            valid = false;
-        }
-        if (!valid)
-        {
-            g_firstCleanupTarget = nullptr;
-            g_secondCleanupTarget = nullptr;
-            diagnostic_log::writef_important(
-                "error",
-                "Could not resolve both verified cleanup calls at "
-                "branch+%u/branch+%u; the combined test will continue "
-                "with the existing bounded probes.",
-                kFirstCleanupCallOffset, kSecondCleanupCallOffset);
-            return false;
-        }
-        return true;
-    }
-
-    void snapshot_cleanup_object(
-        uint64_t objectAddress,
-        uint64_t (&destination)[kCleanupSnapshotWords])
-    {
-        if (objectAddress < 0x10000ULL)
-            return;
-        __try
-        {
-            const auto* source = reinterpret_cast<const uint64_t*>(
-                objectAddress);
-            for (uint32_t index = 0; index < kCleanupSnapshotWords; ++index)
-                destination[index] = source[index];
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-        }
-    }
-
-    cleanup_sample_t* begin_cleanup_sample(
-        uint8_t stage,
-        const uint64_t (&arguments)[8])
-    {
-        const uint32_t index = g_cleanupSampleCount.fetch_add(
-            1, std::memory_order_acq_rel);
-        if (index >= kMaximumCleanupSamples)
-            return nullptr;
-
-        cleanup_sample_t& sample = g_cleanupSamples[index];
-        sample = {};
-        sample.stage = stage;
-        sample.qpc = performance_counter();
-        sample.threadId = GetCurrentThreadId();
-        std::memcpy(sample.arguments, arguments, sizeof(sample.arguments));
-        if (stage == 1)
-        {
-            sample.entrySlot = arguments[3];
-            __try
-            {
-                sample.entryObject = *reinterpret_cast<const uint64_t*>(
-                    sample.entrySlot) & ~uint64_t{ 7 };
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                sample.entryObject = 0;
-            }
-            snapshot_cleanup_object(
-                sample.entryObject, sample.objectWordsBefore);
-        }
-        return &sample;
-    }
-
-    bool matches_captured_loop_slot(uint64_t slot, uint32_t threadId)
-    {
-        const uint32_t captured = (std::min)(
-            g_completedLoopEventCount.load(std::memory_order_acquire),
-            kMaximumLoopEvents);
-        for (uint32_t index = 0; index < captured; ++index)
-        {
-            if (!g_loopEventReady[index].load(std::memory_order_acquire))
-                continue;
-            const loop_event_t& loop = g_loopEvents[index];
-            if (loop.event.threadId == threadId &&
-                loop.event.registers[reg_rsi] == slot)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void end_cleanup_sample(cleanup_sample_t* sample)
-    {
-        if (!sample)
-            return;
-        if (sample->stage == 1)
-        {
-            snapshot_cleanup_object(
-                sample->entryObject, sample->objectWordsAfter);
-        }
-        const uint32_t index = static_cast<uint32_t>(
-            sample - g_cleanupSamples.data());
-        if (index < kMaximumCleanupSamples)
-            g_cleanupSampleReady[index].store(true, std::memory_order_release);
-    }
-
-    uint64_t __fastcall hooked_first_cleanup(
-        uint64_t rcx, uint64_t rdx, uint64_t r8, uint64_t r9)
-    {
-        if (!g_deepHooksActive.load(std::memory_order_acquire))
-            return g_firstCleanupOriginal(rcx, rdx, r8, r9);
-
-        const uint32_t threadId = GetCurrentThreadId();
-        if (!matches_captured_loop_slot(r9, threadId))
-            return g_firstCleanupOriginal(rcx, rdx, r8, r9);
-
-        g_deepCallbacks.fetch_add(1, std::memory_order_acq_rel);
-        const uint64_t arguments[8] = { rcx, rdx, r8, r9 };
-        cleanup_sample_t* sample = begin_cleanup_sample(1, arguments);
-        t_lastCleanupSlot = sample ? sample->entrySlot : r9;
-        t_lastCleanupObject = sample ? sample->entryObject : 0;
-        t_lastCleanupWord0 = sample ? sample->objectWordsBefore[0] : 0;
-        t_lastCleanupWord1 = sample ? sample->objectWordsBefore[1] : 0;
-        cleanup_sample_t* previous = t_cleanupSample;
-        t_cleanupSample = sample;
-        const uint64_t result = g_firstCleanupOriginal(rcx, rdx, r8, r9);
-        t_cleanupSample = previous;
-        end_cleanup_sample(sample);
-        g_deepCallbacks.fetch_sub(1, std::memory_order_acq_rel);
-        return result;
-    }
-
-    uint64_t __fastcall hooked_second_cleanup(
-        uint64_t rcx, uint64_t rdx, uint64_t r8, uint64_t r9,
-        uint64_t fifth, uint64_t sixth, uint64_t seventh)
-    {
-        if (!g_deepHooksActive.load(std::memory_order_acquire))
-        {
-            return g_secondCleanupOriginal(
-                rcx, rdx, r8, r9, fifth, sixth, seventh);
-        }
-
-        // The caller loads RDI=[entry+0] and RBX=[entry+8] before call 1,
-        // then passes R8=RDI and RDX=RBX to call 2. Requiring both values
-        // prevents unrelated calls to the same native helper from consuming
-        // the bounded sample budget.
-        if (t_lastCleanupObject == 0 ||
-            r8 != t_lastCleanupWord0 || rdx != t_lastCleanupWord1)
-        {
-            return g_secondCleanupOriginal(
-                rcx, rdx, r8, r9, fifth, sixth, seventh);
-        }
-
-        g_deepCallbacks.fetch_add(1, std::memory_order_acq_rel);
-        const uint64_t arguments[8] = {
-            rcx, rdx, r8, r9, fifth, sixth, seventh, 0
-        };
-        cleanup_sample_t* sample = begin_cleanup_sample(2, arguments);
-        if (sample)
-        {
-            sample->entrySlot = t_lastCleanupSlot;
-            sample->entryObject = t_lastCleanupObject;
-        }
-        cleanup_sample_t* previous = t_cleanupSample;
-        t_cleanupSample = sample;
-        const uint64_t result = g_secondCleanupOriginal(
-            rcx, rdx, r8, r9, fifth, sixth, seventh);
-        t_cleanupSample = previous;
-        end_cleanup_sample(sample);
-        t_lastCleanupSlot = 0;
-        t_lastCleanupObject = 0;
-        t_lastCleanupWord0 = 0;
-        t_lastCleanupWord1 = 0;
-        g_deepCallbacks.fetch_sub(1, std::memory_order_acq_rel);
-        return result;
-    }
-
     ULONG __stdcall hooked_release(IUnknown* object)
     {
-        if (!g_deepHooksActive.load(std::memory_order_acquire))
+        if (!g_releaseHookActive.load(std::memory_order_acquire))
             return g_releaseOriginal(object);
 
-        g_deepCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        g_releaseCallbacks.fetch_add(1, std::memory_order_acq_rel);
         const uintptr_t pointer = reinterpret_cast<uintptr_t>(object);
         const bool exactOld = pointer != 0 &&
             (pointer == g_previousTexture.load(std::memory_order_acquire) ||
              pointer == g_previousTextureIdentity.load(
                  std::memory_order_acquire));
-        if (t_cleanupSample)
-        {
-            ++t_cleanupSample->nestedReleaseCalls;
-            if (exactOld)
-            {
-                t_cleanupSample->exactOldRelease = 1;
-                t_cleanupSample->releaseThis = pointer;
-            }
-        }
         if (exactOld)
         {
             g_exactOldReleaseCount.fetch_add(1, std::memory_order_acq_rel);
-            if (!t_cleanupSample)
+            const uint32_t sampleIndex = g_releaseSampleCount.fetch_add(
+                1, std::memory_order_acq_rel);
+            if (sampleIndex < kMaximumReleaseSamples)
             {
-                g_unscopedOldReleaseCount.fetch_add(
-                    1, std::memory_order_acq_rel);
+                release_sample_t& sample = g_releaseSamples[sampleIndex];
+                sample = {};
+                sample.releaseThis = pointer;
+                sample.qpc = performance_counter();
+                sample.loopIndex = t_activeLoopIndex;
+                sample.threadId = GetCurrentThreadId();
+                sample.stackCount = static_cast<uint16_t>(
+                    CaptureStackBackTrace(
+                        1, kStackFrames,
+                        reinterpret_cast<void**>(sample.stack), nullptr));
+                if (sample.loopIndex == UINT32_MAX)
+                {
+                    g_unscopedOldReleaseCount.fetch_add(
+                        1, std::memory_order_acq_rel);
+                }
+                g_releaseSampleReady[sampleIndex].store(
+                    true, std::memory_order_release);
             }
         }
         const ULONG result = g_releaseOriginal(object);
-        g_deepCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+        g_releaseCallbacks.fetch_sub(1, std::memory_order_acq_rel);
         return result;
     }
 
-    void remove_deep_hooks()
+    void remove_release_hook()
     {
-        if (!g_firstCleanupOriginal && !g_secondCleanupOriginal &&
-            !g_releaseOriginal)
+        if (!g_releaseOriginal)
         {
-            g_deepHooksActive.store(false, std::memory_order_release);
+            g_releaseHookActive.store(false, std::memory_order_release);
             return;
         }
-        g_deepHooksActive.store(false, std::memory_order_release);
+
+        g_releaseHookActive.store(false, std::memory_order_release);
         const uint64_t waitStarted = GetTickCount64();
-        while (g_deepCallbacks.load(std::memory_order_acquire) != 0 &&
+        while (g_releaseCallbacks.load(std::memory_order_acquire) != 0 &&
             GetTickCount64() - waitStarted < 100)
         {
             Sleep(0);
         }
-
-        void* const targets[] = {
-            g_releaseTarget, g_secondCleanupTarget, g_firstCleanupTarget
-        };
-        for (void* target : targets)
-        {
-            if (target)
-                MH_DisableHook(target);
-        }
-        for (void* target : targets)
-        {
-            if (target)
-                MH_RemoveHook(target);
-        }
-        g_firstCleanupOriginal = nullptr;
-        g_secondCleanupOriginal = nullptr;
+        MH_DisableHook(g_releaseTarget);
+        MH_RemoveHook(g_releaseTarget);
         g_releaseOriginal = nullptr;
         g_releaseTarget = nullptr;
         diagnostic_log::write(
             "probe",
-            "Temporary cleanup-call and exact Release correlation hooks "
-            "disabled.");
+            "Temporary exact COM Release correlation hook disabled.");
     }
 
-    bool install_deep_hooks(ID3D11Texture2D* currentLiveTexture)
+    bool install_release_hook(ID3D11Texture2D* currentLiveTexture)
     {
-        if (!currentLiveTexture || !resolve_cleanup_calls())
+        if (!currentLiveTexture)
             return false;
 
         __try
@@ -781,83 +545,48 @@ namespace
         if (!g_releaseTarget)
             return false;
 
-        g_cleanupSampleCount = 0;
+        g_releaseSampleCount = 0;
         g_exactOldReleaseCount = 0;
         g_unscopedOldReleaseCount = 0;
-        g_deepCallbacks = 0;
-        for (auto& sample : g_cleanupSamples)
+        g_releaseCallbacks = 0;
+        for (auto& sample : g_releaseSamples)
             sample = {};
-        for (auto& ready : g_cleanupSampleReady)
+        for (auto& ready : g_releaseSampleReady)
             ready = false;
 
-        const MH_STATUS firstResult = MH_CreateHook(
-            g_firstCleanupTarget,
-            reinterpret_cast<void*>(&hooked_first_cleanup),
-            reinterpret_cast<void**>(&g_firstCleanupOriginal));
-        const MH_STATUS secondResult = firstResult == MH_OK
-            ? MH_CreateHook(
-                g_secondCleanupTarget,
-                reinterpret_cast<void*>(&hooked_second_cleanup),
-                reinterpret_cast<void**>(&g_secondCleanupOriginal))
-            : MH_ERROR_NOT_CREATED;
-        const MH_STATUS releaseResult =
-            firstResult == MH_OK && secondResult == MH_OK
-            ? MH_CreateHook(
-                g_releaseTarget,
-                reinterpret_cast<void*>(&hooked_release),
-                reinterpret_cast<void**>(&g_releaseOriginal))
-            : MH_ERROR_NOT_CREATED;
-        if (firstResult != MH_OK || secondResult != MH_OK ||
-            releaseResult != MH_OK)
+        const MH_STATUS createResult = MH_CreateHook(
+            g_releaseTarget,
+            reinterpret_cast<void*>(&hooked_release),
+            reinterpret_cast<void**>(&g_releaseOriginal));
+        if (createResult != MH_OK)
         {
-            if (releaseResult == MH_OK)
-                MH_RemoveHook(g_releaseTarget);
-            if (secondResult == MH_OK)
-                MH_RemoveHook(g_secondCleanupTarget);
-            if (firstResult == MH_OK)
-                MH_RemoveHook(g_firstCleanupTarget);
             diagnostic_log::writef_important(
                 "error",
-                "Could not create the combined cleanup/Release hooks "
-                "(first=%d second=%d release=%d); existing probes remain "
-                "available.",
-                static_cast<int>(firstResult),
-                static_cast<int>(secondResult),
-                static_cast<int>(releaseResult));
+                "Could not create the exact COM Release hook (status=%d); "
+                "the stable branch/list/DX probes remain available.",
+                static_cast<int>(createResult));
             g_releaseTarget = nullptr;
             return false;
         }
 
-        const MH_STATUS enableFirst = MH_EnableHook(g_firstCleanupTarget);
-        const MH_STATUS enableSecond = MH_EnableHook(g_secondCleanupTarget);
-        const MH_STATUS enableRelease = MH_EnableHook(g_releaseTarget);
-        if ((enableFirst != MH_OK && enableFirst != MH_ERROR_ENABLED) ||
-            (enableSecond != MH_OK && enableSecond != MH_ERROR_ENABLED) ||
-            (enableRelease != MH_OK && enableRelease != MH_ERROR_ENABLED))
+        const MH_STATUS enableResult = MH_EnableHook(g_releaseTarget);
+        if (enableResult != MH_OK && enableResult != MH_ERROR_ENABLED)
         {
-            remove_deep_hooks();
+            MH_RemoveHook(g_releaseTarget);
+            g_releaseOriginal = nullptr;
+            g_releaseTarget = nullptr;
             diagnostic_log::writef_important(
                 "error",
-                "Could not enable every combined diagnostic hook "
-                "(first=%d second=%d release=%d).",
-                static_cast<int>(enableFirst),
-                static_cast<int>(enableSecond),
-                static_cast<int>(enableRelease));
+                "Could not enable the exact COM Release hook (status=%d).",
+                static_cast<int>(enableResult));
             return false;
         }
 
-        g_deepHooksActive.store(true, std::memory_order_release);
+        g_releaseHookActive.store(true, std::memory_order_release);
         diagnostic_log::writef_important(
             "probe",
-            "Combined one-cycle cleanup correlation enabled: "
-            "call1=0x%llX->0x%llX call2=0x%llX->0x%llX "
-            "Release=0x%llX.",
-            static_cast<unsigned long long>(g_firstCleanupCallAddress),
-            static_cast<unsigned long long>(
-                reinterpret_cast<uintptr_t>(g_firstCleanupTarget)),
-            static_cast<unsigned long long>(g_secondCleanupCallAddress),
-            static_cast<unsigned long long>(
-                reinterpret_cast<uintptr_t>(g_secondCleanupTarget)),
+            "Safe one-cycle Release correlation enabled: Release=0x%llX. "
+            "Private game cleanup functions are not detoured.",
             static_cast<unsigned long long>(
                 reinterpret_cast<uintptr_t>(g_releaseTarget)));
         return true;
@@ -1239,6 +968,8 @@ namespace
                 ? g_loopEventCount.fetch_add(1, std::memory_order_relaxed)
                 : kMaximumLoopEvents;
             capture_loop_event(*context, index);
+            t_activeLoopIndex = index < kMaximumLoopEvents
+                ? index : UINT32_MAX;
             const bool skipEntry = index < kMaximumLoopEvents &&
                 g_loopEvents[index].selectivelySkipped != 0;
             if (skipEntry)
@@ -1259,6 +990,7 @@ namespace
 
         const bool recordEvent = g_trapArmed.load(
             std::memory_order_acquire);
+        t_activeLoopIndex = UINT32_MAX;
         const uint32_t index = recordEvent
             ? g_eventCount.fetch_add(1, std::memory_order_relaxed)
             : kMaximumEvents;
@@ -1654,19 +1386,6 @@ namespace
         return mask;
     }
 
-    uint32_t cleanup_difference_mask(
-        const uint64_t* captured,
-        const uint64_t* compared)
-    {
-        uint32_t mask{};
-        for (uint32_t word = 0; word < kCleanupSnapshotWords; ++word)
-        {
-            if (captured[word] != compared[word])
-                mask |= 1U << word;
-        }
-        return mask;
-    }
-
     int32_t exact_texture_word(
         const uint64_t* words,
         uintptr_t texture)
@@ -1973,114 +1692,75 @@ namespace
         }
     }
 
-    void log_cleanup_correlations()
+    void log_release_correlations()
     {
         const uint32_t captured = (std::min)(
-            g_cleanupSampleCount.load(std::memory_order_acquire),
-            kMaximumCleanupSamples);
-        uint32_t readyCount{};
-        uint32_t firstCalls{};
-        uint32_t secondCalls{};
-        uint32_t exactScoped{};
+            g_releaseSampleCount.load(std::memory_order_acquire),
+            kMaximumReleaseSamples);
+        uint32_t scoped{};
         for (uint32_t index = 0; index < captured; ++index)
         {
-            if (!g_cleanupSampleReady[index].load(
-                    std::memory_order_acquire))
+            if (g_releaseSampleReady[index].load(
+                    std::memory_order_acquire) &&
+                g_releaseSamples[index].loopIndex != UINT32_MAX)
             {
-                continue;
+                ++scoped;
             }
-            ++readyCount;
-            const cleanup_sample_t& sample = g_cleanupSamples[index];
-            if (sample.stage == 1)
-                ++firstCalls;
-            else if (sample.stage == 2)
-                ++secondCalls;
-            if (sample.exactOldRelease)
-                ++exactScoped;
         }
 
         diagnostic_log::writef_important(
             "probe",
-            "Combined cleanup correlation summary: captured=%u ready=%u "
-            "call1=%u call2=%u exactOldRelease=%u scopedMatches=%u "
-            "unscopedMatches=%u oldTexture=0x%llX oldIdentity=0x%llX.",
-            captured, readyCount, firstCalls, secondCalls,
+            "Safe Release correlation summary: captured=%u "
+            "exactOldRelease=%u scopedToListEntry=%u unscoped=%u "
+            "oldTexture=0x%llX oldIdentity=0x%llX.",
+            captured,
             g_exactOldReleaseCount.load(std::memory_order_acquire),
-            exactScoped,
+            scoped,
             g_unscopedOldReleaseCount.load(std::memory_order_acquire),
             static_cast<unsigned long long>(g_previousTexture.load()),
             static_cast<unsigned long long>(
                 g_previousTextureIdentity.load()));
 
+        const uint32_t completedLoops = (std::min)(
+            g_completedLoopEventCount.load(std::memory_order_acquire),
+            kMaximumLoopEvents);
         for (uint32_t index = 0; index < captured; ++index)
         {
-            if (!g_cleanupSampleReady[index].load(
+            if (!g_releaseSampleReady[index].load(
                     std::memory_order_acquire))
             {
                 continue;
             }
-            const cleanup_sample_t& sample = g_cleanupSamples[index];
+            const release_sample_t& sample = g_releaseSamples[index];
+            uint32_t ordinal = UINT32_MAX;
+            uint64_t slot{};
+            uint64_t object{};
+            if (sample.loopIndex < completedLoops &&
+                g_loopEventReady[sample.loopIndex].load(
+                    std::memory_order_acquire))
+            {
+                const loop_event_t& loop = g_loopEvents[sample.loopIndex];
+                ordinal = loop.listOrdinal;
+                slot = loop.event.registers[reg_rsi];
+                object = loop.objectBase;
+            }
             diagnostic_log::writef_important(
                 "probe",
-                "cleanup[%u] stage=%u thread=%lu args=%llX/%llX/%llX/"
-                "%llX/%llX/%llX/%llX entrySlot=%llX entryObject=%llX "
-                "releases=%u exactOld=%u releaseThis=%llX.",
-                index, sample.stage, sample.threadId,
-                static_cast<unsigned long long>(sample.arguments[0]),
-                static_cast<unsigned long long>(sample.arguments[1]),
-                static_cast<unsigned long long>(sample.arguments[2]),
-                static_cast<unsigned long long>(sample.arguments[3]),
-                static_cast<unsigned long long>(sample.arguments[4]),
-                static_cast<unsigned long long>(sample.arguments[5]),
-                static_cast<unsigned long long>(sample.arguments[6]),
-                static_cast<unsigned long long>(sample.entrySlot),
-                static_cast<unsigned long long>(sample.entryObject),
-                sample.nestedReleaseCalls, sample.exactOldRelease,
-                static_cast<unsigned long long>(sample.releaseThis));
-            if (sample.stage == 1)
-            {
-                diagnostic_log::writef_important(
-                    "probe",
-                    "cleanup[%u] object(before)=%llX/%llX/%llX/%llX/"
-                    "%llX/%llX/%llX/%llX object(after)=%llX/%llX/"
-                    "%llX/%llX/%llX/%llX/%llX/%llX diffMask=%02X.",
-                    index,
-                    static_cast<unsigned long long>(
-                        sample.objectWordsBefore[0]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsBefore[1]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsBefore[2]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsBefore[3]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsBefore[4]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsBefore[5]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsBefore[6]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsBefore[7]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsAfter[0]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsAfter[1]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsAfter[2]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsAfter[3]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsAfter[4]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsAfter[5]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsAfter[6]),
-                    static_cast<unsigned long long>(
-                        sample.objectWordsAfter[7]),
-                    cleanup_difference_mask(
-                        sample.objectWordsBefore,
-                        sample.objectWordsAfter));
-            }
+                "release[%u] this=%llX thread=%lu loopIndex=%u "
+                "ordinal=%u slot=%llX object=%llX.",
+                index,
+                static_cast<unsigned long long>(sample.releaseThis),
+                sample.threadId, sample.loopIndex, ordinal,
+                static_cast<unsigned long long>(slot),
+                static_cast<unsigned long long>(object));
+
+            char stackText[768]{};
+            append_stack_text(
+                stackText, sizeof(stackText),
+                sample.stack, sample.stackCount);
+            diagnostic_log::writef_important(
+                "probe", "release[%u] stack=%s",
+                index, stackText[0] ? stackText : "none");
         }
     }
 
@@ -2299,7 +1979,7 @@ namespace
             static_cast<unsigned long long>(textureMatchedTick));
 
         log_dx_correlations();
-        log_cleanup_correlations();
+        log_release_correlations();
         log_loop_results();
 
         for (uint32_t index = 0; index < uniqueCount; ++index)
@@ -2421,7 +2101,7 @@ namespace
 
         g_dxCorrelationActive.store(false, std::memory_order_release);
         dx11::create_texture_2d::set_custom_probe_hooks_enabled(false);
-        remove_deep_hooks();
+        remove_release_hook();
         const uint64_t callbackWaitStarted = GetTickCount64();
         while (g_dxCallbacks.load(std::memory_order_acquire) != 0 &&
             GetTickCount64() - callbackWaitStarted < 100)
@@ -2541,13 +2221,13 @@ namespace custom_render_probe
         g_captureDataReady.store(false, std::memory_order_release);
         reset_dx_correlation();
 
-        const bool deepHooksReady = install_deep_hooks(currentLiveTexture);
-        if (!deepHooksReady)
+        const bool releaseHookReady = install_release_hook(currentLiveTexture);
+        if (!releaseHookReady)
         {
             diagnostic_log::write(
                 "error",
-                "The combined test could not enable every cleanup/Release "
-                "correlation hook; it will continue with the existing "
+                "The safe test could not enable exact COM Release "
+                "correlation; it will continue with the established "
                 "bounded list and Direct3D draw coverage.");
         }
 
@@ -2579,7 +2259,7 @@ namespace custom_render_probe
             return true;
 
         dx11::create_texture_2d::set_custom_probe_hooks_enabled(false);
-        remove_deep_hooks();
+        remove_release_hook();
         g_captureReserved.store(false, std::memory_order_release);
         g_captureCompleted.store(true, std::memory_order_release);
         return false;
@@ -2840,7 +2520,7 @@ namespace custom_render_probe
         {
             g_dxCorrelationActive = false;
             dx11::create_texture_2d::set_custom_probe_hooks_enabled(false);
-            remove_deep_hooks();
+            remove_release_hook();
             write_branch(false);
         }
         if (g_captureDataReady.load() && !g_textureReady.load() &&

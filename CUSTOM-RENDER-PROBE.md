@@ -23,13 +23,11 @@ the handler rejoins that native sequence instead of guessing loop-exit register
 state. Unmatched entries always execute normally.
 
 Because both Custom 1 and Custom 2 produced `oldPaths=0`, the same one-click
-cycle now also detours both verified native calls in each cleanup body and the
-actual COM `Release` implementation used by the exact old texture. It records
-the cleanup arguments, current list slot/object, before/after object words,
-nested release count, and whether the exact raw or canonical old identity was
-released inside that call. The cleanup and Release detours are observational:
-they do not guess an object layout, suppress a release, or change an unrelated
-screen.
+cycle now observes the standard COM `Release` implementation used by the exact
+old texture. The established list breakpoint stores the active list index in
+thread-local state; an exact release on that same thread records the index and
+call stack. No private game cleanup function is detoured, no release is
+suppressed, and no unrelated screen is changed by this correlation hook.
 
 ## Test
 
@@ -47,9 +45,9 @@ screen.
 6. Provide `PrismMedia.log` from the game executable directory.
 
 The action synchronously records the old live texture and installs both
-breakpoints, both cleanup-call detours, the exact COM Release correlation and
-the Direct3D hooks before reload. It is bounded to 2,048 branch executions,
-256 post-R9 list entries, 64 cleanup samples, 60 seconds overall, and 10
+breakpoints, the exact COM Release correlation and the Direct3D hooks before
+reload. It is bounded to 2,048 branch executions, 256 post-R9 list entries,
+16 exact-release samples, 60 seconds overall, and 10
 seconds after the replacement texture appears. Exact old-texture graph matches
 selectively bypass only their cleanup bodies through the verified native loop
 advance. Six correlated draws complete the test early. All temporary hooks and
@@ -66,8 +64,8 @@ Useful log records use the `[probe]` category:
 - `branch-code[...]`
 - `List-entry correlation summary`
 - `list-entry[...]`
-- `Combined cleanup correlation summary`
-- `cleanup[...]`
+- `Safe Release correlation summary`
+- `release[...]`
 - `DX correlation summary`
 - `DX sample[...]`
 - `signature[...]`

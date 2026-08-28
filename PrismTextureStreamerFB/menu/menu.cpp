@@ -1613,7 +1613,7 @@ namespace
         diagnostic_log::write(
             "route",
             requireNewDiagnostic
-                ? "Preparing the targeted old-texture fix test before "
+                ? "Preparing the combined one-cycle targeted test before "
                   "executing the truck-texture reload command."
                 : "Preparing a normal truck-texture reload without arming "
                   "the one-shot diagnostic.");
@@ -1667,7 +1667,8 @@ namespace
             "route",
             diagnosticPrepared
                 ? "Game accepted the truck-texture reload command; the "
-                  "targeted old-texture probe is active before cleanup."
+                  "combined list/cleanup/Release probe is active before "
+                  "cleanup."
                 : "Game accepted the normal truck-texture reload command.");
         return true;
     }
@@ -2188,24 +2189,26 @@ namespace
             explain_last_item("Reload game textures", "Runs the game reload only after the accessory is installed and the texture identity is saved.", "Brief loading interruption", "Manual critical action");
         }
 
-        ImGui::SeparatorText("Per-instance render diagnostic");
+        ImGui::SeparatorText("Combined per-instance diagnostic");
         ImGui::TextWrapped(
-            "Tests the selective fix against the old live texture. Only a "
-            "list entry with an exact bounded pointer path may be skipped; "
-            "the working fallback returns automatically.");
+            "Runs the list-entry, both native cleanup-call, exact COM "
+            "Release and Direct3D draw checks in one reload. Only an exact "
+            "match may be changed; the working fallback returns "
+            "automatically.");
         ImGui::BeginDisabled(
             !g_telemetry_driving.load(std::memory_order_acquire));
         if (ImGui::Button(
-                "Run targeted fix test", ImVec2(-1.0f, 36.0f)))
+                "Run combined one-cycle test", ImVec2(-1.0f, 36.0f)))
         {
             run_early_custom_probe_reload(
                 "before diagnostic reload", true);
         }
         ImGui::EndDisabled();
         explain_last_item(
-            "Targeted custom-render fix test",
-            "Reloads only after the old live texture, bounded list-entry "
-            "probe and temporary Direct3D correlation hooks are armed.",
+            "Combined custom-render test",
+            "One reload arms the old texture, bounded list-entry probe, "
+            "both cleanup calls, exact COM Release and Direct3D draw "
+            "correlation.",
             "Temporary loading interruption", "One diagnostic per session");
         if (!g_telemetry_driving.load(std::memory_order_acquire))
             ImGui::TextDisabled("Enter the truck before running the diagnostic.");

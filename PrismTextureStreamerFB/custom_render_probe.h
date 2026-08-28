@@ -6,10 +6,11 @@ struct ID3D11ShaderResourceView;
 
 namespace custom_render_probe
 {
-    // Arms one bounded targeted-fix test before the game reloads the truck
-    // and accessory models. The current live texture is used only as a raw
-    // identity: no extra COM reference is retained, so cleanup behavior is
-    // not masked. Only an exact bounded entry-graph match may be skipped.
+    // Arms one bounded combined test before the game reloads the truck and
+    // accessory models. One cycle covers the branch, list entries, both
+    // verified cleanup calls, the exact old texture's COM Release, and the
+    // replacement texture's bind/draw path. Only an exact bounded entry-graph
+    // match may be skipped; all deeper hooks are observational and temporary.
     bool prepare_capture(
         const char* displayId,
         const char* originalTexture,

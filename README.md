@@ -1,20 +1,22 @@
 # PrismMedia 4.0.0
 
-This 4.0.0 source revision includes the guarded old-texture targeted-fix test
-described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md). It records the
-current live custom texture before reload, matches that exact raw or canonical
-identity inside verified post-`R9 = RSI` cleanup entries, and bypasses only a
-matched entry through the game's own loop-advance sequence. The working
-compatibility fallback is restored automatically.
+This 4.0.0 source revision includes the guarded combined one-cycle test
+described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md). One reload now
+captures the list entries, both verified native cleanup calls, the exact old
+texture's COM `Release`, and the replacement texture's bind/draw path. An
+entry is still bypassed only after an exact bounded match through the game's
+own loop-advance sequence. The working compatibility fallback is restored
+automatically.
 
 PrismMedia streams YouTube, Spotify Web, local media, direct streams,
 or a desktop window onto supported ETS2/ATS truck displays.
 
-## Current targeted-fix revision
+## Current combined-test revision
 
-- System now includes a dedicated **Run targeted fix test** action while
-  driving. It requires an active old live custom texture and arms both bounded
-  breakpoints before issuing the truck reload command.
+- System now includes a dedicated **Run combined one-cycle test** action while
+  driving. It requires an active old live custom texture and arms the bounded
+  breakpoints, both cleanup-call detours, exact COM `Release` correlation and
+  Direct3D correlation before issuing one truck reload command.
 - The one-click capture is bounded to 2,048 branch events, 256 post-R9 list
   entries, 60 seconds overall, and 10 seconds after the exact texture match.
   After that match the probe temporarily emulates the working compatibility
@@ -27,6 +29,12 @@ or a desktop window onto supported ETS2/ATS truck displays.
   live texture through a bounded three-child graph. It requires exact pointer
   equality and a verified native RSI-advance/backedge before selectively
   bypassing an entry; unmatched entries retain original game behavior.
+- Because the bounded pointer graph did not expose the old texture in either
+  Custom 1 or Custom 2, this revision also resolves and observes both native
+  calls in each cleanup body. A temporary hook on the old texture's real COM
+  `Release` function associates an exact release with the active cleanup call
+  and records its arguments plus before/after entry words. These hooks never
+  suppress a release and are removed with the same bounded window.
 - The primary correlation follows the exact replacement texture through
   `CreateShaderResourceView` and `PSSetShaderResources`. Independent fallback
   resource inspection and all standard, instanced, automatic, and indirect

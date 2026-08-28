@@ -1,4 +1,4 @@
-# Custom-display targeted-fix test
+# Custom-display combined one-cycle test
 
 This source revision contains a bounded early probe for the global
 custom-display render branch. Runtime testing of the previous revision showed
@@ -7,7 +7,7 @@ The revised probe arms before the truck/accessory reload, retains the branch's
 real register and stack identities, then correlates those identities after the
 prepared display's exact Direct3D texture is created.
 
-The current 4.0.0 targeted-fix test incorporates the next runtime result. The
+The current 4.0.0 combined test incorporates the next runtime result. The
 loop captured two cleanup entries, and both had their first two fields cleared
 roughly 20 seconds before the new texture existed. Therefore the relevant
 identity is the old live texture from before reload, not the replacement
@@ -22,6 +22,15 @@ verifies the game's native `add/lea RSI,+8`, compare, and backedge sequence;
 the handler rejoins that native sequence instead of guessing loop-exit register
 state. Unmatched entries always execute normally.
 
+Because both Custom 1 and Custom 2 produced `oldPaths=0`, the same one-click
+cycle now also detours both verified native calls in each cleanup body and the
+actual COM `Release` implementation used by the exact old texture. It records
+the cleanup arguments, current list slot/object, before/after object words,
+nested release count, and whether the exact raw or canonical old identity was
+released inside that call. The cleanup and Release detours are observational:
+they do not guess an object layout, suppress a release, or change an unrelated
+screen.
+
 ## Test
 
 1. Build and install `PrismMedia.dll` normally.
@@ -29,7 +38,8 @@ state. Unmatched entries always execute normally.
    screen visible.
 3. Enable media replacement on one custom display and make sure its unique game
    TOBJ is selected.
-4. While driving, open **System** and select **Run targeted fix test** once.
+4. While driving, open **System** and select **Run combined one-cycle test**
+   once.
    Do not use the ordinary game console reload command, because the probe must
    be installed first.
 5. Wait until the truck finishes reloading and the custom screen returns, then
@@ -37,12 +47,14 @@ state. Unmatched entries always execute normally.
 6. Provide `PrismMedia.log` from the game executable directory.
 
 The action synchronously records the old live texture and installs both
-breakpoints before reload. It is bounded to 2,048 branch executions, 256
-post-R9 list entries, 60 seconds overall, and 10 seconds after the replacement
-texture appears. Exact old-texture matches selectively bypass only their
-cleanup bodies through the verified native loop advance. Six correlated draws
-complete the test early. Temporary hooks and both breakpoints are then removed,
-and the working global fallback returns regardless of the match result.
+breakpoints, both cleanup-call detours, the exact COM Release correlation and
+the Direct3D hooks before reload. It is bounded to 2,048 branch executions,
+256 post-R9 list entries, 64 cleanup samples, 60 seconds overall, and 10
+seconds after the replacement texture appears. Exact old-texture graph matches
+selectively bypass only their cleanup bodies through the verified native loop
+advance. Six correlated draws complete the test early. All temporary hooks and
+both breakpoints are then removed, and the working global fallback returns
+regardless of the result.
 
 Useful log records use the `[probe]` category:
 
@@ -54,6 +66,8 @@ Useful log records use the `[probe]` category:
 - `branch-code[...]`
 - `List-entry correlation summary`
 - `list-entry[...]`
+- `Combined cleanup correlation summary`
+- `cleanup[...]`
 - `DX correlation summary`
 - `DX sample[...]`
 - `signature[...]`

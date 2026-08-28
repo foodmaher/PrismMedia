@@ -1,5 +1,9 @@
 # Custom-display combined one-cycle test
 
+The same test can now be started and repeated with
+`PrismDiagnosticConsole.exe`; see `DIAGNOSTIC-CONSOLE.md`. The original in-game
+button remains available.
+
 This source revision contains a bounded early probe for the global
 custom-display render branch. Runtime testing of the previous revision showed
 that arming only after the exact GPU texture match was too late (`events=0`).
@@ -28,6 +32,12 @@ old texture. The established list breakpoint stores the active list index in
 thread-local state; an exact release on that same thread records the index and
 call stack. No private game cleanup function is detoured, no release is
 suppressed, and no unrelated screen is changed by this correlation hook.
+
+Release correlations are now timing-validated. The last list entry seen on a
+thread remains a candidate only; it becomes a validated correlation when the
+exact old-texture Release occurs within the configurable same-thread window
+(250,000 microseconds by default). This prevents the loop's last entry from
+remaining as stale evidence several seconds later.
 
 ## Test
 

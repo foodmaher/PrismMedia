@@ -16,8 +16,9 @@ if ($LASTEXITCODE -ne 0) { throw "MSBuild failed with exit code $LASTEXITCODE." 
 $Output = Join-Path $ProjectRoot 'x64\Release'
 $Dll = Join-Path $Output 'PrismMedia.dll'
 $BridgeDll = Join-Path $Output 'PrismCameraBridge.dll'
+$DiagnosticConsole = Join-Path $Output 'PrismDiagnosticConsole.exe'
 $ClientDirectory = Join-Path $ProjectRoot 'PrismMediaClient\bin\x64\Release\net48'
-foreach ($required in @($Dll, $BridgeDll, (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
+foreach ($required in @($Dll, $BridgeDll, $DiagnosticConsole, (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     if (-not (Test-Path $required)) { throw "Expected build output is missing: $required" }
 }
 
@@ -27,6 +28,7 @@ New-Item -ItemType Directory -Path $Package | Out-Null
 $Runtime = Join-Path $Package 'PrismMedia'
 New-Item -ItemType Directory -Path $Runtime | Out-Null
 Copy-Item $Dll $Package
+Copy-Item $DiagnosticConsole $Package
 Copy-Item (Join-Path $ClientDirectory '*') $Runtime -Recurse
 Get-ChildItem $Runtime -Recurse -File | Where-Object { $_.Extension -in '.pdb', '.xml' } | Remove-Item -Force
 
@@ -37,6 +39,7 @@ Copy-Item (Join-Path $ProjectRoot 'SPF-BRIDGE-INSTALL.txt') (Join-Path $Runtime 
 Copy-Item (Join-Path $ProjectRoot 'config-recommended.ini') $Runtime
 Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Runtime
 Copy-Item (Join-Path $ProjectRoot 'README.md') $Package
+Copy-Item (Join-Path $ProjectRoot 'DIAGNOSTIC-CONSOLE.md') $Package
 
 @"
 PrismMedia 4.0.0
@@ -48,6 +51,10 @@ PrismMedia folder into:
 Keep the DLL directly inside plugins. Open the interface with Ctrl+F8.
 Settings apply live and auto-save. Only texture identity changes need the
 System > Reload game textures action.
+
+PrismDiagnosticConsole.exe is optional. Run it while the game is open to
+repeat bounded diagnostic tests and change safe probe controls without
+rebuilding PrismMedia.dll. See DIAGNOSTIC-CONSOLE.md.
 "@ | Set-Content (Join-Path $Package 'INSTALL.txt')
 
 $Hash = Get-FileHash -Algorithm SHA256 $Dll

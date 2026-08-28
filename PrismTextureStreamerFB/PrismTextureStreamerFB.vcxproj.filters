@@ -38,6 +38,9 @@
     <ClCompile Include="custom_render_probe.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="diagnostic_console.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="diagnostic_log.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -104,6 +107,9 @@
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="custom_render_probe.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="diagnostic_console.h">
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="engine_standby.h">

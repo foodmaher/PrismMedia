@@ -50,6 +50,9 @@ namespace
     // A standard COM Release hook is correlated with the already-stable list
     // breakpoint. No private game cleanup function is detoured.
     constexpr uint32_t kMaximumReleaseSamples = 16;
+    constexpr uint64_t kDefaultReleaseScopeWindowMicroseconds = 250000;
+    constexpr uint64_t kMinimumReleaseScopeWindowMicroseconds = 1000;
+    constexpr uint64_t kMaximumReleaseScopeWindowMicroseconds = 5000000;
 
     enum register_index_t : uint32_t
     {
@@ -162,10 +165,14 @@ namespace
     {
         uint64_t releaseThis{};
         uint64_t qpc{};
+        uint64_t loopQpc{};
         uint64_t stack[kStackFrames]{};
         uint32_t loopIndex{ UINT32_MAX };
+        uint32_t candidateLoopIndex{ UINT32_MAX };
         uint32_t threadId{};
+        int64_t loopDeltaMicroseconds{ -1 };
         uint16_t stackCount{};
+        uint8_t scopeValidated{};
     };
 
     using release_t = ULONG(__stdcall*)(IUnknown*);
@@ -218,6 +225,11 @@ namespace
     std::atomic<uint32_t> g_releaseSampleCount{};
     std::atomic<uint32_t> g_exactOldReleaseCount{};
     std::atomic<uint32_t> g_unscopedOldReleaseCount{};
+    std::atomic<uint32_t> g_validatedOldReleaseCount{};
+    std::atomic<uint64_t> g_releaseScopeWindowMicroseconds{
+        kDefaultReleaseScopeWindowMicroseconds };
+    std::atomic<custom_render_probe::fallback_mode_t> g_fallbackMode{
+        custom_render_probe::fallback_mode_t::automatic };
     std::atomic<bool> g_loopMatchSnapshotTaken{};
     std::atomic<bool> g_loopDrawSnapshotTaken{};
     std::array<correlation_sample_t, kMaximumCorrelationSamples>
@@ -237,6 +249,9 @@ namespace
 
     thread_local uint32_t t_pendingCorrelationSample = UINT32_MAX;
     thread_local uint32_t t_activeLoopIndex = UINT32_MAX;
+    thread_local uint64_t t_activeLoopQpc{};
+
+    int64_t qpc_delta_microseconds(uint64_t later, uint64_t earlier);
 
     uint64_t performance_counter()
     {
@@ -484,8 +499,31 @@ namespace
                 sample = {};
                 sample.releaseThis = pointer;
                 sample.qpc = performance_counter();
-                sample.loopIndex = t_activeLoopIndex;
+                sample.loopQpc = t_activeLoopQpc;
+                sample.candidateLoopIndex = t_activeLoopIndex;
                 sample.threadId = GetCurrentThreadId();
+                sample.loopDeltaMicroseconds =
+                    sample.candidateLoopIndex != UINT32_MAX &&
+                    sample.loopQpc != 0
+                        ? qpc_delta_microseconds(
+                            sample.qpc, sample.loopQpc)
+                        : -1;
+                const uint64_t scopeWindow =
+                    g_releaseScopeWindowMicroseconds.load(
+                        std::memory_order_acquire);
+                const bool scopeValid =
+                    sample.candidateLoopIndex != UINT32_MAX &&
+                    sample.loopDeltaMicroseconds >= 0 &&
+                    static_cast<uint64_t>(sample.loopDeltaMicroseconds) <=
+                        scopeWindow;
+                sample.loopIndex = scopeValid
+                    ? sample.candidateLoopIndex : UINT32_MAX;
+                sample.scopeValidated = scopeValid ? 1 : 0;
+                if (scopeValid)
+                {
+                    g_validatedOldReleaseCount.fetch_add(
+                        1, std::memory_order_acq_rel);
+                }
                 sample.stackCount = static_cast<uint16_t>(
                     CaptureStackBackTrace(
                         1, kStackFrames,
@@ -548,6 +586,7 @@ namespace
         g_releaseSampleCount = 0;
         g_exactOldReleaseCount = 0;
         g_unscopedOldReleaseCount = 0;
+        g_validatedOldReleaseCount = 0;
         g_releaseCallbacks = 0;
         for (auto& sample : g_releaseSamples)
             sample = {};
@@ -970,6 +1009,8 @@ namespace
             capture_loop_event(*context, index);
             t_activeLoopIndex = index < kMaximumLoopEvents
                 ? index : UINT32_MAX;
+            t_activeLoopQpc = index < kMaximumLoopEvents
+                ? g_loopEvents[index].event.qpc : 0;
             const bool skipEntry = index < kMaximumLoopEvents &&
                 g_loopEvents[index].selectivelySkipped != 0;
             if (skipEntry)
@@ -991,6 +1032,7 @@ namespace
         const bool recordEvent = g_trapArmed.load(
             std::memory_order_acquire);
         t_activeLoopIndex = UINT32_MAX;
+        t_activeLoopQpc = 0;
         const uint32_t index = recordEvent
             ? g_eventCount.fetch_add(1, std::memory_order_relaxed)
             : kMaximumEvents;
@@ -1712,11 +1754,13 @@ namespace
             "probe",
             "Safe Release correlation summary: captured=%u "
             "exactOldRelease=%u scopedToListEntry=%u unscoped=%u "
-            "oldTexture=0x%llX oldIdentity=0x%llX.",
+            "scopeWindow=%lluus oldTexture=0x%llX oldIdentity=0x%llX.",
             captured,
             g_exactOldReleaseCount.load(std::memory_order_acquire),
             scoped,
             g_unscopedOldReleaseCount.load(std::memory_order_acquire),
+            static_cast<unsigned long long>(
+                g_releaseScopeWindowMicroseconds.load()),
             static_cast<unsigned long long>(g_previousTexture.load()),
             static_cast<unsigned long long>(
                 g_previousTextureIdentity.load()));
@@ -1746,11 +1790,14 @@ namespace
             }
             diagnostic_log::writef_important(
                 "probe",
-                "release[%u] this=%llX thread=%lu loopIndex=%u "
+                "release[%u] this=%llX thread=%lu candidateLoop=%u "
+                "validatedLoop=%u scopeValid=%u loopDelta=%lldus "
                 "ordinal=%u slot=%llX object=%llX.",
                 index,
                 static_cast<unsigned long long>(sample.releaseThis),
-                sample.threadId, sample.loopIndex, ordinal,
+                sample.threadId, sample.candidateLoopIndex,
+                sample.loopIndex, sample.scopeValidated,
+                static_cast<long long>(sample.loopDeltaMicroseconds), ordinal,
                 static_cast<unsigned long long>(slot),
                 static_cast<unsigned long long>(object));
 
@@ -2490,6 +2537,10 @@ namespace custom_render_probe
 
     void update(bool customDisplayActive)
     {
+        const fallback_mode_t mode = g_fallbackMode.load(
+            std::memory_order_acquire);
+        const bool fallbackActive = mode == fallback_mode_t::forced_on ||
+            (mode == fallback_mode_t::automatic && customDisplayActive);
         if (g_probeInstalled)
         {
             const uint64_t now = GetTickCount64();
@@ -2501,15 +2552,126 @@ namespace custom_render_probe
                 (matched != 0 && now >= matched &&
                     now - matched >= kPostMatchTimeoutMilliseconds))
             {
-                finish_probe(customDisplayActive);
+                finish_probe(fallbackActive);
             }
             return;
         }
 
         write_branch(
-            customDisplayActive ||
+            fallbackActive ||
             (g_captureReserved.load(std::memory_order_acquire) &&
                 g_captureDataReady.load(std::memory_order_acquire)));
+    }
+
+    status_t status()
+    {
+        status_t result{};
+        result.active = g_probeInstalled.load(std::memory_order_acquire);
+        result.waitingForTexture =
+            g_captureReserved.load(std::memory_order_acquire) &&
+            g_captureDataReady.load(std::memory_order_acquire) &&
+            !g_textureReady.load(std::memory_order_acquire);
+        result.completed = g_captureCompleted.load(std::memory_order_acquire);
+        result.textureReady = g_textureReady.load(std::memory_order_acquire);
+        result.branchEvents = (std::min)(
+            g_eventCount.load(std::memory_order_acquire), kMaximumEvents);
+        result.listEntries = (std::min)(
+            g_loopEventCount.load(std::memory_order_acquire),
+            kMaximumLoopEvents);
+        result.exactOldReleases = g_exactOldReleaseCount.load(
+            std::memory_order_acquire);
+        result.validatedReleases = g_validatedOldReleaseCount.load(
+            std::memory_order_acquire);
+        result.drawSamples = g_drawCorrelationCount.load(
+            std::memory_order_acquire);
+        result.releaseScopeWindowMicroseconds =
+            g_releaseScopeWindowMicroseconds.load(std::memory_order_acquire);
+        result.fallbackMode = g_fallbackMode.load(std::memory_order_acquire);
+        return result;
+    }
+
+    bool reset_session()
+    {
+        if (g_probeInstalled.load(std::memory_order_acquire) ||
+            (g_captureReserved.load(std::memory_order_acquire) &&
+                !g_captureCompleted.load(std::memory_order_acquire)))
+            return false;
+
+        g_dxCorrelationActive = false;
+        dx11::create_texture_2d::set_custom_probe_hooks_enabled(false);
+        remove_release_hook();
+        reset_dx_correlation();
+        g_captureReserved = false;
+        g_captureCompleted = false;
+        g_captureDataReady = false;
+        g_textureReady = false;
+        g_resultsLogged = false;
+        g_trapCompleted = false;
+        g_selectedTexture = 0;
+        g_previousTexture = 0;
+        g_previousTextureIdentity = 0;
+        g_textureMatchedTick = 0;
+        g_textureMatchedQpc = 0;
+        g_eventCount = 0;
+        g_completedEventCount = 0;
+        g_loopEventCount = 0;
+        g_completedLoopEventCount = 0;
+        g_releaseSampleCount = 0;
+        g_exactOldReleaseCount = 0;
+        g_unscopedOldReleaseCount = 0;
+        g_validatedOldReleaseCount = 0;
+        g_selectedDisplayId[0] = '\0';
+        g_selectedOriginalTexture[0] = '\0';
+        t_activeLoopIndex = UINT32_MAX;
+        t_activeLoopQpc = 0;
+        diagnostic_log::write(
+            "console", "Diagnostic session reset for another safe run.");
+        return true;
+    }
+
+    bool abort_capture(bool customDisplayActive)
+    {
+        const bool wasActive =
+            g_probeInstalled.load(std::memory_order_acquire) ||
+            g_captureReserved.load(std::memory_order_acquire);
+        if (g_probeInstalled.load(std::memory_order_acquire))
+            finish_probe(customDisplayActive);
+        g_dxCorrelationActive = false;
+        dx11::create_texture_2d::set_custom_probe_hooks_enabled(false);
+        remove_release_hook();
+        g_captureReserved = false;
+        g_captureCompleted = true;
+        release_dx_correlation_resources();
+        if (wasActive)
+            diagnostic_log::write(
+                "console", "Diagnostic capture aborted safely.");
+        return wasActive;
+    }
+
+    bool set_release_scope_window_microseconds(uint64_t value)
+    {
+        if (value < kMinimumReleaseScopeWindowMicroseconds ||
+            value > kMaximumReleaseScopeWindowMicroseconds ||
+            g_probeInstalled.load(std::memory_order_acquire))
+        {
+            return false;
+        }
+        g_releaseScopeWindowMicroseconds.store(
+            value, std::memory_order_release);
+        diagnostic_log::writef(
+            "console", "Release scope window set to %lluus.",
+            static_cast<unsigned long long>(value));
+        return true;
+    }
+
+    void set_fallback_mode(fallback_mode_t mode)
+    {
+        g_fallbackMode.store(mode, std::memory_order_release);
+    }
+
+    fallback_mode_t fallback_mode()
+    {
+        return g_fallbackMode.load(std::memory_order_acquire);
     }
 
     void shutdown()

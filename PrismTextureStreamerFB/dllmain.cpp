@@ -21,6 +21,7 @@
 #include "camera_bridge_client.h"
 #include "custom_render_probe.h"
 #include "diagnostic_log.h"
+#include "diagnostic_console.h"
 #include "environment_audio.h"
 #include "thread_scheduling.h"
 #include "update_checker.h"
@@ -724,6 +725,8 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
         dash_patched = has_dash;
     }
 
+    diagnostic_console::update(
+        g_telemetry_driving.load(std::memory_order_acquire), has_custom);
     custom_render_probe::update(has_custom);
 }
 
@@ -825,6 +828,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 
     settings::load();
     update_checker::start();
+    diagnostic_console::start();
 
     diagnostic_log::write("session", "Plugin initialization completed.");
     scs_log(0, "Plugin Started");
@@ -835,6 +839,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 SCSAPI_VOID scs_telemetry_shutdown()
 {
     diagnostic_log::write("session", "Plugin shutdown started.");
+    diagnostic_console::stop();
     custom_render_probe::shutdown();
     sources::ShutdownMediaClient();
     update_checker::shutdown();

@@ -1,11 +1,35 @@
 #pragma once
 
+#include <cstdint>
+
 struct ID3D11Texture2D;
 struct ID3D11Resource;
 struct ID3D11ShaderResourceView;
 
 namespace custom_render_probe
 {
+    enum class fallback_mode_t
+    {
+        automatic,
+        forced_on,
+        forced_off
+    };
+
+    struct status_t
+    {
+        bool active{};
+        bool waitingForTexture{};
+        bool completed{};
+        bool textureReady{};
+        uint32_t branchEvents{};
+        uint32_t listEntries{};
+        uint32_t exactOldReleases{};
+        uint32_t validatedReleases{};
+        uint32_t drawSamples{};
+        uint64_t releaseScopeWindowMicroseconds{};
+        fallback_mode_t fallbackMode{ fallback_mode_t::automatic };
+    };
+
     // Arms one bounded combined test before the game reloads the truck and
     // accessory models. One cycle covers the branch, list entries, the exact
     // old texture's standard COM Release, and the replacement texture's
@@ -41,6 +65,15 @@ namespace custom_render_probe
     // window. Call once per telemetry frame with the current custom-display
     // presentation requirement.
     void update(bool customDisplayActive);
+
+    // Runtime controls used by the local diagnostic console. They never
+    // install arbitrary hooks or call unknown game functions.
+    status_t status();
+    bool reset_session();
+    bool abort_capture(bool customDisplayActive);
+    bool set_release_scope_window_microseconds(uint64_t value);
+    void set_fallback_mode(fallback_mode_t mode);
+    fallback_mode_t fallback_mode();
 
     // Restores the original game bytes and removes the exception handler.
     void shutdown();

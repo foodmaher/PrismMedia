@@ -1,5 +1,11 @@
 # PrismMedia 4.0.0
 
+This revision includes the optional restricted runtime controller documented
+in [DIAGNOSTIC-CONSOLE.md](DIAGNOSTIC-CONSOLE.md). It can repeat bounded custom
+render tests, select a custom display, adjust the same-thread Release timing
+window, inspect status, and switch the compatibility fallback without
+rebuilding the plugin. It does not expose arbitrary scripts or native calls.
+
 This 4.0.0 source revision includes the guarded combined one-cycle test
 described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md). One reload now
 captures the list entries, the exact old texture's standard COM `Release`, and

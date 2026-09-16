@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "custom_render_probe.h"
+#include "runtime_draw_probe.h"
 
 #include "bmem.h"
 #include "diagnostic_log.h"
@@ -2222,7 +2223,9 @@ namespace custom_render_probe
         const char* originalTexture,
         ID3D11Texture2D* currentLiveTexture)
     {
-        if (g_captureCompleted.load(std::memory_order_acquire) ||
+        std::lock_guard<std::mutex> startLock(runtime_draw_probe::start_mutex());
+        if (runtime_draw_probe::active() ||
+            g_captureCompleted.load(std::memory_order_acquire) ||
             g_probeInstalled.load(std::memory_order_acquire) ||
             g_captureDataReady.load(std::memory_order_acquire) ||
             !currentLiveTexture)

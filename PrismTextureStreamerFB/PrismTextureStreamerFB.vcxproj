@@ -144,6 +144,7 @@
     <ClCompile Include="camera_bridge_client.cpp" />
     <ClCompile Include="custom_render_probe.cpp" />
     <ClCompile Include="diagnostic_console.cpp" />
+    <ClCompile Include="runtime_draw_probe.cpp" />
     <ClCompile Include="diagnostic_log.cpp" />
     <ClCompile Include="dinput8\dinput8.cpp" />
     <ClCompile Include="dllmain.cpp" />
@@ -170,6 +171,8 @@
     <ClInclude Include="camera_bridge_client.h" />
     <ClInclude Include="custom_render_probe.h" />
     <ClInclude Include="diagnostic_console.h" />
+    <ClInclude Include="runtime_draw_probe.h" />
+    <ClInclude Include="diagnostic_options.h" />
     <ClInclude Include="diagnostic_log.h" />
     <ClInclude Include="engine_standby.h" />
     <ClInclude Include="dinput8\dinput8.h" />

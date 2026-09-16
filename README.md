@@ -1,18 +1,20 @@
 # PrismMedia 4.0.0
 
-This revision includes the optional restricted runtime controller documented
-in [DIAGNOSTIC-CONSOLE.md](DIAGNOSTIC-CONSOLE.md). It can repeat bounded custom
-render tests, select a custom display, adjust the same-thread Release timing
-window, inspect status, and switch the compatibility fallback without
-rebuilding the plugin. It does not expose arbitrary scripts or native calls.
+This revision includes the reusable diagnostic host documented in
+[DIAGNOSTIC-CONSOLE.md](DIAGNOSTIC-CONSOLE.md). The console loads external
+PowerShell test scripts and captures live draw state without a truck reload.
+Start with `script gps-ab.ps1` to compare fallback on/off/on while recording
+custom-media and native-smartphone observations separately. Edit and rerun
+scripts without recompiling; new native hook types still need compiled code.
+This is diagnostic source, not a confirmed black-screen fix.
 
 This 4.0.0 source revision includes the guarded combined one-cycle test
 described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md). One reload now
 captures the list entries, the exact old texture's standard COM `Release`, and
 the replacement texture's bind/draw path. An
 entry is still bypassed only after an exact bounded match through the game's
-own loop-advance sequence. The working compatibility fallback is restored
-automatically.
+own loop-advance sequence. The compatibility fallback is restored automatically.
+That older reload probe is retained, but is not used by the new live comparison.
 
 PrismMedia streams YouTube, Spotify Web, local media, direct streams,
 or a desktop window onto supported ETS2/ATS truck displays.

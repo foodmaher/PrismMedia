@@ -8,6 +8,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <filesystem>
 
 namespace
 {
@@ -87,6 +88,8 @@ namespace
                 return false;
             }
         }
+        static constexpr char ack[] = "ack";
+        WriteFile(pipe, ack, 3, &written, nullptr);
         CloseHandle(pipe);
         return true;
     }
@@ -114,6 +117,59 @@ namespace
             command << argv[index];
         }
         return command.str();
+    }
+
+    // Quote a Windows argv item, including trailing backslashes. No command
+    // shell, interpolation or eval of the filename is involved.
+    std::wstring quote(const std::wstring& value)
+    {
+        std::wstring result = L"\""; size_t slashes{};
+        for (wchar_t ch : value) {
+            if (ch == L'\\') { ++slashes; continue; }
+            result.append(ch == L'"' ? slashes * 2 + 1 : slashes, L'\\');
+            slashes = 0; result += ch;
+        }
+        result.append(slashes * 2, L'\\'); result += L'"'; return result;
+    }
+
+    int run_script(DWORD processId, std::string argument)
+    {
+        while (!argument.empty() && std::isspace(static_cast<unsigned char>(argument.front()))) argument.erase(0,1);
+        while (!argument.empty() && std::isspace(static_cast<unsigned char>(argument.back()))) argument.pop_back();
+        if (argument.size() >= 2 && argument.front() == '"' && argument.back() == '"')
+            argument = argument.substr(1, argument.size()-2);
+        try {
+            wchar_t executable[32768]{};
+            if (!GetModuleFileNameW(nullptr,executable,32768)) return 4;
+            const auto directory = std::filesystem::path(executable).parent_path() / L"diagnostics";
+            auto script = std::filesystem::u8path(argument);
+            if (script.is_relative()) script = directory / script;
+            script = std::filesystem::absolute(script);
+            const auto runner = directory / L"Invoke-PrismScript.ps1";
+            if (script.extension() != L".ps1" || !std::filesystem::is_regular_file(script) ||
+                !std::filesystem::is_regular_file(runner)) {
+                std::cerr << "Keep diagnostics beside this EXE. Use script gps-ab.ps1 or script <full-path.ps1>.\n";
+                return 4;
+            }
+            wchar_t system[32768]{};
+            if (!GetSystemDirectoryW(system,32768)) return 4;
+            const auto host = std::filesystem::path(system) / L"WindowsPowerShell/v1.0/powershell.exe";
+            std::wstring command = quote(host.wstring()) + L" -NoProfile -File " + quote(runner.wstring()) +
+                L" -ProcessId " + std::to_wstring(processId) + L" -ScriptPath " + quote(script.wstring());
+            STARTUPINFOW startup{}; startup.cb=sizeof(startup); PROCESS_INFORMATION child{};
+            if (!CreateProcessW(host.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,nullptr,&startup,&child)) {
+                std::cerr << "Could not start PowerShell (Windows error " << GetLastError() << ").\n"; return 4;
+            }
+            CloseHandle(child.hThread);
+            WaitForSingleObject(child.hProcess,INFINITE);
+            DWORD code{}; GetExitCodeProcess(child.hProcess,&code); CloseHandle(child.hProcess);
+            return static_cast<int>(code);
+        } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 4; }
+    }
+
+    bool is_script(const std::string& text)
+    {
+        return text == "script" || text.rfind("script ",0)==0;
     }
 }
 
@@ -147,10 +203,12 @@ int main(int argc, char** argv)
 
     if (commandStart < argc)
     {
+        const std::string command = joined_command(commandStart,argc,argv);
+        if (is_script(command)) return run_script(processId,command.substr(6));
         std::string response;
         if (!send_command(
                 processId,
-                joined_command(commandStart, argc, argv), response))
+                command, response))
         {
             std::cerr << "Could not connect to PrismMedia in PID "
                 << processId << ".\n";
@@ -162,7 +220,7 @@ int main(int argc, char** argv)
 
     std::cout << "PrismMedia 4.0.0 Diagnostic Console\n"
         << "Connected target PID: " << processId << "\n"
-        << "Enter help for commands, or quit to close this console.\n\n";
+        << "Enter help for commands, script gps-ab.ps1 for the comparison, or quit.\n\n";
     for (;;)
     {
         std::cout << "prism> " << std::flush;
@@ -173,6 +231,7 @@ int main(int argc, char** argv)
             break;
         if (command.empty())
             continue;
+        if (is_script(command)) { run_script(processId,command.substr(6)); continue; }
 
         std::string response;
         if (!send_command(processId, command, response))

@@ -2,6 +2,8 @@
 #include "diagnostic_console.h"
 
 #include "custom_render_probe.h"
+#include "runtime_draw_probe.h"
+#include "diagnostic_options.h"
 #include "diagnostic_log.h"
 #include "prism/execute_command.h"
 #include "prism/prism.h"
@@ -37,6 +39,12 @@ namespace
     bool g_responseReady{};
     std::string g_command;
     std::string g_response;
+    uint64_t g_requestId{};
+    // Lease state belongs to the telemetry thread; the worker only expires
+    // live captures. Restoration is processed before the next game action.
+    bool g_lease{};
+    uint64_t g_leaseDeadline{};
+    custom_render_probe::fallback_mode_t g_savedFallback{};
 
     std::string trim(std::string value)
     {
@@ -111,10 +119,18 @@ namespace
             if (screen.type != screen_type_t::CUSTOM)
                 continue;
             ++customOrdinal;
+            uintptr_t resource = reinterpret_cast<uintptr_t>(screen.liveTexture);
+            IUnknown* identity{};
+            if (screen.liveTexture && SUCCEEDED(screen.liveTexture->QueryInterface(
+                __uuidof(IUnknown), reinterpret_cast<void**>(&identity))) && identity) {
+                resource = reinterpret_cast<uintptr_t>(identity);
+                identity->Release();
+            }
             output << "\n" << customOrdinal
                 << " id=" << screen.mediaClientId
                 << " enabled=" << (screen.enabled ? 1 : 0)
                 << " live=" << (screen.liveTexture ? 1 : 0)
+                << " resource=0x" << std::hex << resource << std::dec
                 << " texture=" << screen.original_texture;
         }
         if (customOrdinal == 0)
@@ -161,6 +177,8 @@ namespace
     {
         if (!driving)
             return "ERROR Enter the truck before starting a diagnostic run.";
+        if (runtime_draw_probe::active())
+            return "ERROR Stop the live draw capture before starting a reload probe.";
 
         const auto state = custom_render_probe::status();
         if (state.active)
@@ -247,7 +265,61 @@ namespace
                 "  fallback <auto|on|off>\n"
                 "  snapshot\n"
                 "  ping\n"
-                "Only built-in bounded diagnostics are accepted.";
+                "  capabilities\n"
+                "  mark <label>\n"
+                "  lease <begin|renew> <10..300 seconds> | lease end\n"
+                "  capture start <label> <1..30 seconds> [key=value ...]\n"
+                "    slot=0..127 every=1..10000 limit=1..512 budget=1..100000\n"
+                "    width=0..16384 height=0..16384 count=<draw count>\n"
+                "    caller=<game RVA> ps=<pointer> ib=<pointer> resource=<pointer>\n"
+                "    Zero disables width/height/count/address filters. Decimal or 0xhex.\n"
+                "  capture status | capture stop | capture row <index>\n"
+                "  script <file.ps1> (external console command)\n"
+                "PowerShell scripts can compose and repeat these runtime probes.";
+        }
+        if (verb == "capabilities")
+            return "OK host=4.0.0 script=external-powershell captureSchema=1 "
+                "liveDraw=1 reloadProbe=1 fallbackLease=1 arbitraryNativeHooks=0";
+        if (verb == "capture")
+        {
+            std::string args; std::getline(input, args);
+            return runtime_draw_probe::command(trim(args));
+        }
+        if (verb == "mark")
+        {
+            std::string label, extra;
+            if (!(input >> label) || (input >> extra) || !diagnostic_options::label(label))
+                return "ERROR Use mark <1..64 letters/digits/underscore/hyphen>.";
+            diagnostic_log::writef("console", "Marker: %s", label.c_str());
+            return "OK Marked " + label;
+        }
+        if (verb == "lease")
+        {
+            std::string action, seconds, extra;
+            input >> action;
+            if (action == "end")
+            {
+                runtime_draw_probe::shutdown();
+                if (g_lease) {
+                    custom_render_probe::set_fallback_mode(g_savedFallback);
+                    custom_render_probe::abort_capture(effective_fallback(customDisplayActive));
+                    custom_render_probe::update(customDisplayActive);
+                }
+                g_lease = false;
+                return "OK Lease ended; original fallback restored.";
+            }
+            uint64_t duration{};
+            if (!(input >> seconds) || (input >> extra) ||
+                !diagnostic_options::number(seconds, duration) || duration < 10 || duration > 300 ||
+                (action != "begin" && action != "renew"))
+                return "ERROR Use lease begin/renew <10..300 seconds>, or lease end.";
+            if (action == "begin") {
+                if (g_lease) return "ERROR A script lease already exists.";
+                g_savedFallback = custom_render_probe::fallback_mode();
+                g_lease = true;
+            } else if (!g_lease) return "ERROR No active lease to renew.";
+            g_leaseDeadline = GetTickCount64() + duration * 1000;
+            return "OK Lease " + action;
         }
         if (verb == "ping")
             return std::string("OK PrismMedia ") + g_version;
@@ -270,10 +342,14 @@ namespace
         }
         if (verb == "abort")
         {
-            return custom_render_probe::abort_capture(
-                effective_fallback(customDisplayActive))
-                ? "OK Diagnostic capture aborted and temporary hooks removed."
-                : "OK No diagnostic capture was active.";
+            runtime_draw_probe::shutdown();
+            if (g_lease) {
+                custom_render_probe::set_fallback_mode(g_savedFallback);
+                g_lease = false;
+            }
+            custom_render_probe::abort_capture(effective_fallback(customDisplayActive));
+            custom_render_probe::update(customDisplayActive);
+            return "OK Captures stopped; any script fallback lease restored.";
         }
         if (verb == "reset")
         {
@@ -283,6 +359,8 @@ namespace
         }
         if (verb == "fallback")
         {
+            if (runtime_draw_probe::active())
+                return "ERROR Stop the live capture before changing fallback; each capture records one state.";
             std::string value;
             input >> value;
             value = lowercase(value);
@@ -329,16 +407,34 @@ namespace
         return "ERROR Unknown command. Enter help.";
     }
 
+    void send_response(HANDLE pipe, const std::string& response)
+    {
+        DWORD written{};
+        if (!WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr) ||
+            written != response.size()) return;
+        // FlushFileBuffers can block forever when a client exits without
+        // reading. A bounded acknowledgement keeps the watchdog responsive.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (g_running.load() && std::chrono::steady_clock::now() < deadline) {
+            char ack[16]{}; DWORD received{};
+            if (ReadFile(pipe, ack, sizeof(ack), &received, nullptr)) break;
+            if (GetLastError() != ERROR_NO_DATA) break;
+            runtime_draw_probe::tick();
+            Sleep(kPipePollMilliseconds);
+        }
+    }
+
     void worker_loop()
     {
         while (g_running.load(std::memory_order_acquire))
         {
+            runtime_draw_probe::tick();
             const HANDLE pipe = CreateNamedPipeW(
                 g_pipeName.c_str(),
                 PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT |
                     PIPE_REJECT_REMOTE_CLIENTS,
-                1, 8192, 8192, 0, nullptr);
+                1, 65536, 8192, 0, nullptr);
             if (pipe == INVALID_HANDLE_VALUE)
             {
                 diagnostic_log::writef(
@@ -350,6 +446,7 @@ namespace
             bool connected{};
             while (g_running.load(std::memory_order_acquire) && !connected)
             {
+                runtime_draw_probe::tick();
                 connected = ConnectNamedPipe(pipe, nullptr) != FALSE;
                 if (!connected)
                 {
@@ -365,6 +462,7 @@ namespace
             std::string command;
             while (g_running.load(std::memory_order_acquire) && connected)
             {
+                runtime_draw_probe::tick();
                 char buffer[kMaximumCommandBytes]{};
                 DWORD read{};
                 if (ReadFile(
@@ -388,16 +486,12 @@ namespace
             {
                 const std::string readOnlyVerb = lowercase(trim(command));
                 if (readOnlyVerb == "status" || readOnlyVerb == "ping" ||
-                    readOnlyVerb == "help")
+                    readOnlyVerb == "help" || readOnlyVerb == "capabilities" ||
+                    readOnlyVerb == "capture status" || readOnlyVerb.rfind("capture row ", 0) == 0)
                 {
                     const std::string response = execute_command(
                         readOnlyVerb, false, false);
-                    DWORD written{};
-                    WriteFile(
-                        pipe, response.data(),
-                        static_cast<DWORD>(response.size()),
-                        &written, nullptr);
-                    FlushFileBuffers(pipe);
+                    send_response(pipe, response);
                     DisconnectNamedPipe(pipe);
                     CloseHandle(pipe);
                     continue;
@@ -405,25 +499,27 @@ namespace
 
                 std::unique_lock<std::mutex> lock(g_requestMutex);
                 g_command = trim(command);
+                ++g_requestId;
                 g_response.clear();
                 g_responseReady = false;
                 g_requestPending = true;
-                const bool completed = g_requestCompleted.wait_for(
-                    lock, kCommandTimeout, [] {
-                        return g_responseReady || !g_running.load();
-                    });
+                const auto deadline = std::chrono::steady_clock::now() + kCommandTimeout;
+                while (!g_responseReady && g_running.load() && std::chrono::steady_clock::now() < deadline) {
+                    g_requestCompleted.wait_for(lock, std::chrono::milliseconds(kPipePollMilliseconds));
+                    lock.unlock(); runtime_draw_probe::tick(); lock.lock();
+                }
+                const bool completed = g_responseReady;
                 const std::string response = completed && g_responseReady
                     ? g_response
-                    : "ERROR Plugin command timed out; check status before "
-                      "retrying because the game thread may have resumed.";
+                    : (g_requestPending
+                        ? "ERROR Game thread unavailable; queued command cancelled. Return to truck and retry."
+                        : "ERROR Command already started but response timed out. Check status before retrying.");
+                // A timed-out queued action must never execute after the user
+                // returns to the truck. In-flight responses carry a generation.
+                g_requestPending = false;
                 lock.unlock();
 
-                DWORD written{};
-                WriteFile(
-                    pipe, response.data(),
-                    static_cast<DWORD>(response.size()),
-                    &written, nullptr);
-                FlushFileBuffers(pipe);
+                send_response(pipe, response);
             }
             DisconnectNamedPipe(pipe);
             CloseHandle(pipe);
@@ -443,18 +539,28 @@ namespace diagnostic_console
         g_worker = std::thread(worker_loop);
         diagnostic_log::writef(
             "console",
-            "Restricted runtime diagnostic console ready (pid=%lu).",
+            "Scriptable runtime diagnostic host ready (protocol=2 liveDraw=1 pid=%lu).",
             GetCurrentProcessId());
     }
 
     void update(bool driving, bool customDisplayActive)
     {
+        if (g_lease && GetTickCount64() >= g_leaseDeadline) {
+            runtime_draw_probe::shutdown();
+            custom_render_probe::set_fallback_mode(g_savedFallback);
+            custom_render_probe::abort_capture(effective_fallback(customDisplayActive));
+            custom_render_probe::update(customDisplayActive);
+            g_lease = false;
+            diagnostic_log::write("console", "Script lease expired; original fallback restored.");
+        }
         std::string command;
+        uint64_t requestId{};
         {
             std::lock_guard<std::mutex> lock(g_requestMutex);
             if (!g_requestPending)
                 return;
             command = g_command;
+            requestId = g_requestId;
             g_requestPending = false;
         }
 
@@ -462,6 +568,7 @@ namespace diagnostic_console
             command, driving, customDisplayActive);
         {
             std::lock_guard<std::mutex> lock(g_requestMutex);
+            if (requestId != g_requestId) return;
             g_response = response;
             g_responseReady = true;
         }
@@ -479,6 +586,8 @@ namespace diagnostic_console
         g_requestCompleted.notify_all();
         if (g_worker.joinable())
             g_worker.join();
+        runtime_draw_probe::shutdown();
+        g_lease = false;
         std::lock_guard<std::mutex> lock(g_requestMutex);
         g_requestPending = false;
         g_responseReady = false;

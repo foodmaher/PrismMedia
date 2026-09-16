@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <intrin.h>
+#include <mutex>
 
 #include <MinHook/MinHook.h>
 
@@ -11,6 +13,7 @@ using namespace scs_logging;
 
 #include "../diagnostic_log.h"
 #include "../custom_render_probe.h"
+#include "../runtime_draw_probe.h"
 #include "../engine_standby.h"
 #include "../screens.h"
 #include "../telemetry_state.h"
@@ -58,6 +61,8 @@ static void* g_drawIndexedInstancedIndirectAddress{};
 static void* g_drawInstancedIndirectAddress{};
 static bool g_customProbeHooksCreated{};
 static bool g_customProbeHooksEnabled{};
+static std::mutex g_probeHookMutex;
+static bool g_legacyProbeRequested{}, g_liveProbeRequested{};
 
 namespace
 {
@@ -287,6 +292,8 @@ void __stdcall HookedDrawIndexed(
     INT baseVertexLocation)
 {
     custom_render_probe::notify_draw("DrawIndexed");
+    runtime_draw_probe::draw(context, "DrawIndexed", reinterpret_cast<uintptr_t>(_ReturnAddress()),
+        indexCount, startIndexLocation, baseVertexLocation);
     DrawIndexed_Original(
         context, indexCount, startIndexLocation, baseVertexLocation);
 }
@@ -297,6 +304,8 @@ void __stdcall HookedDraw(
     UINT startVertexLocation)
 {
     custom_render_probe::notify_draw("Draw");
+    runtime_draw_probe::draw(context, "Draw", reinterpret_cast<uintptr_t>(_ReturnAddress()),
+        vertexCount, startVertexLocation, 0);
     Draw_Original(context, vertexCount, startVertexLocation);
 }
 
@@ -309,6 +318,8 @@ void __stdcall HookedDrawIndexedInstanced(
     UINT startInstanceLocation)
 {
     custom_render_probe::notify_draw("DrawIndexedInstanced");
+    runtime_draw_probe::draw(context, "DrawIndexedInstanced", reinterpret_cast<uintptr_t>(_ReturnAddress()),
+        indexCountPerInstance, startIndexLocation, baseVertexLocation, instanceCount, startInstanceLocation);
     DrawIndexedInstanced_Original(
         context, indexCountPerInstance, instanceCount,
         startIndexLocation, baseVertexLocation, startInstanceLocation);
@@ -322,6 +333,8 @@ void __stdcall HookedDrawInstanced(
     UINT startInstanceLocation)
 {
     custom_render_probe::notify_draw("DrawInstanced");
+    runtime_draw_probe::draw(context, "DrawInstanced", reinterpret_cast<uintptr_t>(_ReturnAddress()),
+        vertexCountPerInstance, startVertexLocation, 0, instanceCount, startInstanceLocation);
     DrawInstanced_Original(
         context, vertexCountPerInstance, instanceCount,
         startVertexLocation, startInstanceLocation);
@@ -330,6 +343,7 @@ void __stdcall HookedDrawInstanced(
 void __stdcall HookedDrawAuto(ID3D11DeviceContext* context)
 {
     custom_render_probe::notify_draw("DrawAuto");
+    runtime_draw_probe::draw(context, "DrawAuto", reinterpret_cast<uintptr_t>(_ReturnAddress()), 0, 0, 0);
     DrawAuto_Original(context);
 }
 
@@ -339,6 +353,8 @@ void __stdcall HookedDrawIndexedInstancedIndirect(
     UINT alignedByteOffset)
 {
     custom_render_probe::notify_draw("DrawIndexedIndirect");
+    runtime_draw_probe::draw(context, "DrawIndexedIndirect", reinterpret_cast<uintptr_t>(_ReturnAddress()),
+        0, alignedByteOffset, 0, 0, 0, reinterpret_cast<uintptr_t>(arguments));
     DrawIndexedInstancedIndirect_Original(
         context, arguments, alignedByteOffset);
 }
@@ -349,6 +365,8 @@ void __stdcall HookedDrawInstancedIndirect(
     UINT alignedByteOffset)
 {
     custom_render_probe::notify_draw("DrawInstancedIndirect");
+    runtime_draw_probe::draw(context, "DrawInstancedIndirect", reinterpret_cast<uintptr_t>(_ReturnAddress()),
+        0, alignedByteOffset, 0, 0, 0, reinterpret_cast<uintptr_t>(arguments));
     DrawInstancedIndirect_Original(context, arguments, alignedByteOffset);
 }
 
@@ -1024,7 +1042,7 @@ namespace dx11::create_texture_2d {
         return true;
 	}
 
-    bool set_custom_probe_hooks_enabled(bool enabled)
+    static bool apply_probe_hooks(bool enabled)
     {
         if (!g_customProbeHooksCreated)
             return !enabled;
@@ -1068,12 +1086,35 @@ namespace dx11::create_texture_2d {
             return true;
         }
 
-        for (void* address : addresses)
-            MH_DisableHook(address);
+        bool disabled = true;
+        for (void* address : addresses) {
+            const MH_STATUS result = MH_DisableHook(address);
+            if (result != MH_OK && result != MH_ERROR_DISABLED) disabled = false;
+        }
+        if (!disabled) {
+            diagnostic_log::write("error", "Temporary D3D hook cleanup incomplete.");
+            return false;
+        }
         g_customProbeHooksEnabled = false;
         diagnostic_log::write(
             "probe",
             "Temporary high-frequency Direct3D diagnostic hooks disabled.");
+        return true;
+    }
+
+    bool set_custom_probe_hooks_enabled(bool enabled)
+    {
+        std::lock_guard<std::mutex> lock(g_probeHookMutex);
+        if (!apply_probe_hooks(enabled || g_liveProbeRequested)) return false;
+        g_legacyProbeRequested = enabled;
+        return true;
+    }
+
+    bool set_live_probe_hooks_enabled(bool enabled)
+    {
+        std::lock_guard<std::mutex> lock(g_probeHookMutex);
+        if (!apply_probe_hooks(enabled || g_legacyProbeRequested)) return false;
+        g_liveProbeRequested = enabled;
         return true;
     }
 }

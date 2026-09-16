@@ -9,6 +9,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Validate runtime diagnostic host
+        shell: powershell
+        run: |
+          cl /nologo /EHsc /std:c++17 tests\diagnostic_options_test.cpp /Fe:diagnostic-options-test.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Options test compilation failed' }
+          & .\diagnostic-options-test.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Options tests failed' }
+          cl /nologo /EHsc /std:c++17 tests\runtime_draw_probe_test.cpp PrismTextureStreamerFB\runtime_draw_probe.cpp /Fe:runtime-draw-test.exe /link d3d11.lib
+          if ($LASTEXITCODE -ne 0) { throw 'WARP capture test compilation failed' }
+          $json = & .\runtime-draw-test.exe
+          if ($LASTEXITCODE -ne 0) { throw 'WARP capture tests failed' }
+          $row = $json | ConvertFrom-Json
+          if ($row.texture.width -ne 64 -or $row.hits -ne 2 -or $row.psSrvs.Count -ne 128) { throw 'Invalid capture JSON' }
+          & .\tests\diagnostic_scripts_test.ps1
       - name: Verify bundled libraries
         shell: pwsh
         run: |
@@ -30,6 +47,7 @@ jobs:
           New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
           Copy-Item 'x64\Release\PrismMedia.dll' $Package
           Copy-Item 'x64\Release\PrismDiagnosticConsole.exe' $Package
+          Copy-Item 'diagnostics' $Package -Recurse
           Copy-Item "$Client\*" $Runtime -Recurse
           Get-ChildItem $Runtime -Recurse -File | Where-Object { $_.Extension -in '.pdb','.xml' } | Remove-Item -Force
           $Bridge = "$Runtime\SPF-OPTIONAL\PrismCameraBridge"
@@ -48,7 +66,9 @@ jobs:
           Open the UI with Ctrl+F8.
 
           PrismDiagnosticConsole.exe is optional. Start the game first, then
-          run the console from anywhere. See DIAGNOSTIC-CONSOLE.md.
+          run the console. Keep its diagnostics folder beside the EXE.
+          Enter: script gps-ab.ps1
+          See DIAGNOSTIC-CONSOLE.md for script and capture instructions.
           "@ | Set-Content "$Package\INSTALL.txt"
       - uses: actions/upload-artifact@v4
         with:

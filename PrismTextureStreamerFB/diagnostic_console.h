@@ -2,8 +2,8 @@
 
 namespace diagnostic_console
 {
-    // Starts a local-only named-pipe command server. Commands are executed by
-    // update() on the telemetry thread, never on the pipe worker.
+    // Local named-pipe host: game mutations execute on telemetry; read-only
+    // status/results and the live-capture deadline watchdog use the worker.
     void start();
     void update(bool driving, bool customDisplayActive);
     void stop();

@@ -41,6 +41,9 @@
     <ClCompile Include="diagnostic_console.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="per_draw_router.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="diagnostic_log.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -110,6 +113,9 @@
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="diagnostic_console.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="per_draw_router.h">
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="engine_standby.h">

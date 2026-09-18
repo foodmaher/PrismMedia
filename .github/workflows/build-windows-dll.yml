@@ -67,8 +67,9 @@ jobs:
 
           PrismDiagnosticConsole.exe is optional. Start the game first, then
           run the console. Keep its diagnostics folder beside the EXE.
-          Enter: script gps-ab.ps1
-          See DIAGNOSTIC-CONSOLE.md for script and capture instructions.
+          Enter: route status
+          Per-display routing is automatic for one enabled custom display.
+          See DIAGNOSTIC-CONSOLE.md for recovery and capture instructions.
           "@ | Set-Content "$Package\INSTALL.txt"
       - uses: actions/upload-artifact@v4
         with:

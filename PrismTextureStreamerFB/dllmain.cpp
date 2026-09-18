@@ -22,6 +22,7 @@
 #include "custom_render_probe.h"
 #include "diagnostic_log.h"
 #include "diagnostic_console.h"
+#include "per_draw_router.h"
 #include "environment_audio.h"
 #include "thread_scheduling.h"
 #include "update_checker.h"
@@ -727,6 +728,8 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
 
     diagnostic_console::update(
         g_telemetry_driving.load(std::memory_order_acquire), has_custom);
+    per_draw_router::update(
+        g_telemetry_driving.load(std::memory_order_acquire));
     custom_render_probe::update(has_custom);
 }
 
@@ -840,6 +843,7 @@ SCSAPI_VOID scs_telemetry_shutdown()
 {
     diagnostic_log::write("session", "Plugin shutdown started.");
     diagnostic_console::stop();
+    per_draw_router::shutdown();
     custom_render_probe::shutdown();
     sources::ShutdownMediaClient();
     update_checker::shutdown();

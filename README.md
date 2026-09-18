@@ -1,12 +1,23 @@
 # PrismMedia 4.0.0
 
-This revision includes the reusable diagnostic host documented in
-[DIAGNOSTIC-CONSOLE.md](DIAGNOSTIC-CONSOLE.md). The console loads external
-PowerShell test scripts and captures live draw state without a truck reload.
-Start with `script gps-ab.ps1` to compare fallback on/off/on while recording
-custom-media and native-smartphone observations separately. Edit and rerun
-scripts without recompiling; new native hook types still need compiled code.
-This is diagnostic source, not a confirmed black-screen fix.
+This revision includes the first per-display draw-routing fix identified by the
+live isolation captures. With one enabled custom display, PrismMedia briefly
+learns that display's exact six-index draw while the compatibility branch is
+visible, disables the global fallback, and substitutes the media SRV only for
+that learned draw. The native GPS texture is restored immediately afterward,
+so unconfigured smartphone and accessory screens remain game-controlled.
+
+Training and activation are automatic after entering the truck. No diagnostic
+console command or texture reload is required. `route status` reports
+`training`, `active`, or the safe compatibility fallback. A texture identity or
+route-sequence change retrains automatically. If learning fails within 12
+seconds, PrismMedia retains the previous compatibility behavior instead of
+leaving the configured display blank. This is the actual fix candidate; its
+final ETS2 confirmation still requires one in-game run.
+
+The reusable diagnostic host remains available in
+[DIAGNOSTIC-CONSOLE.md](DIAGNOSTIC-CONSOLE.md). External PowerShell tests can
+still be edited and rerun without recompiling.
 
 This 4.0.0 source revision includes the guarded combined one-cycle test
 described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md). One reload now
@@ -20,6 +31,17 @@ PrismMedia streams YouTube, Spotify Web, local media, direct streams,
 or a desktop window onto supported ETS2/ATS truck displays.
 
 ## Current combined-test revision
+
+- The per-display router is enabled by default for exactly one active custom
+  display. Training temporarily uses slot 6 and the configured display's COM
+  resource identity. Active routing matches the learned index/vertex buffers,
+  draw arguments, topology and pixel shader, binds media for that draw only,
+  calls the original draw, and restores the native SRV immediately.
+- Normal active routing retains only the `DrawIndexed` detour. A fast
+  count/start/base check rejects unrelated draws before locking or querying D3D
+  state. The PS-resource hook is used only during the short training window.
+- More than one enabled custom display currently retains the legacy
+  compatibility fallback; the router will not guess between several targets.
 
 - System now includes a dedicated **Run combined one-cycle test** action while
   driving. It requires an active old live custom texture and arms the bounded
@@ -144,6 +166,10 @@ or a desktop window onto supported ETS2/ATS truck displays.
 3. Keep the DLL directly in `plugins`; keep the helper files in the adjacent
    `PrismMedia` folder.
 4. Open the UI with `Ctrl+F8` or the configured gamepad chord.
+5. Enter the truck and keep the configured custom screen visible for a few
+   seconds. It should continue showing media while unconfigured GPS accessories
+   show their original game content. The optional console command `route status`
+   should then report `active` and an increasing `routed` count.
 
 `config-recommended.ini` is a sanitized copy of the recommended 4.0 profile.
 It contains no media URL or account data.

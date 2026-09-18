@@ -14,6 +14,7 @@ using namespace scs_logging;
 #include "../diagnostic_log.h"
 #include "../custom_render_probe.h"
 #include "../runtime_draw_probe.h"
+#include "../per_draw_router.h"
 #include "../engine_standby.h"
 #include "../screens.h"
 #include "../telemetry_state.h"
@@ -62,7 +63,8 @@ static void* g_drawInstancedIndirectAddress{};
 static bool g_customProbeHooksCreated{};
 static bool g_customProbeHooksEnabled{};
 static std::mutex g_probeHookMutex;
-static bool g_legacyProbeRequested{}, g_liveProbeRequested{};
+static bool g_legacyProbeRequested{}, g_liveProbeRequested{},
+    g_perDrawRouterRequested{}, g_perDrawRouterTraining{};
 
 namespace
 {
@@ -283,6 +285,8 @@ void __stdcall HookedPSSetShaderResources(
         context, startSlot, viewCount, views);
     custom_render_probe::notify_pixel_shader_resources(
         startSlot, viewCount, views);
+    per_draw_router::notify_pixel_shader_resources(
+        context, startSlot, viewCount, views);
 }
 
 void __stdcall HookedDrawIndexed(
@@ -294,6 +298,10 @@ void __stdcall HookedDrawIndexed(
     custom_render_probe::notify_draw("DrawIndexed");
     runtime_draw_probe::draw(context, "DrawIndexed", reinterpret_cast<uintptr_t>(_ReturnAddress()),
         indexCount, startIndexLocation, baseVertexLocation);
+    if (per_draw_router::draw_indexed(
+            context, indexCount, startIndexLocation, baseVertexLocation,
+            DrawIndexed_Original))
+        return;
     DrawIndexed_Original(
         context, indexCount, startIndexLocation, baseVertexLocation);
 }
@@ -1042,12 +1050,13 @@ namespace dx11::create_texture_2d {
         return true;
 	}
 
-    static bool apply_probe_hooks(bool enabled)
+    static bool apply_probe_hooks(
+        bool legacy, bool live, bool router, bool routerTraining)
     {
+        const bool diagnostics = legacy || live;
+        const bool any = diagnostics || router;
         if (!g_customProbeHooksCreated)
-            return !enabled;
-        if (g_customProbeHooksEnabled == enabled)
-            return true;
+            return !any;
 
         void* const addresses[] = {
             g_createShaderResourceViewAddress,
@@ -1060,52 +1069,59 @@ namespace dx11::create_texture_2d {
             g_drawIndexedInstancedIndirectAddress,
             g_drawInstancedIndirectAddress
         };
-        if (enabled)
+        const bool desired[] = {
+            diagnostics,
+            diagnostics || (router && routerTraining),
+            diagnostics || router,
+            diagnostics,
+            diagnostics,
+            diagnostics,
+            diagnostics,
+            diagnostics,
+            diagnostics
+        };
+        for (size_t index = 0; index < _countof(addresses); ++index)
         {
-            for (void* address : addresses)
+            const MH_STATUS result = desired[index]
+                ? MH_EnableHook(addresses[index])
+                : MH_DisableHook(addresses[index]);
+            const bool accepted = desired[index]
+                ? (result == MH_OK || result == MH_ERROR_ENABLED)
+                : (result == MH_OK || result == MH_ERROR_DISABLED);
+            if (!accepted)
             {
-                const MH_STATUS result = MH_EnableHook(address);
-                if (result != MH_OK && result != MH_ERROR_ENABLED)
-                {
-                    for (void* rollback : addresses)
-                        MH_DisableHook(rollback);
-                    diagnostic_log::writef(
-                        "error",
-                        "Could not enable the temporary targeted-test "
-                        "hooks (MinHook status %d).",
-                        static_cast<int>(result));
-                    g_customProbeHooksEnabled = false;
-                    return false;
-                }
+                diagnostic_log::writef("error",
+                    "Could not update D3D route hook %llu (MinHook status %d).",
+                    static_cast<unsigned long long>(index),
+                    static_cast<int>(result));
+                return false;
             }
-            g_customProbeHooksEnabled = true;
+        }
+        if (g_customProbeHooksEnabled != any)
+        {
+            g_customProbeHooksEnabled = any;
+            if (any)
+            {
             diagnostic_log::write(
                 "probe",
-                "Temporary CreateSRV/PSSetSRV/Draw diagnostic hooks "
-                "enabled for this one capture.");
-            return true;
+                    diagnostics
+                        ? "Temporary CreateSRV/PSSetSRV/Draw diagnostic hooks enabled."
+                        : "Low-overhead per-display DrawIndexed routing hook enabled.");
+            }
+            else
+            {
+                diagnostic_log::write(
+                    "probe", "Temporary high-frequency Direct3D hooks disabled.");
+            }
         }
-
-        bool disabled = true;
-        for (void* address : addresses) {
-            const MH_STATUS result = MH_DisableHook(address);
-            if (result != MH_OK && result != MH_ERROR_DISABLED) disabled = false;
-        }
-        if (!disabled) {
-            diagnostic_log::write("error", "Temporary D3D hook cleanup incomplete.");
-            return false;
-        }
-        g_customProbeHooksEnabled = false;
-        diagnostic_log::write(
-            "probe",
-            "Temporary high-frequency Direct3D diagnostic hooks disabled.");
         return true;
     }
 
     bool set_custom_probe_hooks_enabled(bool enabled)
     {
         std::lock_guard<std::mutex> lock(g_probeHookMutex);
-        if (!apply_probe_hooks(enabled || g_liveProbeRequested)) return false;
+        if (!apply_probe_hooks(enabled, g_liveProbeRequested,
+                g_perDrawRouterRequested, g_perDrawRouterTraining)) return false;
         g_legacyProbeRequested = enabled;
         return true;
     }
@@ -1113,8 +1129,19 @@ namespace dx11::create_texture_2d {
     bool set_live_probe_hooks_enabled(bool enabled)
     {
         std::lock_guard<std::mutex> lock(g_probeHookMutex);
-        if (!apply_probe_hooks(enabled || g_legacyProbeRequested)) return false;
+        if (!apply_probe_hooks(g_legacyProbeRequested, enabled,
+                g_perDrawRouterRequested, g_perDrawRouterTraining)) return false;
         g_liveProbeRequested = enabled;
+        return true;
+    }
+
+    bool set_per_draw_router_hooks_enabled(bool enabled, bool training)
+    {
+        std::lock_guard<std::mutex> lock(g_probeHookMutex);
+        if (!apply_probe_hooks(g_legacyProbeRequested, g_liveProbeRequested,
+                enabled, enabled && training)) return false;
+        g_perDrawRouterRequested = enabled;
+        g_perDrawRouterTraining = enabled && training;
         return true;
     }
 }

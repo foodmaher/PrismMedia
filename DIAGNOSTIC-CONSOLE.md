@@ -1,9 +1,22 @@
 # PrismMedia 4.0.0 — reusable diagnostic host
 
-This adds live draw captures and reloadable PowerShell scripts. It is a
-diagnostic update, not a confirmed fix for the separate smartphone GPS.
-The custom media display working while the native GPS is black is the problem
-being investigated. The global fallback remains a comparison control.
+This host retains live draw captures and reloadable PowerShell scripts. The
+4.0.0 plugin now also contains the per-display fix candidate derived from the
+completed isolation session. Routing is automatic; the console is optional for
+status, recovery, and future diagnostics.
+
+For the normal validation, start the game, enter the truck, keep the configured
+custom screen visible for a few seconds, then run:
+
+```text
+route status
+```
+
+Expected: `enabled=1`, `detail=active`, and a `routed` count that increases.
+The configured screen should show media while every unconfigured GPS/smartphone
+screen shows its original game texture. `route retrain` safely repeats the
+automatic learning window. `route off` disables per-display routing and leaves
+the selected fallback mode available for diagnostics; `route on` enables it.
 
 ## Install once, then change scripts
 
@@ -74,6 +87,11 @@ filters. Scripts change test logic; they cannot install an arbitrary new native
 detour. A genuinely new low-level hook still needs compiled code. There is no
 hot-loaded native-DLL or arbitrary game-memory patching interface in this host.
 
+After the first `gps-ab.ps1` session, `script gps-isolate.ps1` derives the
+configured custom screen's geometry and captures the same geometry under
+fallback off/on. It is a narrower follow-up for sessions where the broad survey
+reaches its row/budget limits. It needs no plugin rebuild.
+
 ## Live capture commands
 
 ```text
@@ -126,7 +144,8 @@ State inspection has temporary overhead; these captures are not FPS benchmarks.
 
 ## Other commands retained
 
-`status`, `displays`, `snapshot`, `fallback auto|on|off`, `run auto|<display-id>`,
+`status`, `displays`, `snapshot`, `route status|on|off|retrain`,
+`fallback auto|on|off`, `run auto|<display-id>`,
 `abort`, `reset`, `set release_window_us <1000..5000000>`, `ping`, `help`, `quit`.
 `run` is the older branch/list/Release diagnostic and requests a texture reload;
 it is not used by the new comparison. Run one type of capture at a time.
@@ -137,4 +156,5 @@ manages these automatically.
 
 The Windows workflow compiles the full solution and runs a WARP capture smoke
 test, parser checks and a named-pipe/script test before packaging. Actual ETS2
-behavior and smartphone mapping still require the in-game comparison.
+presentation still requires one in-game validation because those tests cannot
+render a truck accessory model.

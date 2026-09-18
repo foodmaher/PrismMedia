@@ -3,6 +3,7 @@
 
 #include "custom_render_probe.h"
 #include "runtime_draw_probe.h"
+#include "per_draw_router.h"
 #include "diagnostic_options.h"
 #include "diagnostic_log.h"
 #include "prism/execute_command.h"
@@ -263,6 +264,7 @@ namespace
                 "  reset\n"
                 "  set release_window_us <1000..5000000>\n"
                 "  fallback <auto|on|off>\n"
+                "  route <status|on|off|retrain>\n"
                 "  snapshot\n"
                 "  ping\n"
                 "  capabilities\n"
@@ -279,7 +281,8 @@ namespace
         }
         if (verb == "capabilities")
             return "OK host=4.0.0 script=external-powershell captureSchema=1 "
-                "liveDraw=1 reloadProbe=1 fallbackLease=1 arbitraryNativeHooks=0";
+                "liveDraw=1 reloadProbe=1 fallbackLease=1 perDrawRoute=1 "
+                "arbitraryNativeHooks=0";
         if (verb == "capture")
         {
             std::string args; std::getline(input, args);
@@ -332,6 +335,30 @@ namespace
             log_display_snapshots();
             return "OK Display routing snapshot written to PrismMedia.log.";
         }
+        if (verb == "route")
+        {
+            std::string action, extra;
+            input >> action;
+            action = lowercase(action);
+            if (input >> extra)
+                return "ERROR Use route status, on, off, or retrain.";
+            if (action.empty() || action == "status")
+            {
+                const auto route = per_draw_router::status();
+                std::ostringstream output;
+                output << "OK enabled=" << (route.enabled ? 1 : 0)
+                    << " display=" << (route.displayId.empty() ? "none" : route.displayId)
+                    << " trained=" << route.trainedDraws
+                    << " routed=" << route.routedDraws
+                    << " detail=" << route.detail;
+                return output.str();
+            }
+            if (action == "on") per_draw_router::set_enabled(true);
+            else if (action == "off") per_draw_router::set_enabled(false);
+            else if (action == "retrain") per_draw_router::retrain();
+            else return "ERROR Use route status, on, off, or retrain.";
+            return "OK Per-display route " + action + " accepted.";
+        }
         if (verb == "run")
         {
             std::string display;
@@ -366,16 +393,19 @@ namespace
             value = lowercase(value);
             if (value == "auto")
             {
+                per_draw_router::set_enabled(true);
                 custom_render_probe::set_fallback_mode(
                     custom_render_probe::fallback_mode_t::automatic);
             }
             else if (value == "on")
             {
+                per_draw_router::set_enabled(false);
                 custom_render_probe::set_fallback_mode(
                     custom_render_probe::fallback_mode_t::forced_on);
             }
             else if (value == "off")
             {
+                per_draw_router::set_enabled(false);
                 custom_render_probe::set_fallback_mode(
                     custom_render_probe::fallback_mode_t::forced_off);
             }

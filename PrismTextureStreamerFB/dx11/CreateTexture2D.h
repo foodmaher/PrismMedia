@@ -8,4 +8,5 @@ namespace dx11::create_texture_2d {
 	// same hook overhead as the regular 4.0.0 build.
 	bool set_custom_probe_hooks_enabled(bool enabled);
 	bool set_live_probe_hooks_enabled(bool enabled);
+	bool set_per_draw_router_hooks_enabled(bool enabled, bool training);
 }

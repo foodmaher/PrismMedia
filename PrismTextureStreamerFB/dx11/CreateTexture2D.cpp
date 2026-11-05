@@ -65,6 +65,8 @@ static bool g_customProbeHooksEnabled{};
 static std::mutex g_probeHookMutex;
 static bool g_legacyProbeRequested{}, g_liveProbeRequested{},
     g_perDrawRouterRequested{}, g_perDrawRouterTraining{};
+static unsigned g_perDrawRouterKind{
+    static_cast<unsigned>(per_draw_router::draw_kind_t::none) };
 
 namespace
 {
@@ -298,10 +300,18 @@ void __stdcall HookedDrawIndexed(
     custom_render_probe::notify_draw("DrawIndexed");
     runtime_draw_probe::draw(context, "DrawIndexed", reinterpret_cast<uintptr_t>(_ReturnAddress()),
         indexCount, startIndexLocation, baseVertexLocation);
-    if (per_draw_router::draw_indexed(
-            context, indexCount, startIndexLocation, baseVertexLocation,
-            DrawIndexed_Original))
+    per_draw_router::route_scope_t route;
+    if (per_draw_router::begin_draw(
+            context,
+            { per_draw_router::draw_kind_t::indexed, indexCount,
+                startIndexLocation, baseVertexLocation },
+            route))
+    {
+        DrawIndexed_Original(
+            context, indexCount, startIndexLocation, baseVertexLocation);
+        per_draw_router::end_draw(context, route);
         return;
+    }
     DrawIndexed_Original(
         context, indexCount, startIndexLocation, baseVertexLocation);
 }
@@ -314,6 +324,17 @@ void __stdcall HookedDraw(
     custom_render_probe::notify_draw("Draw");
     runtime_draw_probe::draw(context, "Draw", reinterpret_cast<uintptr_t>(_ReturnAddress()),
         vertexCount, startVertexLocation, 0);
+    per_draw_router::route_scope_t route;
+    if (per_draw_router::begin_draw(
+            context,
+            { per_draw_router::draw_kind_t::draw, vertexCount,
+                startVertexLocation },
+            route))
+    {
+        Draw_Original(context, vertexCount, startVertexLocation);
+        per_draw_router::end_draw(context, route);
+        return;
+    }
     Draw_Original(context, vertexCount, startVertexLocation);
 }
 
@@ -328,6 +349,20 @@ void __stdcall HookedDrawIndexedInstanced(
     custom_render_probe::notify_draw("DrawIndexedInstanced");
     runtime_draw_probe::draw(context, "DrawIndexedInstanced", reinterpret_cast<uintptr_t>(_ReturnAddress()),
         indexCountPerInstance, startIndexLocation, baseVertexLocation, instanceCount, startInstanceLocation);
+    per_draw_router::route_scope_t route;
+    if (per_draw_router::begin_draw(
+            context,
+            { per_draw_router::draw_kind_t::indexed_instanced,
+                indexCountPerInstance, startIndexLocation, baseVertexLocation,
+                instanceCount, startInstanceLocation },
+            route))
+    {
+        DrawIndexedInstanced_Original(
+            context, indexCountPerInstance, instanceCount,
+            startIndexLocation, baseVertexLocation, startInstanceLocation);
+        per_draw_router::end_draw(context, route);
+        return;
+    }
     DrawIndexedInstanced_Original(
         context, indexCountPerInstance, instanceCount,
         startIndexLocation, baseVertexLocation, startInstanceLocation);
@@ -343,6 +378,20 @@ void __stdcall HookedDrawInstanced(
     custom_render_probe::notify_draw("DrawInstanced");
     runtime_draw_probe::draw(context, "DrawInstanced", reinterpret_cast<uintptr_t>(_ReturnAddress()),
         vertexCountPerInstance, startVertexLocation, 0, instanceCount, startInstanceLocation);
+    per_draw_router::route_scope_t route;
+    if (per_draw_router::begin_draw(
+            context,
+            { per_draw_router::draw_kind_t::instanced,
+                vertexCountPerInstance, startVertexLocation, 0,
+                instanceCount, startInstanceLocation },
+            route))
+    {
+        DrawInstanced_Original(
+            context, vertexCountPerInstance, instanceCount,
+            startVertexLocation, startInstanceLocation);
+        per_draw_router::end_draw(context, route);
+        return;
+    }
     DrawInstanced_Original(
         context, vertexCountPerInstance, instanceCount,
         startVertexLocation, startInstanceLocation);
@@ -352,6 +401,14 @@ void __stdcall HookedDrawAuto(ID3D11DeviceContext* context)
 {
     custom_render_probe::notify_draw("DrawAuto");
     runtime_draw_probe::draw(context, "DrawAuto", reinterpret_cast<uintptr_t>(_ReturnAddress()), 0, 0, 0);
+    per_draw_router::route_scope_t route;
+    if (per_draw_router::begin_draw(
+            context, { per_draw_router::draw_kind_t::draw_auto }, route))
+    {
+        DrawAuto_Original(context);
+        per_draw_router::end_draw(context, route);
+        return;
+    }
     DrawAuto_Original(context);
 }
 
@@ -363,6 +420,19 @@ void __stdcall HookedDrawIndexedInstancedIndirect(
     custom_render_probe::notify_draw("DrawIndexedIndirect");
     runtime_draw_probe::draw(context, "DrawIndexedIndirect", reinterpret_cast<uintptr_t>(_ReturnAddress()),
         0, alignedByteOffset, 0, 0, 0, reinterpret_cast<uintptr_t>(arguments));
+    per_draw_router::route_scope_t route;
+    if (per_draw_router::begin_draw(
+            context,
+            { per_draw_router::draw_kind_t::indexed_indirect, 0,
+                alignedByteOffset, 0, 0, 0,
+                reinterpret_cast<uintptr_t>(arguments) },
+            route))
+    {
+        DrawIndexedInstancedIndirect_Original(
+            context, arguments, alignedByteOffset);
+        per_draw_router::end_draw(context, route);
+        return;
+    }
     DrawIndexedInstancedIndirect_Original(
         context, arguments, alignedByteOffset);
 }
@@ -375,6 +445,18 @@ void __stdcall HookedDrawInstancedIndirect(
     custom_render_probe::notify_draw("DrawInstancedIndirect");
     runtime_draw_probe::draw(context, "DrawInstancedIndirect", reinterpret_cast<uintptr_t>(_ReturnAddress()),
         0, alignedByteOffset, 0, 0, 0, reinterpret_cast<uintptr_t>(arguments));
+    per_draw_router::route_scope_t route;
+    if (per_draw_router::begin_draw(
+            context,
+            { per_draw_router::draw_kind_t::instanced_indirect, 0,
+                alignedByteOffset, 0, 0, 0,
+                reinterpret_cast<uintptr_t>(arguments) },
+            route))
+    {
+        DrawInstancedIndirect_Original(context, arguments, alignedByteOffset);
+        per_draw_router::end_draw(context, route);
+        return;
+    }
     DrawInstancedIndirect_Original(context, arguments, alignedByteOffset);
 }
 
@@ -1051,7 +1133,8 @@ namespace dx11::create_texture_2d {
 	}
 
     static bool apply_probe_hooks(
-        bool legacy, bool live, bool router, bool routerTraining)
+        bool legacy, bool live, bool router, bool routerTraining,
+        unsigned routerKind)
     {
         const bool diagnostics = legacy || live;
         const bool any = diagnostics || router;
@@ -1072,13 +1155,13 @@ namespace dx11::create_texture_2d {
         const bool desired[] = {
             diagnostics,
             diagnostics || (router && routerTraining),
-            diagnostics || router,
-            diagnostics,
-            diagnostics,
-            diagnostics,
-            diagnostics,
-            diagnostics,
-            diagnostics
+            diagnostics || (router && (routerTraining || routerKind == 0)),
+            diagnostics || (router && (routerTraining || routerKind == 1)),
+            diagnostics || (router && (routerTraining || routerKind == 2)),
+            diagnostics || (router && (routerTraining || routerKind == 3)),
+            diagnostics || (router && (routerTraining || routerKind == 4)),
+            diagnostics || (router && (routerTraining || routerKind == 5)),
+            diagnostics || (router && (routerTraining || routerKind == 6))
         };
         for (size_t index = 0; index < _countof(addresses); ++index)
         {
@@ -1106,7 +1189,9 @@ namespace dx11::create_texture_2d {
                 "probe",
                     diagnostics
                         ? "Temporary CreateSRV/PSSetSRV/Draw diagnostic hooks enabled."
-                        : "Low-overhead per-display DrawIndexed routing hook enabled.");
+                        : (routerTraining
+                            ? "Bounded all-draw compositor tracing hooks enabled."
+                            : "Low-overhead learned per-display draw hook enabled."));
             }
             else
             {
@@ -1121,7 +1206,8 @@ namespace dx11::create_texture_2d {
     {
         std::lock_guard<std::mutex> lock(g_probeHookMutex);
         if (!apply_probe_hooks(enabled, g_liveProbeRequested,
-                g_perDrawRouterRequested, g_perDrawRouterTraining)) return false;
+                g_perDrawRouterRequested, g_perDrawRouterTraining,
+                g_perDrawRouterKind)) return false;
         g_legacyProbeRequested = enabled;
         return true;
     }
@@ -1130,18 +1216,23 @@ namespace dx11::create_texture_2d {
     {
         std::lock_guard<std::mutex> lock(g_probeHookMutex);
         if (!apply_probe_hooks(g_legacyProbeRequested, enabled,
-                g_perDrawRouterRequested, g_perDrawRouterTraining)) return false;
+                g_perDrawRouterRequested, g_perDrawRouterTraining,
+                g_perDrawRouterKind)) return false;
         g_liveProbeRequested = enabled;
         return true;
     }
 
-    bool set_per_draw_router_hooks_enabled(bool enabled, bool training)
+    bool set_per_draw_router_hooks_enabled(
+        bool enabled, bool training, unsigned activeDrawKind)
     {
         std::lock_guard<std::mutex> lock(g_probeHookMutex);
         if (!apply_probe_hooks(g_legacyProbeRequested, g_liveProbeRequested,
-                enabled, enabled && training)) return false;
+                enabled, enabled && training, activeDrawKind)) return false;
         g_perDrawRouterRequested = enabled;
         g_perDrawRouterTraining = enabled && training;
+        g_perDrawRouterKind = enabled
+            ? activeDrawKind
+            : static_cast<unsigned>(per_draw_router::draw_kind_t::none);
         return true;
     }
 }

@@ -281,8 +281,8 @@ namespace
         }
         if (verb == "capabilities")
             return "OK host=4.0.0 script=external-powershell captureSchema=1 "
-                "liveDraw=1 reloadProbe=1 fallbackLease=1 perDrawRoute=1 "
-                "arbitraryNativeHooks=0";
+                "liveDraw=1 reloadProbe=1 fallbackLease=1 perDrawRoute=2 "
+                "compositorTrace=1 arbitraryNativeHooks=0";
         if (verb == "capture")
         {
             std::string args; std::getline(input, args);

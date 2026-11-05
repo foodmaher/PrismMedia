@@ -1,9 +1,11 @@
 # PrismMedia 4.0.0 — reusable diagnostic host
 
 This host retains live draw captures and reloadable PowerShell scripts. The
-4.0.0 plugin now also contains the per-display fix candidate derived from the
-completed isolation session. Routing is automatic; the console is optional for
-status, recovery, and future diagnostics.
+4.0.0 plugin now also contains the compositor-tracing per-display fix candidate
+derived from the completed isolation session. It follows the configured custom
+texture through one render target and supports every D3D11 draw variant exposed
+by the host. Routing is automatic; the console is optional for status, recovery,
+and future diagnostics.
 
 For the normal validation, start the game, enter the truck, keep the configured
 custom screen visible for a few seconds, then run:
@@ -12,7 +14,8 @@ custom screen visible for a few seconds, then run:
 route status
 ```
 
-Expected: `enabled=1`, `detail=active`, and a `routed` count that increases.
+Run `capabilities` once and require `perDrawRoute=2 compositorTrace=1`. Expected:
+`enabled=1`, `detail=active`, and a `routed` count that increases.
 The configured screen should show media while every unconfigured GPS/smartphone
 screen shows its original game texture. `route retrain` safely repeats the
 automatic learning window. `route off` disables per-display routing and leaves

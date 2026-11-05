@@ -1,19 +1,21 @@
 # PrismMedia 4.0.0
 
-This revision includes the first per-display draw-routing fix identified by the
-live isolation captures. With one enabled custom display, PrismMedia briefly
-learns that display's exact six-index draw while the compatibility branch is
-visible, disables the global fallback, and substitutes the media SRV only for
-that learned draw. The native GPS texture is restored immediately afterward,
-so unconfigured smartphone and accessory screens remain game-controlled.
+This revision includes the compositor-tracing per-display routing fix developed
+from the live isolation captures. With one enabled custom display, PrismMedia
+follows its media texture through one matching UI render target, observes all
+seven D3D11 draw variants, and learns the final draw plus shader-resource slot.
+It then substitutes the media SRV only for that exact draw and immediately
+restores the native GPS texture, so unconfigured smartphone and accessory
+screens remain game-controlled.
 
 Training and activation are automatic after entering the truck. No diagnostic
 console command or texture reload is required. `route status` reports
-`training`, `active`, or the safe compatibility fallback. A texture identity or
-route-sequence change retrains automatically. If learning fails within 12
-seconds, PrismMedia retains the previous compatibility behavior instead of
-leaving the configured display blank. This is the actual fix candidate; its
-final ETS2 confirmation still requires one in-game run.
+`training`, `active`, or a safe original-display state. A texture identity or
+route-sequence change retrains automatically. Training keeps the unsupported
+legacy global branch off. If learning fails within 12 seconds, PrismMedia
+removes the temporary hooks and retains the game's original displays instead
+of blacking unrelated screens. This is the actual fix candidate; its final ETS2
+confirmation still requires one in-game run.
 
 The reusable diagnostic host remains available in
 [DIAGNOSTIC-CONSOLE.md](DIAGNOSTIC-CONSOLE.md). External PowerShell tests can
@@ -33,15 +35,17 @@ or a desktop window onto supported ETS2/ATS truck displays.
 ## Current combined-test revision
 
 - The per-display router is enabled by default for exactly one active custom
-  display. Training temporarily uses slot 6 and the configured display's COM
-  resource identity. Active routing matches the learned index/vertex buffers,
-  draw arguments, topology and pixel shader, binds media for that draw only,
-  calls the original draw, and restores the native SRV immediately.
-- Normal active routing retains only the `DrawIndexed` detour. A fast
-  count/start/base check rejects unrelated draws before locking or querying D3D
-  state. The PS-resource hook is used only during the short training window.
-- More than one enabled custom display currently retains the legacy
-  compatibility fallback; the router will not guess between several targets.
+  display. Training tracks its COM resource across every pixel-shader slot and
+  through one same-size compositor render target. Active routing matches the
+  learned draw kind, index/vertex buffers, arguments, topology, pixel shader,
+  source resource and slot; it binds media for that draw only, calls the
+  original draw, and restores the native SRV immediately.
+- Training temporarily enables `Draw`, `DrawIndexed`, instanced, automatic and
+  indirect draw detours. Normal active routing retains only the learned draw
+  detour. Fast kind/count/start/base checks reject unrelated draws before
+  locking or querying D3D state. The PS-resource hook is training-only.
+- More than one enabled custom display leaves original game displays untouched;
+  the router will not guess between several targets.
 
 - System now includes a dedicated **Run combined one-cycle test** action while
   driving. It requires an active old live custom texture and arms the bounded
@@ -169,7 +173,8 @@ or a desktop window onto supported ETS2/ATS truck displays.
 5. Enter the truck and keep the configured custom screen visible for a few
    seconds. It should continue showing media while unconfigured GPS accessories
    show their original game content. The optional console command `route status`
-   should then report `active` and an increasing `routed` count.
+   should then report `active` and an increasing `routed` count. Run
+   `capabilities` once and confirm `perDrawRoute=2 compositorTrace=1`.
 
 `config-recommended.ini` is a sanitized copy of the recommended 4.0 profile.
 It contains no media URL or account data.

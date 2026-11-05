@@ -8,8 +8,11 @@ both modes:
   drawn on the same geometry.
 
 That proves media capture and upload are healthy, while the global fallback is
-what affects unrelated GPS accessories. This build replaces that global steady
-state with a learned per-draw substitution.
+what affects unrelated GPS accessories. ETS2 1.62 no longer matches the legacy
+global branch and the original router observed no matching `DrawIndexed` call.
+This revision therefore does not depend on that branch: it traces the custom
+media resource through one UI-compositor render target, observes all seven
+D3D11 draw variants and learns the final draw plus pixel-shader resource slot.
 
 ## One validation run
 
@@ -20,13 +23,19 @@ state with a learned per-draw substitution.
    its original game GPS instead of black/static replacement content.
 5. Optionally open `PrismDiagnosticConsole.exe` and enter `route status`.
 
-Success is `detail=active` with an increasing `routed` count. Training is
-automatic and does not issue the game's texture-reload command.
+First enter `capabilities` and confirm `perDrawRoute=2 compositorTrace=1` so an
+older 4.0.0 DLL cannot be mistaken for this revision. Success is `detail=active`
+with an increasing `routed` count. Training is automatic, does not issue the
+game's texture-reload command and keeps the legacy global fallback off.
 
-If it reports `fallback`, copy `PrismMedia.log`; the plugin intentionally kept
-the prior compatibility path. If the truck was reconfigured or reloaded,
-`route retrain` starts a fresh bounded learning window without rebuilding.
+If it reports `fallback`, copy `PrismMedia.log` and the complete `route status`
+line. Its bounded trace counters (`traceDirect`, `traceTargets`, `traceDerived`,
+`candidates`, and observed output sizes) identify in one run whether the custom
+texture reached the compositor, produced a target, or reached a final draw.
+Original GPS/smartphone displays remain enabled. If the truck was reconfigured
+or reloaded, `route retrain` starts a fresh bounded learning window without
+rebuilding.
 
-The current router intentionally handles one enabled custom display. With two
-or more enabled custom displays it retains compatibility mode rather than risk
-routing media to the wrong accessory.
+The current router intentionally learns one enabled custom display at a time.
+With two or more enabled custom displays it leaves original displays untouched
+rather than risk routing media to the wrong accessory.

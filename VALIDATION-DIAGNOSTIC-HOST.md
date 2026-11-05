@@ -9,6 +9,9 @@ Completed in the authoring workspace:
   Windows workflow YAML, and confirmed the plugin version remains 4.0.0.
 - Reviewed the modified source against the prior revision; media capture,
   audio and the existing game-specific branch implementation are unchanged.
+- Replaced the fixed `DrawIndexed`/slot-6 router with bounded one-hop
+  compositor tracing across all seven hooked D3D11 draw variants. Active mode
+  retains only the learned draw hook and restores the native SRV immediately.
 - Verified source ZIP integrity before delivery.
 
 Added as required checks before the Windows workflow packages its artifact:

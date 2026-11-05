@@ -40,6 +40,8 @@ Copy-Item (Join-Path $ProjectRoot 'config-recommended.ini') $Runtime
 Copy-Item (Join-Path $ProjectRoot 'PERFORMANCE-NOTES.md') $Runtime
 Copy-Item (Join-Path $ProjectRoot 'README.md') $Package
 Copy-Item (Join-Path $ProjectRoot 'DIAGNOSTIC-CONSOLE.md') $Package
+Copy-Item (Join-Path $ProjectRoot 'PER-DISPLAY-ROUTING.md') $Package
+Copy-Item (Join-Path $ProjectRoot 'COMPOSITOR-TRACE-REVISION.md') $Package
 
 @"
 PrismMedia 4.0.0
@@ -55,6 +57,10 @@ System > Reload game textures action.
 PrismDiagnosticConsole.exe is optional. Run it while the game is open to
 repeat bounded diagnostic tests and change safe probe controls without
 rebuilding PrismMedia.dll. See DIAGNOSTIC-CONSOLE.md.
+
+For the ETS2 1.62 one-run compositor-routing validation, see
+PER-DISPLAY-ROUTING.md. Confirm `perDrawRoute=2 compositorTrace=1` before
+testing so an older 4.0.0 DLL is not mistaken for this revision.
 "@ | Set-Content (Join-Path $Package 'INSTALL.txt')
 
 $Hash = Get-FileHash -Algorithm SHA256 $Dll

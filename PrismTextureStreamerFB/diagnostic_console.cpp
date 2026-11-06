@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include "diagnostic_console.h"
 
+#include "addon_display_probe.h"
 #include "custom_render_probe.h"
 #include "runtime_draw_probe.h"
 #include "per_draw_router.h"
@@ -46,6 +47,9 @@ namespace
     bool g_lease{};
     uint64_t g_leaseDeadline{};
     custom_render_probe::fallback_mode_t g_savedFallback{};
+    bool g_addonFallbackLease{};
+    custom_render_probe::fallback_mode_t g_addonSavedFallback{};
+    bool g_addonSavedRouteEnabled{};
 
     std::string trim(std::string value)
     {
@@ -171,6 +175,16 @@ namespace
                 customDisplayActive);
     }
 
+    void restore_addon_environment(bool customDisplayActive)
+    {
+        if (!g_addonFallbackLease)
+            return;
+        custom_render_probe::set_fallback_mode(g_addonSavedFallback);
+        per_draw_router::set_enabled(g_addonSavedRouteEnabled);
+        custom_render_probe::update(customDisplayActive);
+        g_addonFallbackLease = false;
+    }
+
     std::string run_capture(
         const std::string& requestedDisplay,
         bool driving,
@@ -265,6 +279,9 @@ namespace
                 "  set release_window_us <1000..5000000>\n"
                 "  fallback <auto|on|off>\n"
                 "  route <status|on|off|retrain>\n"
+                "  addon arm [10..300 seconds] (validates hook, disables fallback, reloads)\n"
+                "  addon status | addon row <index> | addon dump\n"
+                "  addon cancel | addon clear\n"
                 "  snapshot\n"
                 "  ping\n"
                 "  capabilities\n"
@@ -282,7 +299,61 @@ namespace
         if (verb == "capabilities")
             return "OK host=4.0.0 script=external-powershell captureSchema=1 "
                 "liveDraw=1 reloadProbe=1 fallbackLease=1 perDrawRoute=2 "
-                "compositorTrace=1 arbitraryNativeHooks=0";
+                "compositorTrace=1 addonCapture=1 arbitraryNativeHooks=0";
+        if (verb == "addon")
+        {
+            std::string args;
+            std::getline(input, args);
+            args = trim(args);
+            std::istringstream addonInput(args);
+            std::string action;
+            addonInput >> action;
+            action = lowercase(action);
+            if (action == "arm")
+            {
+                if (!driving)
+                    return "ERROR Enter the truck before arming addon capture.";
+                if (g_addonFallbackLease)
+                    return "ERROR An addon capture fallback lease already exists.";
+                g_addonSavedFallback = custom_render_probe::fallback_mode();
+                g_addonSavedRouteEnabled = per_draw_router::status().enabled;
+                per_draw_router::set_enabled(false);
+                per_draw_router::update(driving);
+                custom_render_probe::set_fallback_mode(
+                    custom_render_probe::fallback_mode_t::forced_off);
+                custom_render_probe::update(customDisplayActive);
+                const std::string response =
+                    addon_display_probe::command(args);
+                if (response.rfind("OK ", 0) != 0)
+                {
+                    per_draw_router::set_enabled(g_addonSavedRouteEnabled);
+                    custom_render_probe::set_fallback_mode(g_addonSavedFallback);
+                    custom_render_probe::update(customDisplayActive);
+                    return response;
+                }
+                g_addonFallbackLease = true;
+                prism::string gameCommand("game");
+                if (!prism::execute_command::call(&gameCommand, -1))
+                {
+                    addon_display_probe::command("cancel");
+                    restore_addon_environment(customDisplayActive);
+                    return "ERROR The game rejected the texture reload; addon "
+                        "capture was cancelled and fallback restored.";
+                }
+                return response + " Native addon processing is active and "
+                    "texture reload was accepted.";
+            }
+
+            const std::string response =
+                addon_display_probe::command(args);
+            if ((action == "cancel" || action == "stop") &&
+                g_addonFallbackLease)
+            {
+                restore_addon_environment(customDisplayActive);
+                return response + " Previous fallback mode restored.";
+            }
+            return response;
+        }
         if (verb == "capture")
         {
             std::string args; std::getline(input, args);
@@ -353,6 +424,8 @@ namespace
                     << " detail=" << route.detail;
                 return output.str();
             }
+            if (g_addonFallbackLease)
+                return "ERROR Cancel the addon capture before changing routing.";
             if (action == "on") per_draw_router::set_enabled(true);
             else if (action == "off") per_draw_router::set_enabled(false);
             else if (action == "retrain") per_draw_router::retrain();
@@ -370,6 +443,8 @@ namespace
         if (verb == "abort")
         {
             runtime_draw_probe::shutdown();
+            addon_display_probe::command("cancel");
+            restore_addon_environment(customDisplayActive);
             if (g_lease) {
                 custom_render_probe::set_fallback_mode(g_savedFallback);
                 g_lease = false;
@@ -386,6 +461,8 @@ namespace
         }
         if (verb == "fallback")
         {
+            if (g_addonFallbackLease || addon_display_probe::active())
+                return "ERROR Cancel the addon capture before changing fallback.";
             if (runtime_draw_probe::active())
                 return "ERROR Stop the live capture before changing fallback; each capture records one state.";
             std::string value;
@@ -459,6 +536,7 @@ namespace
         while (g_running.load(std::memory_order_acquire))
         {
             runtime_draw_probe::tick();
+            addon_display_probe::tick();
             const HANDLE pipe = CreateNamedPipeW(
                 g_pipeName.c_str(),
                 PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
@@ -477,6 +555,7 @@ namespace
             while (g_running.load(std::memory_order_acquire) && !connected)
             {
                 runtime_draw_probe::tick();
+                addon_display_probe::tick();
                 connected = ConnectNamedPipe(pipe, nullptr) != FALSE;
                 if (!connected)
                 {
@@ -493,6 +572,7 @@ namespace
             while (g_running.load(std::memory_order_acquire) && connected)
             {
                 runtime_draw_probe::tick();
+                addon_display_probe::tick();
                 char buffer[kMaximumCommandBytes]{};
                 DWORD read{};
                 if (ReadFile(
@@ -517,7 +597,10 @@ namespace
                 const std::string readOnlyVerb = lowercase(trim(command));
                 if (readOnlyVerb == "status" || readOnlyVerb == "ping" ||
                     readOnlyVerb == "help" || readOnlyVerb == "capabilities" ||
-                    readOnlyVerb == "capture status" || readOnlyVerb.rfind("capture row ", 0) == 0)
+                    readOnlyVerb == "capture status" ||
+                    readOnlyVerb.rfind("capture row ", 0) == 0 ||
+                    readOnlyVerb == "addon status" ||
+                    readOnlyVerb.rfind("addon row ", 0) == 0)
                 {
                     const std::string response = execute_command(
                         readOnlyVerb, false, false);
@@ -536,7 +619,10 @@ namespace
                 const auto deadline = std::chrono::steady_clock::now() + kCommandTimeout;
                 while (!g_responseReady && g_running.load() && std::chrono::steady_clock::now() < deadline) {
                     g_requestCompleted.wait_for(lock, std::chrono::milliseconds(kPipePollMilliseconds));
-                    lock.unlock(); runtime_draw_probe::tick(); lock.lock();
+                    lock.unlock();
+                    runtime_draw_probe::tick();
+                    addon_display_probe::tick();
+                    lock.lock();
                 }
                 const bool completed = g_responseReady;
                 const std::string response = completed && g_responseReady
@@ -575,6 +661,13 @@ namespace diagnostic_console
 
     void update(bool driving, bool customDisplayActive)
     {
+        addon_display_probe::tick();
+        if (g_addonFallbackLease && !addon_display_probe::active())
+        {
+            restore_addon_environment(customDisplayActive);
+            diagnostic_log::write(
+                "addon", "Addon capture ended; previous fallback mode restored.");
+        }
         if (g_lease && GetTickCount64() >= g_leaseDeadline) {
             runtime_draw_probe::shutdown();
             custom_render_probe::set_fallback_mode(g_savedFallback);
@@ -617,7 +710,9 @@ namespace diagnostic_console
         if (g_worker.joinable())
             g_worker.join();
         runtime_draw_probe::shutdown();
+        addon_display_probe::shutdown();
         g_lease = false;
+        g_addonFallbackLease = false;
         std::lock_guard<std::mutex> lock(g_requestMutex);
         g_requestPending = false;
         g_responseReady = false;

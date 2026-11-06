@@ -32,6 +32,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="addon_display_probe.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="camera_bridge_client.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -106,6 +109,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="addon_display_probe.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
     <ClInclude Include="camera_bridge_client.h">
       <Filter>Source Files</Filter>
     </ClInclude>

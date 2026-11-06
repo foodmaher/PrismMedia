@@ -64,6 +64,7 @@ static void* g_drawIndexedInstancedIndirectAddress{};
 static void* g_drawInstancedIndirectAddress{};
 static bool g_customProbeHooksCreated{};
 static bool g_customProbeHooksEnabled{};
+static bool g_probeHookInstalledState[9]{};
 static std::mutex g_probeHookMutex;
 static bool g_legacyProbeRequested{}, g_liveProbeRequested{},
     g_perDrawRouterRequested{}, g_perDrawRouterTraining{};
@@ -305,8 +306,11 @@ void __stdcall HookedDrawIndexed(
 {
     if (g_drawIndexedHookActive)
     {
-        DrawIndexed_Original(
-            context, indexCount, startIndexLocation, baseVertexLocation);
+        // A second entry before the outer trampoline returns means another
+        // overlay has looped the shared hook chain back into Prism. Calling
+        // DrawIndexed_Original again would repeat that cycle and can make the
+        // same thread lock an overlay/router mutex twice. Let the outer call
+        // unwind instead; this path is never used for an ordinary game draw.
         return;
     }
 
@@ -1235,6 +1239,12 @@ namespace dx11::create_texture_2d {
         };
         for (size_t index = 0; index < _countof(addresses); ++index)
         {
+            // Do not ask MinHook to rewrite or even revalidate an entry point
+            // whose state is already correct. This matters when RTSS/SPF have
+            // chained the same D3D vtable function and one of their wrappers
+            // is currently executing on another thread.
+            if (g_probeHookInstalledState[index] == desired[index])
+                continue;
             const MH_STATUS result = desired[index]
                 ? MH_EnableHook(addresses[index])
                 : MH_DisableHook(addresses[index]);
@@ -1249,6 +1259,7 @@ namespace dx11::create_texture_2d {
                     static_cast<int>(result));
                 return false;
             }
+            g_probeHookInstalledState[index] = desired[index];
         }
         if (g_customProbeHooksEnabled != any)
         {

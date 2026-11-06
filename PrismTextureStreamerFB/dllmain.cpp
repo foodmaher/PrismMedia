@@ -834,6 +834,10 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
     update_checker::start();
     diagnostic_console::start();
 
+    diagnostic_log::write(
+        "session",
+        "Picker hook-transition guard revision 2 active "
+        "(stable DrawIndexed bridge, redundant MinHook calls suppressed).");
     diagnostic_log::write("session", "Plugin initialization completed.");
     scs_log(0, "Plugin Started");
     return SCS_RESULT_ok;

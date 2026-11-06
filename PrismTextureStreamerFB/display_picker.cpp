@@ -169,17 +169,42 @@ namespace
         ID3D11DeviceContext* context)
     {
         if (!device || !context) return;
-        std::lock_guard<std::mutex> screensLock(g_screens_mutex);
-        for (screen_t& screen : g_screens)
+
+        struct pending_texture_t
         {
-            if (screen.type != screen_type_t::CUSTOM ||
-                !screen.enabled || !screen.visualPickerMode ||
-                !screen.source || screen.liveTexture)
-                continue;
+            std::string displayId;
+            UINT width{};
+            UINT height{};
+        };
+
+        std::vector<pending_texture_t> pending;
+        {
+            // HookedCreateTexture2D also takes g_screens_mutex while matching
+            // normal game texture requests. Never call the hooked D3D method
+            // while this mutex is held: std::mutex detects the same-thread
+            // recursive lock and throws std::system_error, which previously
+            // escaped through Present and closed the game when Picker started.
+            std::lock_guard<std::mutex> screensLock(g_screens_mutex);
+            pending.reserve(g_screens.size());
+            for (const screen_t& screen : g_screens)
+            {
+                if (screen.type != screen_type_t::CUSTOM ||
+                    !screen.enabled || !screen.visualPickerMode ||
+                    !screen.source || screen.liveTexture)
+                    continue;
+                pending.push_back({
+                    screen.mediaClientId,
+                    (std::max)(64U, screen.targetLiveTextureWidth),
+                    (std::max)(64U, screen.targetLiveTextureHeight) });
+            }
+        }
+
+        for (const pending_texture_t& request : pending)
+        {
 
             D3D11_TEXTURE2D_DESC description{};
-            description.Width = (std::max)(64U, screen.targetLiveTextureWidth);
-            description.Height = (std::max)(64U, screen.targetLiveTextureHeight);
+            description.Width = request.width;
+            description.Height = request.height;
             description.MipLevels = 1;
             description.ArraySize = 1;
             description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -196,25 +221,49 @@ namespace
                     "error",
                     "Visual picker could not create private media texture "
                     "for %s (HRESULT 0x%08X).",
-                    screen.mediaClientId.c_str(),
+                    request.displayId.c_str(),
                     static_cast<unsigned>(result));
                 continue;
             }
-            screen.liveTexture = texture;
-            context->AddRef();
-            screen.immediateContext = context;
-            screen.liveTextureWidth = description.Width;
-            screen.liveTextureHeight = description.Height;
-            screen.pluginOwnedLiveTexture = true;
-            screen.hasUploadedFrame = false;
-            screen.lastTextureMatchTick = GetTickCount64();
-            ++screen.textureRouteMatchedSequence;
+
+            bool attached{};
+            {
+                std::lock_guard<std::mutex> screensLock(g_screens_mutex);
+                const auto screenIt = std::find_if(
+                    g_screens.begin(), g_screens.end(),
+                    [&request](const screen_t& screen)
+                    {
+                        return screen.mediaClientId == request.displayId;
+                    });
+                if (screenIt != g_screens.end() &&
+                    screenIt->type == screen_type_t::CUSTOM &&
+                    screenIt->enabled && screenIt->visualPickerMode &&
+                    screenIt->source && !screenIt->liveTexture)
+                {
+                    screenIt->liveTexture = texture;
+                    context->AddRef();
+                    screenIt->immediateContext = context;
+                    screenIt->liveTextureWidth = description.Width;
+                    screenIt->liveTextureHeight = description.Height;
+                    screenIt->pluginOwnedLiveTexture = true;
+                    screenIt->hasUploadedFrame = false;
+                    screenIt->lastTextureMatchTick = GetTickCount64();
+                    ++screenIt->textureRouteMatchedSequence;
+                    attached = true;
+                }
+            }
+
+            if (!attached)
+            {
+                texture->Release();
+                continue;
+            }
             diagnostic_log::writef(
                 "route",
                 "Created private %ux%u visual-picker media texture for %s; "
                 "no TOBJ redirect is required.",
                 description.Width, description.Height,
-                screen.mediaClientId.c_str());
+                request.displayId.c_str());
         }
     }
 

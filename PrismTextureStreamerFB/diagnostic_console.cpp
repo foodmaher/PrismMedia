@@ -306,7 +306,7 @@ namespace
                 "liveDraw=1 reloadProbe=1 fallbackLease=1 perDrawRoute=5 "
                 "compositorTrace=1 finalDrawSwap=1 routeCalibration=1 "
 				"groupedPassRouting=1 visualPicker=1 privateMediaTexture=1 "
-                "hookTransitionGuard=2 "
+                "hookTransitionGuard=3 "
                 "addonCapture=1 addonIsolation=1 "
                 "arbitraryNativeHooks=0";
         if (verb == "addon")

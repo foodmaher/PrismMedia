@@ -15,10 +15,11 @@ if ($LASTEXITCODE -ne 0) { throw "MSBuild failed with exit code $LASTEXITCODE." 
 
 $Output = Join-Path $ProjectRoot 'x64\Release'
 $Dll = Join-Path $Output 'PrismMedia.dll'
+$Pdb = Join-Path $Output 'PrismMedia.pdb'
 $BridgeDll = Join-Path $Output 'PrismCameraBridge.dll'
 $DiagnosticConsole = Join-Path $Output 'PrismDiagnosticConsole.exe'
 $ClientDirectory = Join-Path $ProjectRoot 'PrismMediaClient\bin\x64\Release\net48'
-foreach ($required in @($Dll, $BridgeDll, $DiagnosticConsole, (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
+foreach ($required in @($Dll, $Pdb, $BridgeDll, $DiagnosticConsole, (Join-Path $ClientDirectory 'PrismMediaClient.exe'))) {
     if (-not (Test-Path $required)) { throw "Expected build output is missing: $required" }
 }
 
@@ -46,6 +47,7 @@ Copy-Item (Join-Path $ProjectRoot 'DIAGNOSTIC-CONSOLE.md') $Package
 Copy-Item (Join-Path $ProjectRoot 'PER-DISPLAY-ROUTING.md') $Package
 Copy-Item (Join-Path $ProjectRoot 'COMPOSITOR-TRACE-REVISION.md') $Package
 Copy-Item (Join-Path $ProjectRoot 'FINAL-DRAW-ROUTING.md') $Package
+Copy-Item (Join-Path $ProjectRoot 'PICKER-CRASH-FIX.md') $Package
 
 @"
 PrismMedia 4.0.0
@@ -64,7 +66,10 @@ rebuilding PrismMedia.dll. See DIAGNOSTIC-CONSOLE.md.
 
 For the ETS2 1.62 visual final-draw picker, see FINAL-DRAW-ROUTING.md. Confirm
 `perDrawRoute=5 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1`
-before testing so an older 4.0.0 DLL is not mistaken for this revision.
+and `hookTransitionGuard=3` before testing so an older 4.0.0 DLL is not
+mistaken for this revision. The matching PrismMedia.pdb remains beside the
+normal build outputs in x64\Release for crash-address resolution; it is not
+required in the game's plugins folder.
 "@ | Set-Content (Join-Path $Package 'INSTALL.txt')
 
 $Hash = Get-FileHash -Algorithm SHA256 $Dll

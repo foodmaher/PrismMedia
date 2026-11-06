@@ -35,6 +35,12 @@ jobs:
       - name: Build x64 Release
         shell: pwsh
         run: msbuild PrismTextureStreamerFB.sln /m /restore /t:Build /p:Configuration=Release /p:Platform=x64
+      - name: Verify debug symbols
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'x64\Release\PrismMedia.pdb')) {
+            throw 'PrismMedia.pdb was not produced by the Release build.'
+          }
       - name: Assemble 4.0.0 package
         shell: pwsh
         run: |
@@ -62,6 +68,7 @@ jobs:
           Copy-Item 'PER-DISPLAY-ROUTING.md' $Package
           Copy-Item 'COMPOSITOR-TRACE-REVISION.md' $Package
           Copy-Item 'FINAL-DRAW-ROUTING.md' $Package
+          Copy-Item 'PICKER-CRASH-FIX.md' $Package
           @"
           PrismMedia 4.0.0
           Remove the old PrismTextureStreamerFB.dll, then copy PrismMedia.dll
@@ -74,8 +81,8 @@ jobs:
           Recommended: choose media, open System > Truck screen routing,
           press Pick truck screen, and double-click the intended display.
           Confirm: capabilities includes perDrawRoute=5 groupedPassRouting=1
-          visualPicker=1 privateMediaTexture=1. The selected final draw is
-          saved and unmatched GPS screens remain native.
+          visualPicker=1 privateMediaTexture=1 hookTransitionGuard=3. The
+          selected final draw is saved and unmatched GPS screens remain native.
           See FINAL-DRAW-ROUTING.md for visual calibration and
           DIAGNOSTIC-CONSOLE.md for recovery and capture instructions.
           "@ | Set-Content "$Package\INSTALL.txt"
@@ -83,5 +90,11 @@ jobs:
         with:
           name: PrismMedia-4.0.0
           path: package
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrismMedia-4.0.0-debug-symbols
+          path: x64/Release/PrismMedia.pdb
           if-no-files-found: error
           retention-days: 30

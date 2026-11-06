@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <atomic>
+#include <exception>
 #include <intrin.h>
 #include <mutex>
 
@@ -67,6 +69,10 @@ static bool g_legacyProbeRequested{}, g_liveProbeRequested{},
     g_perDrawRouterRequested{}, g_perDrawRouterTraining{};
 static unsigned g_perDrawRouterKind{
     static_cast<unsigned>(per_draw_router::draw_kind_t::none) };
+// Other overlays (notably RTSS and SPF) can chain the same D3D11 entry point.
+// Keep recursive entries out of Prism's mutex-owning router path.
+static thread_local bool g_drawIndexedHookActive{};
+static std::atomic_flag g_drawIndexedHookExceptionLogged = ATOMIC_FLAG_INIT;
 
 namespace
 {
@@ -297,23 +303,82 @@ void __stdcall HookedDrawIndexed(
     UINT startIndexLocation,
     INT baseVertexLocation)
 {
-    custom_render_probe::notify_draw("DrawIndexed");
-    runtime_draw_probe::draw(context, "DrawIndexed", reinterpret_cast<uintptr_t>(_ReturnAddress()),
-        indexCount, startIndexLocation, baseVertexLocation);
-    per_draw_router::route_scope_t route;
-    if (per_draw_router::begin_draw(
-            context,
-            { per_draw_router::draw_kind_t::indexed, indexCount,
-                startIndexLocation, baseVertexLocation },
-            route))
+    if (g_drawIndexedHookActive)
     {
         DrawIndexed_Original(
             context, indexCount, startIndexLocation, baseVertexLocation);
-        per_draw_router::end_draw(context, route);
         return;
     }
+
+    struct reentry_guard_t
+    {
+        reentry_guard_t() { g_drawIndexedHookActive = true; }
+        ~reentry_guard_t() { g_drawIndexedHookActive = false; }
+    } reentryGuard;
+
+    per_draw_router::route_scope_t route;
+    bool routed{};
+    try
+    {
+        custom_render_probe::notify_draw("DrawIndexed");
+        runtime_draw_probe::draw(
+            context, "DrawIndexed",
+            reinterpret_cast<uintptr_t>(_ReturnAddress()), indexCount,
+            startIndexLocation, baseVertexLocation);
+        routed = per_draw_router::begin_draw(
+            context,
+            { per_draw_router::draw_kind_t::indexed, indexCount,
+                startIndexLocation, baseVertexLocation },
+            route);
+    }
+    catch (const std::exception& error)
+    {
+        if (!g_drawIndexedHookExceptionLogged.test_and_set())
+            diagnostic_log::writef(
+                "error",
+                "DrawIndexed routing was bypassed after a C++ synchronization "
+                "exception: %s. Native drawing remains active.",
+                error.what());
+        route = {};
+        routed = false;
+    }
+    catch (...)
+    {
+        if (!g_drawIndexedHookExceptionLogged.test_and_set())
+            diagnostic_log::write(
+                "error",
+                "DrawIndexed routing was bypassed after an unknown plugin "
+                "exception. Native drawing remains active.");
+        route = {};
+        routed = false;
+    }
+
     DrawIndexed_Original(
         context, indexCount, startIndexLocation, baseVertexLocation);
+
+    if (routed)
+    {
+        try
+        {
+            per_draw_router::end_draw(context, route);
+        }
+        catch (const std::exception& error)
+        {
+            if (!g_drawIndexedHookExceptionLogged.test_and_set())
+                diagnostic_log::writef(
+                    "error",
+                    "DrawIndexed route cleanup caught a C++ synchronization "
+                    "exception: %s.", error.what());
+        }
+        catch (...)
+        {
+            if (!g_drawIndexedHookExceptionLogged.test_and_set())
+                diagnostic_log::write(
+                    "error",
+                    "DrawIndexed route cleanup caught an unknown plugin "
+                    "exception.");
+        }
+    }
 }
 
 void __stdcall HookedDraw(
@@ -1152,10 +1217,15 @@ namespace dx11::create_texture_2d {
             g_drawIndexedInstancedIndirectAddress,
             g_drawInstancedIndirectAddress
         };
+        // Once enabled, keep DrawIndexed installed until process shutdown.
+        // Rewriting this entry point while RTSS/SPF are also in the hook chain
+        // can leave one overlay calling a stale trampoline. The inactive fast
+        // path is only atomic checks, so keeping this single bridge resident is
+        // safer and still low overhead.
         const bool desired[] = {
             diagnostics,
             diagnostics || (router && routerTraining),
-            diagnostics || (router && (routerTraining || routerKind == 0)),
+            true,
             diagnostics || (router && (routerTraining || routerKind == 1)),
             diagnostics || (router && (routerTraining || routerKind == 2)),
             diagnostics || (router && (routerTraining || routerKind == 3)),
@@ -1196,7 +1266,9 @@ namespace dx11::create_texture_2d {
             else
             {
                 diagnostic_log::write(
-                    "probe", "Temporary high-frequency Direct3D hooks disabled.");
+                    "probe", "Temporary high-frequency Direct3D diagnostics "
+                    "disabled; the inert DrawIndexed bridge remains installed "
+                    "for overlay-chain safety.");
             }
         }
         return true;

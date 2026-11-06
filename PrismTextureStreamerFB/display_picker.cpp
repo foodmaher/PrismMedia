@@ -12,8 +12,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <mutex>
 #include <sstream>
+#include <string>
 #include <vector>
 
 namespace
@@ -371,17 +373,47 @@ namespace display_picker
 {
     void start(const std::string& displayId)
     {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        per_draw_router::picker_clear_probe();
-        g_displayId = displayId;
-        g_candidateCount = 0;
-        g_probeCandidate = 0;
-        g_scores.clear();
-        release_view(g_numberView);
-        g_status = "Discovering independent truck-screen draws...";
-        g_stage = stage_t::discovering;
-        g_stageTick = GetTickCount64();
-        per_draw_router::retrain();
+        // Do not nest the picker mutex around router operations. The picker is
+        // started from the Present/ImGui path while the router also runs from
+        // DrawIndexed, and overlay hook chains can re-enter either path.
+        try
+        {
+            per_draw_router::picker_clear_probe();
+            per_draw_router::retrain();
+        }
+        catch (const std::exception& error)
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            g_stage = stage_t::error;
+            g_status = std::string(
+                "Picker start was stopped safely after a synchronization "
+                "error: ") + error.what();
+            diagnostic_log::writef(
+                "error", "Visual picker start was stopped safely: %s.",
+                error.what());
+            return;
+        }
+        catch (...)
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            g_stage = stage_t::error;
+            g_status = "Picker start was stopped safely after an unknown plugin error.";
+            diagnostic_log::write(
+                "error", "Visual picker start was stopped after an unknown plugin error.");
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            g_displayId = displayId;
+            g_candidateCount = 0;
+            g_probeCandidate = 0;
+            g_scores.clear();
+            release_view(g_numberView);
+            g_status = "Discovering independent truck-screen draws...";
+            g_stage = stage_t::discovering;
+            g_stageTick = GetTickCount64();
+        }
         diagnostic_log::writef(
             "picker", "Visual screen picker started for %s.",
             displayId.c_str());

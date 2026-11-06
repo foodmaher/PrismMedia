@@ -22,6 +22,7 @@
 #include "../dinput8/dinput8.h"
 #include "../custom_render_probe.h"
 #include "../diagnostic_log.h"
+#include "../display_picker.h"
 #include "../dx11/present.h"
 #include "../environment_audio.h"
 #include "../hotkeys.h"
@@ -489,13 +490,25 @@ namespace
             screen.sourceCreatedTick = GetTickCount64();
             screen.source->SetPaused(screen.paused);
             apply_brightness(screen);
-            diagnostic_log::writef(
-                "route",
-                "Media source ready for display %s; waiting for exact TOBJ "
-                "redirect %s -> %s before any GPU texture can be claimed.",
-                screen.mediaClientId.c_str(),
-                screen.original_texture.c_str(),
-                screen.override_texture.c_str());
+            if (screen.type == screen_type_t::CUSTOM &&
+                screen.visualPickerMode)
+            {
+                diagnostic_log::writef(
+                    "route",
+                    "Media source ready for display %s; the render thread "
+                    "will create its private visual-picker texture.",
+                    screen.mediaClientId.c_str());
+            }
+            else
+            {
+                diagnostic_log::writef(
+                    "route",
+                    "Media source ready for display %s; waiting for exact TOBJ "
+                    "redirect %s -> %s before any GPU texture can be claimed.",
+                    screen.mediaClientId.c_str(),
+                    screen.original_texture.c_str(),
+                    screen.override_texture.c_str());
+            }
         }
         else
         {
@@ -1562,6 +1575,7 @@ namespace
         if (screen.immediateContext) screen.immediateContext->Release();
         screen.liveTexture = nullptr; screen.uploadTexture = nullptr;
         screen.liveTextureRenderTarget = nullptr; screen.immediateContext = nullptr;
+        screen.pluginOwnedLiveTexture = false;
         screen.textureRouteArmed = false;
         screen.textureRouteArmedTick = 0;
     }
@@ -1727,6 +1741,65 @@ namespace
     void draw_system(screen_t& screen, bool& removeCurrent)
     {
         ImGui::TextColored(ImVec4(0.20f, 0.88f, 0.94f, 1.0f), "PERFORMANCE + SYSTEM");
+        if (screen.type == screen_type_t::CUSTOM)
+        {
+            ImGui::SeparatorText("Truck screen routing");
+            bool visualMode = screen.visualPickerMode;
+            if (ImGui::Checkbox("Use visual truck-screen picker", &visualMode))
+            {
+                if (visualMode != screen.visualPickerMode)
+                {
+                    if (screen.liveTexture) screen.liveTexture->Release();
+                    if (screen.uploadTexture) screen.uploadTexture->Release();
+                    if (screen.liveTextureRenderTarget)
+                        screen.liveTextureRenderTarget->Release();
+                    if (screen.immediateContext)
+                        screen.immediateContext->Release();
+                    screen.liveTexture = nullptr;
+                    screen.uploadTexture = nullptr;
+                    screen.liveTextureRenderTarget = nullptr;
+                    screen.immediateContext = nullptr;
+                    screen.pluginOwnedLiveTexture = false;
+                    screen.liveTextureWidth = 0;
+                    screen.liveTextureHeight = 0;
+                }
+                screen.visualPickerMode = visualMode;
+                screen.finalDrawRouteValid = false;
+                if (screen.visualPickerMode && !screen.source)
+                    rebuild_source(screen);
+                mark_changed(true);
+            }
+            ImGui::TextWrapped(
+                "Visual mode gives this display a private media texture, "
+                "then binds it only to the truck screen you pick. No TOBJ "
+                "path is required; unmatched screens keep the game's image.");
+            const size_t enabledCustoms = static_cast<size_t>(std::count_if(
+                g_screens.begin(), g_screens.end(),
+                [](const screen_t& candidate) {
+                    return candidate.type == screen_type_t::CUSTOM &&
+                        candidate.enabled && candidate.source;
+                }));
+            ImGui::BeginDisabled(!screen.visualPickerMode ||
+                !screen.enabled || !screen.source || enabledCustoms != 1);
+            if (ImGui::Button("Pick truck screen", ImVec2(-1.0f, 40.0f)))
+            {
+                display_picker::start(screen.mediaClientId);
+                menuVisible = false;
+            }
+            ImGui::EndDisabled();
+            if (!screen.source)
+                ImGui::TextDisabled(
+                    "Select media first; then the picker can create its private texture.");
+            else if (enabledCustoms != 1)
+                ImGui::TextDisabled(
+                    "For calibration, temporarily enable exactly one custom media display.");
+            if (screen.finalDrawRouteValid)
+                ImGui::TextColored(ImVec4(0.35f, 0.92f, 0.42f, 1.0f),
+                    "A visual final-draw route is saved for this display.");
+            const std::string pickerStatus = display_picker::status_text();
+            if (!pickerStatus.empty())
+                ImGui::TextWrapped("Picker: %s", pickerStatus.c_str());
+        }
         const char* profiles[] = { "Custom", "Economy - 854x480 @ 20", "Balanced - 1280x720 @ 30", "Quality - 1920x1080 @ 30", "Smooth - 1280x720 @ 60" };
         int profile = static_cast<int>(screen.performanceProfile);
         if (ImGui::Combo("Performance profile", &profile, profiles, IM_ARRAYSIZE(profiles))) { screen.performanceProfile = static_cast<performance_profile_t>(profile); apply_profile(screen); mark_changed(); }
@@ -1751,6 +1824,18 @@ namespace
             {
                 screen.source->SetOutputSize(screen.targetLiveTextureWidth, screen.targetLiveTextureHeight);
                 screen.source->SetFramerate(screen.framerate);
+            }
+            if (screen.visualPickerMode && screen.pluginOwnedLiveTexture)
+            {
+                if (screen.liveTexture) screen.liveTexture->Release();
+                if (screen.immediateContext)
+                    screen.immediateContext->Release();
+                screen.liveTexture = nullptr;
+                screen.immediateContext = nullptr;
+                screen.pluginOwnedLiveTexture = false;
+                screen.liveTextureWidth = 0;
+                screen.liveTextureHeight = 0;
+                screen.hasUploadedFrame = false;
             }
             mark_changed();
         }
@@ -2252,7 +2337,14 @@ namespace
         { screen.original_texture = "/vehicle/truck/share/gps.tobj"; screen.override_texture = "/home/PrismTextureStreamer/gps.tobj"; screen.override_texture_size_w = 64; screen.override_texture_size_h = 2048; }
         else if (type == screen_type_t::DASHBOARD)
         { screen.original_texture = "/vehicle/truck/share/dashboard.tobj"; screen.override_texture = "/home/PrismTextureStreamer/dashboard.tobj"; screen.override_texture_size_w = 2048; screen.override_texture_size_h = 64; }
-        else { screen.original_texture = ".tobj"; screen.override_texture = "/home/PrismTextureStreamer/.tobj"; }
+        else
+        {
+            screen.visualPickerMode = true;
+            screen.original_texture.clear();
+            screen.override_texture = "/home/PrismTextureStreamer/.tobj";
+            screen.targetLiveTextureWidth = 1280;
+            screen.targetLiveTextureHeight = 720;
+        }
 
         // A second generic GPS/dashboard path addresses the same Prism3D
         // resource, not a second physical surface. Start unassigned instead
@@ -2644,18 +2736,22 @@ namespace
                     else
                     {
                         std::string enableStatus;
-                        const bool assetsReady =
-                            !screen.original_texture.empty() &&
-                            prepare_override_assets(screen, enableStatus);
+                        const bool visualReady =
+                            screen.type == screen_type_t::CUSTOM &&
+                            screen.visualPickerMode;
+                        const bool assetsReady = visualReady ||
+                            (!screen.original_texture.empty() &&
+                             prepare_override_assets(screen, enableStatus));
                         if (assetsReady)
                             rebuild_source(screen);
                         diagnostic_log::writef(
                             "route",
-                            "Enabled %s (%s): %s. Reload textures to bind "
-                            "the exact display route.",
+                            "Enabled %s (%s): %s.",
                             screen_owner_name(screen).c_str(),
                             screen.mediaClientId.c_str(),
-                            assetsReady ? enableStatus.c_str()
+                            visualReady
+                                ? "private visual-picker texture will be created without a TOBJ reload"
+                                : assetsReady ? enableStatus.c_str()
                                 : "waiting for a valid unique game TOBJ");
                     }
                     log_route_snapshot(screen, screen.enabled
@@ -2730,6 +2826,7 @@ namespace
             ImGui::TextUnformatted("Open the plugin menu (Ctrl+F8) for the download page.");
             ImGui::End();
         }
+        display_picker::draw_overlay();
         if (menuVisible.load()) draw_menu();
         if (saveNowRequest)
         {

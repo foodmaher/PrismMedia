@@ -23,6 +23,7 @@
 #include "diagnostic_log.h"
 #include "diagnostic_console.h"
 #include "per_draw_router.h"
+#include "display_picker.h"
 #include "environment_audio.h"
 #include "thread_scheduling.h"
 #include "update_checker.h"
@@ -843,6 +844,7 @@ SCSAPI_VOID scs_telemetry_shutdown()
 {
     diagnostic_log::write("session", "Plugin shutdown started.");
     diagnostic_console::stop();
+    display_picker::shutdown();
     per_draw_router::shutdown();
     custom_render_probe::shutdown();
     sources::ShutdownMediaClient();

@@ -54,6 +54,11 @@ struct screen_t
 
 	std::string original_texture; // /vehicle/truck/share/gps.tobj
 	std::string override_texture; // /home/PrismTextureStreamer/gps.tobj
+	// Custom displays can own a private dynamic media texture and bind it only
+	// at a visually selected final truck-screen draw. This removes the normal
+	// picker workflow's dependency on a TOBJ path while retaining the legacy
+	// redirect fields above for compatibility.
+	bool visualPickerMode{};
 
 	uint32_t override_texture_size_w{}; // 64
 	uint32_t override_texture_size_h{}; // 2048
@@ -172,6 +177,7 @@ struct screen_t
 	ID3D11Texture2D* uploadTexture{};
 	ID3D11RenderTargetView* liveTextureRenderTarget{};
 	ID3D11DeviceContext* immediateContext{};
+	bool pluginOwnedLiveTexture{};
 
 	uint8_t framerate = 60; // Framerate of source, can actually be updated live
 

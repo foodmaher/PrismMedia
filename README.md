@@ -1,5 +1,21 @@
 # PrismMedia 4.0.0
 
+## Visual truck-screen picker revision
+
+Custom displays can now use a plugin-owned dynamic media texture instead of a
+user-selected TOBJ. Choose media, open **System > Truck screen routing**, press
+**Pick truck screen**, and double-click the intended visible truck display.
+PrismMedia probes the clicked backbuffer region before drawing its own UI,
+groups all shader passes belonging to that physical screen, shows a three-second
+media confirmation, and saves only a confident result. Ambiguous or unsupported
+captures use the numbered fallback in the same build. Unmatched GPS and
+smartphone screens keep their original game resources.
+
+The public version remains 4.0.0. The diagnostic capability marker for this
+source is `perDrawRoute=5 groupedPassRouting=1 visualPicker=1
+privateMediaTexture=1`. The legacy TOBJ and console calibration paths remain
+available for compatibility and recovery.
+
 This revision adds a bounded addon-display ownership capture for the exact ETS2
 executable inspected during the Tjs GPS investigation. The live executable is
 validated before any hook is installed. A single console command captures the
@@ -172,13 +188,10 @@ or a desktop window onto supported ETS2/ATS truck displays.
 3. Keep the DLL directly in `plugins`; keep the helper files in the adjacent
    `PrismMedia` folder.
 4. Open the UI with `Ctrl+F8` or the configured gamepad chord.
-5. Enter the truck and keep the configured custom screen visible for a few
-   seconds. It should continue showing media while unconfigured GPS accessories
-   show their original game content. The optional console command `route status`
-   should then report `active` and an increasing `routed` count. Run
-   `capabilities` once and confirm
-   `perDrawRoute=3 finalDrawSwap=1 routeCalibration=1`. On first use, run
-   `script gps-final-draw.ps1`; the selected draw is saved for later starts.
+5. Enter the truck, select the custom display in PrismMedia, choose its media,
+   then use **System > Pick truck screen** and double-click the intended visible
+   display. Confirm the three-second preview. The selected draw is saved for
+   later starts; unselected GPS accessories remain native.
 
 `config-recommended.ini` is a sanitized copy of the recommended 4.0 profile.
 It contains no media URL or account data.

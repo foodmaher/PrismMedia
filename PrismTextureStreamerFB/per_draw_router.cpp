@@ -102,6 +102,10 @@ namespace
     IUnknown* g_targetIdentity{};
     ID3D11ShaderResourceView* g_customView{};
     draw_signature_t g_signature;
+	// One physical GPS can be presented by multiple shader passes. All passes
+	// sharing the selected native screen resource must be replaced together;
+	// otherwise a later native pass can draw the GPS over Prism media.
+	std::vector<draw_signature_t> g_routeSignatures;
     std::vector<intermediate_t> g_intermediates;
     std::vector<candidate_t> g_candidates;
     std::vector<uint64_t> g_observedOutputSizes;
@@ -110,7 +114,9 @@ namespace
     per_draw_router::draw_kind_t g_hookKind{ per_draw_router::draw_kind_t::none };
     bool g_forceRetrain{};
     stable_selector_t g_savedSelector;
-    draw_signature_t g_previewSignature;
+	std::vector<draw_signature_t> g_previewSignatures;
+    std::vector<draw_signature_t> g_pickerProbeSignatures;
+    ID3D11ShaderResourceView* g_pickerProbeView{};
     uint64_t g_previewDeadline{};
     size_t g_previewIndex{};
     uint64_t g_previewHits{};
@@ -193,6 +199,9 @@ namespace
 
     void release_target_locked()
     {
+        if (g_pickerProbeView) g_pickerProbeView->Release();
+        g_pickerProbeView = nullptr;
+        g_pickerProbeSignatures.clear();
         if (g_customView) g_customView->Release();
         if (g_targetIdentity) g_targetIdentity->Release();
         if (g_targetTexture) g_targetTexture->Release();
@@ -202,13 +211,14 @@ namespace
         g_targetWidth = 0;
         g_targetHeight = 0;
         g_signature = {};
+		g_routeSignatures.clear();
         release_intermediates_locked();
         g_candidates.clear();
         g_observedOutputSizes.clear();
         g_directObservations = 0;
         g_derivedObservations = 0;
         g_finalDrawObservations = 0;
-        g_previewSignature = {};
+		g_previewSignatures.clear();
         g_previewDeadline = 0;
         g_previewIndex = 0;
         g_previewHits = 0;
@@ -385,24 +395,57 @@ namespace
             candidate.signature.sourceSlot == selector.sourceSlot;
     }
 
+	bool same_physical_group(
+		const candidate_t& left,
+		const candidate_t& right)
+	{
+		return left.nativeFinalDraw && right.nativeFinalDraw &&
+			left.signature.sourceIdentity == right.signature.sourceIdentity &&
+			left.signature.call.kind == right.signature.call.kind &&
+			left.signature.call.count == right.signature.call.count &&
+			left.signature.call.start == right.signature.call.start &&
+			left.signature.call.base == right.signature.call.base &&
+			left.signature.sourceSlot == right.signature.sourceSlot;
+	}
+
     void restore_saved_selector_if_unique_locked()
     {
         if (!g_savedSelector.valid || g_signature.valid) return;
-        candidate_t* match{};
+		candidate_t* firstMatch{};
+		uintptr_t selectedSource{};
         for (auto& candidate : g_candidates)
         {
             if (candidate.hits < kStableObservationCount ||
                 !selector_matches(g_savedSelector, candidate))
                 continue;
-            if (match)
-                return; // Ambiguous after reload: require another preview.
-            match = &candidate;
+			if (!firstMatch)
+			{
+				firstMatch = &candidate;
+				selectedSource = candidate.signature.sourceIdentity;
+			}
+			else if (candidate.signature.sourceIdentity != selectedSource)
+			{
+				// The stable selector now identifies more than one physical
+				// screen. Do not guess after a game/mod update.
+				return;
+			}
         }
-        if (match)
+		if (firstMatch)
         {
-            g_signature = match->signature;
+			g_routeSignatures.clear();
+			for (const auto& candidate : g_candidates)
+			{
+				if (candidate.hits >= kStableObservationCount &&
+					selector_matches(g_savedSelector, candidate) &&
+					candidate.signature.sourceIdentity == selectedSource)
+					g_routeSignatures.push_back(candidate.signature);
+			}
+			g_signature = firstMatch->signature;
             ++g_trainedDraws;
-            g_detail = "Restored the previously selected final screen draw.";
+			std::ostringstream detail;
+			detail << "Restored " << g_routeSignatures.size()
+				<< " saved final-draw pass(es) for one physical screen.";
+			g_detail = detail.str();
         }
     }
 
@@ -463,6 +506,28 @@ namespace
         context->PSGetShaderResources(slot, 1, &nativeView);
         context->PSSetShaderResources(slot, 1, &custom);
         custom->Release();
+        scope.slot = slot;
+        scope.nativeView = nativeView;
+        scope.active = true;
+        scope.preview = preview;
+        return true;
+    }
+
+    bool bind_view_locked(
+        ID3D11DeviceContext* context,
+        UINT slot,
+        ID3D11ShaderResourceView* replacement,
+        per_draw_router::route_scope_t& scope,
+        bool preview,
+        std::unique_lock<std::mutex>& lock)
+    {
+        if (!replacement) return false;
+        replacement->AddRef();
+        lock.unlock();
+        ID3D11ShaderResourceView* nativeView{};
+        context->PSGetShaderResources(slot, 1, &nativeView);
+        context->PSSetShaderResources(slot, 1, &replacement);
+        replacement->Release();
         scope.slot = slot;
         scope.nativeView = nativeView;
         scope.active = true;
@@ -779,6 +844,8 @@ namespace per_draw_router
 
         if (g_phase == phase_t::training && g_signature.valid)
         {
+			if (g_routeSignatures.empty())
+				g_routeSignatures.push_back(g_signature);
             g_fastKind.store(
                 static_cast<unsigned>(g_signature.call.kind),
                 std::memory_order_relaxed);
@@ -787,9 +854,11 @@ namespace per_draw_router
             g_fastBase.store(g_signature.call.base, std::memory_order_relaxed);
             set_phase_locked(phase_t::active);
             std::ostringstream detail;
-            detail << "Routing only " << draw_kind_name(g_signature.call.kind)
+			detail << "Routing " << g_routeSignatures.size() << " "
+				<< draw_kind_name(g_signature.call.kind)
+				<< " pass(es) for one physical screen"
                 << " slot=" << g_signature.sourceSlot
-                << " by its selected native screen resource.";
+				<< "; unmatched screens retain native resources.";
             g_detail = detail.str();
             request_hooks_locked(true, false, g_signature.call.kind);
             custom_render_probe::set_fallback_mode(
@@ -797,10 +866,11 @@ namespace per_draw_router
             diagnostic_log::writef(
                 "route",
                 "Per-display router active for '%s': %s count=%u start=%u "
-                "base=%d slot=%u; native displays retained.",
+				"base=%d slot=%u passes=%llu; native displays retained.",
                 g_displayId.c_str(), draw_kind_name(g_signature.call.kind),
                 g_signature.call.count, g_signature.call.start,
-                g_signature.call.base, g_signature.sourceSlot);
+				g_signature.call.base, g_signature.sourceSlot,
+				static_cast<unsigned long long>(g_routeSignatures.size()));
         }
         else if (g_phase == phase_t::training &&
             GetTickCount64() - g_trainingStarted >= kTrainingTimeoutMs)
@@ -903,11 +973,23 @@ namespace per_draw_router
         std::unique_lock<std::mutex> lock(g_mutex);
         auto stable_candidate = [](size_t requested) -> candidate_t* {
             size_t ordinal{};
-            for (auto& candidate : g_candidates)
+			for (size_t index = 0; index < g_candidates.size(); ++index)
             {
+				auto& candidate = g_candidates[index];
                 if (!candidate.nativeFinalDraw ||
                     candidate.hits < kStableObservationCount)
                     continue;
+				bool alreadyRepresented{};
+				for (size_t prior = 0; prior < index; ++prior)
+				{
+					if (g_candidates[prior].hits >= kStableObservationCount &&
+						same_physical_group(g_candidates[prior], candidate))
+					{
+						alreadyRepresented = true;
+						break;
+					}
+				}
+				if (alreadyRepresented) continue;
                 if (ordinal++ == requested)
                     return &candidate;
             }
@@ -918,11 +1000,27 @@ namespace per_draw_router
         {
             std::ostringstream rows;
             size_t ordinal{};
-            for (const auto& candidate : g_candidates)
+			for (size_t index = 0; index < g_candidates.size(); ++index)
             {
+				const auto& candidate = g_candidates[index];
                 if (!candidate.nativeFinalDraw ||
                     candidate.hits < kStableObservationCount)
                     continue;
+				bool alreadyRepresented{};
+				for (size_t prior = 0; prior < index; ++prior)
+				{
+					if (g_candidates[prior].hits >= kStableObservationCount &&
+						same_physical_group(g_candidates[prior], candidate))
+					{
+						alreadyRepresented = true;
+						break;
+					}
+				}
+				if (alreadyRepresented) continue;
+				size_t passes{};
+				for (const auto& grouped : g_candidates)
+					if (grouped.hits >= kStableObservationCount &&
+						same_physical_group(candidate, grouped)) ++passes;
                 rows << "\n" << ordinal
                     << " kind=" << draw_kind_name(candidate.signature.call.kind)
                     << " count=" << candidate.signature.call.count
@@ -935,7 +1033,8 @@ namespace per_draw_router
                     << " ps=0x" << candidate.signature.pixelShader
                     << std::dec
                     << " size=" << candidate.width << 'x' << candidate.height
-                    << " format=" << static_cast<unsigned>(candidate.format);
+					<< " format=" << static_cast<unsigned>(candidate.format)
+					<< " passes=" << passes;
                 ++ordinal;
             }
             std::ostringstream output;
@@ -954,7 +1053,7 @@ namespace per_draw_router
             {
                 if (input >> extra)
                     return "ERROR Use route preview off.";
-                g_previewSignature = {};
+				g_previewSignatures.clear();
                 g_previewDeadline = 0;
                 return "OK Final-draw preview stopped; native GPS binding restored.";
             }
@@ -992,7 +1091,11 @@ namespace per_draw_router
             if (!candidate)
                 return "ERROR Candidate index is not in route candidates.";
 
-            g_previewSignature = candidate->signature;
+			g_previewSignatures.clear();
+			for (const auto& grouped : g_candidates)
+				if (grouped.hits >= kStableObservationCount &&
+					same_physical_group(*candidate, grouped))
+					g_previewSignatures.push_back(grouped.signature);
             g_previewIndex = static_cast<size_t>(index);
             g_previewHits = 0;
             g_previewDeadline = GetTickCount64() + seconds * 1000;
@@ -1002,7 +1105,8 @@ namespace per_draw_router
                 custom_render_probe::fallback_mode_t::forced_off);
             std::ostringstream response;
             response << "OK Previewing candidate " << index << " for "
-                << seconds << " seconds; unmatched screens remain native.";
+				<< seconds << " seconds using " << g_previewSignatures.size()
+				<< " pass(es); unmatched screens remain native.";
             return response.str();
         }
 
@@ -1027,6 +1131,22 @@ namespace per_draw_router
             if (!candidate)
                 return "ERROR Candidate index is not in route candidates.";
             g_signature = candidate->signature;
+			g_routeSignatures.clear();
+			for (const auto& grouped : g_candidates)
+			{
+				if (grouped.nativeFinalDraw &&
+					grouped.hits >= kStableObservationCount &&
+					grouped.signature.sourceIdentity ==
+						candidate->signature.sourceIdentity &&
+					grouped.signature.call.kind == candidate->signature.call.kind &&
+					grouped.signature.call.count == candidate->signature.call.count &&
+					grouped.signature.call.start == candidate->signature.call.start &&
+					grouped.signature.call.base == candidate->signature.call.base &&
+					grouped.signature.sourceSlot == candidate->signature.sourceSlot)
+					g_routeSignatures.push_back(grouped.signature);
+			}
+			if (g_routeSignatures.empty())
+				g_routeSignatures.push_back(candidate->signature);
             g_savedSelector = {
                 candidate->signature.call.kind,
                 candidate->signature.call.count,
@@ -1034,22 +1154,24 @@ namespace per_draw_router
                 candidate->signature.call.base,
                 candidate->signature.sourceSlot,
                 true };
-            g_previewSignature = {};
+			g_previewSignatures.clear();
             g_previewDeadline = 0;
             g_trainingStarted = GetTickCount64();
+			++g_trainedDraws;
             set_phase_locked(phase_t::training);
             request_hooks_locked(true, false, draw_kind_t::indexed);
             diagnostic_log::writef(
                 "route",
                 "Final-draw candidate %llu selected: %s count=%u start=%u "
-                "base=%d slot=%u resource=%p.",
+				"base=%d slot=%u resource=%p passes=%llu.",
                 static_cast<unsigned long long>(index),
                 draw_kind_name(candidate->signature.call.kind),
                 candidate->signature.call.count,
                 candidate->signature.call.start,
                 candidate->signature.call.base,
                 candidate->signature.sourceSlot,
-                reinterpret_cast<void*>(candidate->signature.sourceIdentity));
+				reinterpret_cast<void*>(candidate->signature.sourceIdentity),
+				static_cast<unsigned long long>(g_routeSignatures.size()));
 
 			const std::string selectedDisplay = g_displayId;
 			const stable_selector_t saved = g_savedSelector;
@@ -1085,7 +1207,7 @@ namespace per_draw_router
             if (input >> extra)
                 return "ERROR Use route clear.";
             g_savedSelector = {};
-            g_previewSignature = {};
+			g_previewSignatures.clear();
             g_previewDeadline = 0;
             g_forceRetrain = true;
 			const std::string selectedDisplay = g_displayId;
@@ -1111,6 +1233,94 @@ namespace per_draw_router
 
         return "ERROR Use route candidates, preview <candidate> [seconds], "
             "preview off, select <candidate>, or clear.";
+    }
+
+    size_t picker_candidate_count()
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        size_t result{};
+        for (size_t index = 0; index < g_candidates.size(); ++index)
+        {
+            const auto& candidate = g_candidates[index];
+            if (!candidate.nativeFinalDraw ||
+                candidate.hits < kStableObservationCount)
+                continue;
+            bool represented{};
+            for (size_t prior = 0; prior < index; ++prior)
+            {
+                if (g_candidates[prior].hits >= kStableObservationCount &&
+                    same_physical_group(g_candidates[prior], candidate))
+                {
+                    represented = true;
+                    break;
+                }
+            }
+            if (!represented) ++result;
+        }
+        return result;
+    }
+
+    bool picker_set_probe(
+        size_t requested,
+        ID3D11ShaderResourceView* probeView)
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        candidate_t* selected{};
+        size_t ordinal{};
+        for (size_t index = 0; index < g_candidates.size(); ++index)
+        {
+            auto& candidate = g_candidates[index];
+            if (!candidate.nativeFinalDraw ||
+                candidate.hits < kStableObservationCount)
+                continue;
+            bool represented{};
+            for (size_t prior = 0; prior < index; ++prior)
+            {
+                if (g_candidates[prior].hits >= kStableObservationCount &&
+                    same_physical_group(g_candidates[prior], candidate))
+                {
+                    represented = true;
+                    break;
+                }
+            }
+            if (represented) continue;
+            if (ordinal++ == requested)
+            {
+                selected = &candidate;
+                break;
+            }
+        }
+        if (!selected || !probeView) return false;
+
+        if (g_pickerProbeView) g_pickerProbeView->Release();
+        g_pickerProbeView = probeView;
+        g_pickerProbeView->AddRef();
+        g_pickerProbeSignatures.clear();
+        for (const auto& grouped : g_candidates)
+        {
+            if (grouped.hits >= kStableObservationCount &&
+                same_physical_group(*selected, grouped))
+                g_pickerProbeSignatures.push_back(grouped.signature);
+        }
+        if (g_pickerProbeSignatures.empty())
+        {
+            g_pickerProbeView->Release();
+            g_pickerProbeView = nullptr;
+            return false;
+        }
+        set_phase_locked(phase_t::training);
+        request_hooks_locked(true, false, draw_kind_t::indexed);
+        custom_render_probe::set_fallback_mode(
+            custom_render_probe::fallback_mode_t::forced_off);
+        return true;
+    }
+
+    void picker_clear_probe()
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_pickerProbeView) g_pickerProbeView->Release();
+        g_pickerProbeView = nullptr;
+        g_pickerProbeSignatures.clear();
     }
 
     void notify_pixel_shader_resources(
@@ -1159,20 +1369,36 @@ namespace per_draw_router
         {
             observe_native_final_draw_locked(context, call);
 
+            if (g_pickerProbeView)
+            {
+                for (const auto& signature : g_pickerProbeSignatures)
+                {
+                    if (!matches_signature(context, signature, call))
+                        continue;
+                    return bind_view_locked(
+                        context, signature.sourceSlot, g_pickerProbeView,
+                        scope, true, lock);
+                }
+            }
+
             if (g_previewDeadline != 0)
             {
                 const uint64_t now = GetTickCount64();
                 if (now >= g_previewDeadline)
                 {
-                    g_previewSignature = {};
+					g_previewSignatures.clear();
                     g_previewDeadline = 0;
                 }
-                else if (matches_signature(
-                        context, g_previewSignature, call))
+				else
                 {
-                    return bind_custom_view_locked(
-                        context, g_previewSignature.sourceSlot,
-                        scope, true, lock);
+					for (const auto& signature : g_previewSignatures)
+					{
+						if (!matches_signature(context, signature, call))
+							continue;
+						return bind_custom_view_locked(
+							context, signature.sourceSlot,
+							scope, true, lock);
+					}
                 }
             }
 
@@ -1183,11 +1409,16 @@ namespace per_draw_router
             return false;
         }
 
-        if (g_phase != phase_t::active || !g_customView ||
-            !matches_signature(context, g_signature, call))
+		if (g_phase != phase_t::active || !g_customView)
             return false;
-        return bind_custom_view_locked(
-            context, g_signature.sourceSlot, scope, false, lock);
+		for (const auto& signature : g_routeSignatures)
+		{
+			if (!matches_signature(context, signature, call))
+				continue;
+			return bind_custom_view_locked(
+				context, signature.sourceSlot, scope, false, lock);
+		}
+		return false;
     }
 
     void end_draw(ID3D11DeviceContext* context, route_scope_t& scope)

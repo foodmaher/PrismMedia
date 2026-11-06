@@ -71,11 +71,12 @@ jobs:
 
           PrismDiagnosticConsole.exe is optional. Start the game first, then
           run the console. Keep its diagnostics folder beside the EXE.
-          Enter: script gps-final-draw.ps1
-          Confirm: capabilities includes
-          perDrawRoute=3 finalDrawSwap=1 routeCalibration=1
-          The selected final draw is saved and unmatched GPS screens remain native.
-          See FINAL-DRAW-ROUTING.md for the one-time calibration and
+          Recommended: choose media, open System > Truck screen routing,
+          press Pick truck screen, and double-click the intended display.
+          Confirm: capabilities includes perDrawRoute=5 groupedPassRouting=1
+          visualPicker=1 privateMediaTexture=1. The selected final draw is
+          saved and unmatched GPS screens remain native.
+          See FINAL-DRAW-ROUTING.md for visual calibration and
           DIAGNOSTIC-CONSOLE.md for recovery and capture instructions.
           "@ | Set-Content "$Package\INSTALL.txt"
       - uses: actions/upload-artifact@v4

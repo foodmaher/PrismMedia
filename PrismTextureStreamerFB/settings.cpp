@@ -384,6 +384,12 @@ namespace settings {
                 section.c_str(), "Enabled", 1, path.c_str()) != 0;
             screen.original_texture = read_string(path, section.c_str(), "OriginalTexture");
             screen.override_texture = read_string(path, section.c_str(), "OverrideTexture");
+			screen.visualPickerMode = GetPrivateProfileIntA(
+				section.c_str(), "VisualPickerMode",
+				(screen.type == screen_type_t::CUSTOM &&
+				 (screen.original_texture.empty() ||
+				  screen.original_texture == ".tobj")) ? 1 : 0,
+				path.c_str()) != 0;
             screen.override_texture_size_w = GetPrivateProfileIntA(section.c_str(), "OverrideWidth", 0, path.c_str());
             screen.override_texture_size_h = GetPrivateProfileIntA(section.c_str(), "OverrideHeight", 0, path.c_str());
 			screen.finalDrawRouteValid = GetPrivateProfileIntA(
@@ -771,6 +777,7 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "Enabled", screen.enabled ? 1 : 0);
             WritePrivateProfileStringA(section.c_str(), "OriginalTexture", screen.original_texture.c_str(), temporaryPath.c_str());
             WritePrivateProfileStringA(section.c_str(), "OverrideTexture", screen.override_texture.c_str(), temporaryPath.c_str());
+			write_number(temporaryPath, section.c_str(), "VisualPickerMode", screen.visualPickerMode ? 1 : 0);
             write_number(temporaryPath, section.c_str(), "OverrideWidth", screen.override_texture_size_w);
             write_number(temporaryPath, section.c_str(), "OverrideHeight", screen.override_texture_size_h);
 			write_number(temporaryPath, section.c_str(), "FinalDrawRouteValid", screen.finalDrawRouteValid ? 1 : 0);

@@ -62,9 +62,9 @@ PrismDiagnosticConsole.exe is optional. Run it while the game is open to
 repeat bounded diagnostic tests and change safe probe controls without
 rebuilding PrismMedia.dll. See DIAGNOSTIC-CONSOLE.md.
 
-For the ETS2 1.62 final-draw calibration, see FINAL-DRAW-ROUTING.md. Confirm
-`perDrawRoute=3 finalDrawSwap=1 routeCalibration=1` before testing so an older
-4.0.0 DLL is not mistaken for this revision.
+For the ETS2 1.62 visual final-draw picker, see FINAL-DRAW-ROUTING.md. Confirm
+`perDrawRoute=5 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1`
+before testing so an older 4.0.0 DLL is not mistaken for this revision.
 "@ | Set-Content (Join-Path $Package 'INSTALL.txt')
 
 $Hash = Get-FileHash -Algorithm SHA256 $Dll

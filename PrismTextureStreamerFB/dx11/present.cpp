@@ -3,6 +3,7 @@
 #include "../thread_scheduling.h"
 #include "../hotkeys.h"
 #include "../menu/menu.h"
+#include "../display_picker.h"
 #include "../win32/win32.h"
 #include <MinHook/MinHook.h>
 #include "../scs_logging.h"
@@ -383,6 +384,11 @@ HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
 
         init = true;
     }
+
+    // The visual picker creates private custom-display textures and, during
+    // one bounded calibration, samples the completed game frame here. This is
+    // deliberately before ImGui so its overlay cannot contaminate the result.
+    display_picker::on_present(SwapChain, device, context);
 
     // Capture the game's lighting before the plugin UI is rendered. The
     // asynchronous query is consumed on a later frame and never blocks here.

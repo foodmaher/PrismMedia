@@ -1,6 +1,6 @@
 # RenderDoc-confirmed calibration for ETS2 addon GPS displays. The plugin
-# swaps Prism media only for one selected final draw; every unmatched display
-# keeps the game's original SRV and native processing.
+# groups all final-draw passes for one selected physical screen; every
+# unmatched display keeps the game's original SRV and native processing.
 Write-Host 'Keep exactly one Prism custom display enabled and keep all GPS screens visible.'
 Read-PrismObservation 'Return to the cockpit, then press Enter to start final-draw discovery' | Out-Null
 

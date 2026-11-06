@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 
 struct ID3D11DeviceContext;
@@ -73,6 +74,15 @@ namespace per_draw_router
     // final-draw discovery so a screen can be previewed and selected without
     // rebuilding the DLL or suppressing native addon processing.
     std::string command(const std::string& text);
+
+    // Visual picker bridge. Candidate indices are physical screen groups, not
+    // individual shader passes. A temporary probe replaces every pass in one
+    // group and is always restored immediately after each draw.
+    size_t picker_candidate_count();
+    bool picker_set_probe(
+        size_t candidate,
+        ID3D11ShaderResourceView* probeView);
+    void picker_clear_probe();
 
     // Called only by the bounded D3D hook set.
     void notify_pixel_shader_resources(

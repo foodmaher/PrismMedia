@@ -20,21 +20,23 @@ previews one candidate at a time, and saves the explicitly selected draw.
 1. Build and install `Release|x64` while keeping version 4.0.0.
 2. Start ETS2 and enter the same truck with one enabled custom display.
 3. Keep the custom display and the extra smartphone visible for 3–5 seconds.
-4. Open `PrismDiagnosticConsole.exe` and enter
-   `script gps-final-draw.ps1` for the one-time calibration.
+4. Open PrismMedia's System page, enable the visual truck-screen picker, press
+   **Pick truck screen**, and double-click the intended screen in the cockpit.
 5. Confirm the selected display shows media and every unmatched GPS/smartphone
    shows its original game content, then enter `route status`.
 
-First enter `capabilities` and confirm
-`perDrawRoute=3 finalDrawSwap=1 routeCalibration=1` so an older 4.0.0 DLL
+The optional console `capabilities` command should report
+`perDrawRoute=5 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1` so an older 4.0.0 DLL
 cannot be mistaken for this revision. Success is `detail=active` with an
 increasing `routed` count. The selection is stored in the normal 4.0.0 config;
 new runtime resource identities are rediscovered automatically after restart.
 
 If it reports `fallback`, copy `PrismMedia.log`, `route candidates`, and the
 complete `route status` line. Original GPS/smartphone displays remain enabled.
-Use `route clear` and rerun the calibration only when a truck/mod update changes
-the stable final draw; rebuilding the plugin is not required.
+Use the visual picker again when a truck/mod update changes the stable final
+draw; rebuilding the plugin is not required. Its automatic click probe accepts
+only a clear white/black pixel response. Unsupported backbuffer formats and
+ambiguous clicks go directly to the numbered fallback without saving a route.
 
 The current router intentionally learns one enabled custom display at a time.
 With two or more enabled custom displays it leaves original displays untouched

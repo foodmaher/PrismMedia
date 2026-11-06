@@ -150,6 +150,14 @@ struct screen_t
 	uint64_t textureRouteSequence{};
 	uint64_t textureRouteMatchedSequence{};
 	uint64_t lastTextureRouteSkipLogTick{};
+	// Stable final-draw selector. Runtime resource and shader pointers are not
+	// persisted because they change on every game run.
+	bool finalDrawRouteValid{};
+	uint32_t finalDrawRouteKind{};
+	uint32_t finalDrawRouteCount{};
+	uint32_t finalDrawRouteStart{};
+	int32_t finalDrawRouteBase{};
+	uint32_t finalDrawRouteSlot{ 6 };
 	bool suspiciousMagentaFrame{};
 	bool suspiciousBlackFrame{};
 	bool sourceFrameStale{};

@@ -5,14 +5,17 @@
 #include "diagnostic_log.h"
 #include "dx11/CreateTexture2D.h"
 #include "screens.h"
+#include "settings.h"
 
 #include <Windows.h>
 #include <d3d11.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 
 namespace
@@ -22,6 +25,13 @@ namespace
     constexpr uint32_t kStableObservationCount = 3;
     constexpr size_t kMaximumIntermediates = 16;
     constexpr size_t kMaximumCandidates = 64;
+    // Confirmed in the ETS2 1.62 RenderDoc capture: both addon GPS surfaces
+    // sample independent 1024x1024 R8G8B8A8_SRGB targets from PS slot 6.
+    constexpr UINT kFinalDrawSourceSlot = 6;
+    constexpr UINT kFinalDrawWidth = 1024;
+    constexpr UINT kFinalDrawHeight = 1024;
+    constexpr uint64_t kPreviewMinimumMs = 3000;
+    constexpr uint64_t kPreviewMaximumMs = 60000;
 
     struct draw_signature_t
     {
@@ -50,6 +60,21 @@ namespace
     {
         draw_signature_t signature;
         uint32_t hits{};
+        UINT width{};
+        UINT height{};
+        DXGI_FORMAT format{ DXGI_FORMAT_UNKNOWN };
+        bool nativeFinalDraw{};
+    };
+
+    struct stable_selector_t
+    {
+        per_draw_router::draw_kind_t kind{
+            per_draw_router::draw_kind_t::none };
+        UINT count{};
+        UINT start{};
+        INT base{};
+        UINT sourceSlot{};
+        bool valid{};
     };
 
     struct tracked_bindings_t
@@ -70,6 +95,7 @@ namespace
     uint64_t g_routedDraws{};
     uint64_t g_directObservations{};
     uint64_t g_derivedObservations{};
+    uint64_t g_finalDrawObservations{};
     UINT g_targetWidth{};
     UINT g_targetHeight{};
     ID3D11Texture2D* g_targetTexture{};
@@ -83,6 +109,12 @@ namespace
     bool g_hooksTraining{};
     per_draw_router::draw_kind_t g_hookKind{ per_draw_router::draw_kind_t::none };
     bool g_forceRetrain{};
+    stable_selector_t g_savedSelector;
+    draw_signature_t g_previewSignature;
+    uint64_t g_previewDeadline{};
+    size_t g_previewIndex{};
+    uint64_t g_previewHits{};
+    bool g_candidateReadyLogged{};
     std::atomic<int> g_fastPhase{
         static_cast<int>(per_draw_router::phase_t::waiting_texture) };
     std::atomic<unsigned> g_fastKind{
@@ -175,6 +207,12 @@ namespace
         g_observedOutputSizes.clear();
         g_directObservations = 0;
         g_derivedObservations = 0;
+        g_finalDrawObservations = 0;
+        g_previewSignature = {};
+        g_previewDeadline = 0;
+        g_previewIndex = 0;
+        g_previewHits = 0;
+        g_candidateReadyLogged = false;
         invalidate_thread_bindings();
     }
 
@@ -282,6 +320,154 @@ namespace
         const bool sourceMatches = same_identity(view, expected.sourceIdentity);
         if (view) view->Release();
         return sourceMatches;
+    }
+
+    bool describe_final_draw_source(
+        ID3D11ShaderResourceView* view,
+        UINT& width,
+        UINT& height,
+        DXGI_FORMAT& format,
+        uintptr_t& identity)
+    {
+        width = 0;
+        height = 0;
+        format = DXGI_FORMAT_UNKNOWN;
+        identity = 0;
+        if (!view) return false;
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+        view->GetDesc(&viewDescription);
+
+        ID3D11Resource* resource{};
+        view->GetResource(&resource);
+        if (!resource) return false;
+        ID3D11Texture2D* texture{};
+        const HRESULT result = resource->QueryInterface(
+            __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture));
+        if (SUCCEEDED(result) && texture)
+        {
+            D3D11_TEXTURE2D_DESC description{};
+            texture->GetDesc(&description);
+            width = description.Width;
+            height = description.Height;
+            format = description.Format;
+            texture->Release();
+        }
+        IUnknown* canonical{};
+        if (SUCCEEDED(resource->QueryInterface(
+                __uuidof(IUnknown), reinterpret_cast<void**>(&canonical))) &&
+            canonical)
+        {
+            identity = reinterpret_cast<uintptr_t>(canonical);
+            canonical->Release();
+        }
+        resource->Release();
+
+        const bool rgbaResource = format == DXGI_FORMAT_R8G8B8A8_TYPELESS ||
+            format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+            format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        const bool rgbaView = viewDescription.Format == DXGI_FORMAT_UNKNOWN ||
+            viewDescription.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+            viewDescription.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        return identity != 0 && width == kFinalDrawWidth &&
+            height == kFinalDrawHeight && rgbaResource && rgbaView;
+    }
+
+    bool selector_matches(
+        const stable_selector_t& selector,
+        const candidate_t& candidate)
+    {
+        return selector.valid && candidate.nativeFinalDraw &&
+            candidate.signature.call.kind == selector.kind &&
+            candidate.signature.call.count == selector.count &&
+            candidate.signature.call.start == selector.start &&
+            candidate.signature.call.base == selector.base &&
+            candidate.signature.sourceSlot == selector.sourceSlot;
+    }
+
+    void restore_saved_selector_if_unique_locked()
+    {
+        if (!g_savedSelector.valid || g_signature.valid) return;
+        candidate_t* match{};
+        for (auto& candidate : g_candidates)
+        {
+            if (candidate.hits < kStableObservationCount ||
+                !selector_matches(g_savedSelector, candidate))
+                continue;
+            if (match)
+                return; // Ambiguous after reload: require another preview.
+            match = &candidate;
+        }
+        if (match)
+        {
+            g_signature = match->signature;
+            ++g_trainedDraws;
+            g_detail = "Restored the previously selected final screen draw.";
+        }
+    }
+
+    void observe_native_final_draw_locked(
+        ID3D11DeviceContext* context,
+        const per_draw_router::draw_call_t& call)
+    {
+        if (call.kind != per_draw_router::draw_kind_t::indexed)
+            return;
+
+        ID3D11ShaderResourceView* view{};
+        context->PSGetShaderResources(kFinalDrawSourceSlot, 1, &view);
+        UINT width{}, height{};
+        DXGI_FORMAT format{ DXGI_FORMAT_UNKNOWN };
+        uintptr_t identity{};
+        const bool matches = describe_final_draw_source(
+            view, width, height, format, identity);
+        if (view) view->Release();
+        if (!matches) return;
+
+        const draw_signature_t signature = capture_signature(
+            context, call, kFinalDrawSourceSlot, identity);
+        if (!signature.valid) return;
+        ++g_finalDrawObservations;
+
+        auto found = std::find_if(
+            g_candidates.begin(), g_candidates.end(),
+            [&signature](const candidate_t& item) {
+                return item.nativeFinalDraw &&
+                    equal_signature(item.signature, signature);
+            });
+        if (found == g_candidates.end())
+        {
+            if (g_candidates.size() >= kMaximumCandidates) return;
+            g_candidates.push_back(
+                { signature, 1, width, height, format, true });
+        }
+        else
+        {
+            ++found->hits;
+        }
+        restore_saved_selector_if_unique_locked();
+    }
+
+    bool bind_custom_view_locked(
+        ID3D11DeviceContext* context,
+        UINT slot,
+        per_draw_router::route_scope_t& scope,
+        bool preview,
+        std::unique_lock<std::mutex>& lock)
+    {
+        if (!g_customView) return false;
+        ID3D11ShaderResourceView* custom = g_customView;
+        custom->AddRef();
+        lock.unlock();
+
+        ID3D11ShaderResourceView* nativeView{};
+        context->PSGetShaderResources(slot, 1, &nativeView);
+        context->PSSetShaderResources(slot, 1, &custom);
+        custom->Release();
+        scope.slot = slot;
+        scope.nativeView = nativeView;
+        scope.active = true;
+        scope.preview = preview;
+        return true;
     }
 
     bool find_source_locked(UINT& slot, uintptr_t& identity, unsigned& hop)
@@ -460,6 +646,7 @@ namespace per_draw_router
         ID3D11Texture2D* texture{};
         uint64_t routeSequence{};
         std::string displayId;
+		stable_selector_t persistedSelector;
         size_t eligible{};
         {
             std::lock_guard<std::mutex> screensLock(g_screens_mutex);
@@ -475,11 +662,24 @@ namespace per_draw_router
                     texture->AddRef();
                     routeSequence = screen.textureRouteMatchedSequence;
                     displayId = screen.mediaClientId;
+					if (screen.finalDrawRouteValid &&
+						screen.finalDrawRouteKind <
+							static_cast<uint32_t>(draw_kind_t::none) &&
+						screen.finalDrawRouteSlot < kTrackedSlots)
+					{
+						persistedSelector.kind = static_cast<draw_kind_t>(
+							screen.finalDrawRouteKind);
+						persistedSelector.count = screen.finalDrawRouteCount;
+						persistedSelector.start = screen.finalDrawRouteStart;
+						persistedSelector.base = screen.finalDrawRouteBase;
+						persistedSelector.sourceSlot = screen.finalDrawRouteSlot;
+						persistedSelector.valid = true;
+					}
                 }
             }
         }
 
-        std::lock_guard<std::mutex> lock(g_mutex);
+        std::unique_lock<std::mutex> lock(g_mutex);
         if (!g_enabled)
         {
             if (texture) texture->Release();
@@ -517,6 +717,7 @@ namespace per_draw_router
         if (changed)
         {
             g_forceRetrain = false;
+			g_savedSelector = persistedSelector;
             release_target_locked();
             g_targetTexture = texture;
             texture = nullptr;
@@ -556,15 +757,18 @@ namespace per_draw_router
             else
             {
                 set_phase_locked(phase_t::training);
-                g_detail = "Tracing the configured media through the UI compositor.";
+                g_detail = "Discovering independent 1024x1024 GPS final draws at PS slot 6.";
                 // Training no longer relies on the version-specific global
                 // branch, so native GPS/smartphone displays remain untouched.
                 custom_render_probe::set_fallback_mode(
                     custom_render_probe::fallback_mode_t::forced_off);
-                request_hooks_locked(true, true, draw_kind_t::none);
+				// RenderDoc proved both target surfaces use DrawIndexed, so the
+				// calibration never enables the other six draw detours or the
+				// high-frequency PSSetShaderResources detour.
+                request_hooks_locked(true, false, draw_kind_t::indexed);
                 diagnostic_log::writef(
                     "route",
-                    "Per-display compositor tracing started for '%s' (%ux%u).",
+                    "Per-display final-draw discovery started for '%s' (%ux%u media).",
                     g_displayId.c_str(), g_targetWidth, g_targetHeight);
             }
         }
@@ -585,7 +789,7 @@ namespace per_draw_router
             std::ostringstream detail;
             detail << "Routing only " << draw_kind_name(g_signature.call.kind)
                 << " slot=" << g_signature.sourceSlot
-                << " after one compositor hop.";
+                << " by its selected native screen resource.";
             g_detail = detail.str();
             request_hooks_locked(true, false, g_signature.call.kind);
             custom_render_probe::set_fallback_mode(
@@ -601,15 +805,37 @@ namespace per_draw_router
         else if (g_phase == phase_t::training &&
             GetTickCount64() - g_trainingStarted >= kTrainingTimeoutMs)
         {
-            set_phase_locked(phase_t::fallback);
-            g_detail = "Compositor tracing timed out; original displays retained.";
-            request_hooks_locked(false);
-            custom_render_probe::set_fallback_mode(
-                custom_render_probe::fallback_mode_t::forced_off);
-            diagnostic_log::write(
-                "error",
-                "Per-display router found no stable one-hop compositor route "
-                "within 12 seconds; original displays were retained.");
+            const bool hasFinalDrawCandidate = std::any_of(
+                g_candidates.begin(), g_candidates.end(),
+                [](const candidate_t& candidate) {
+                    return candidate.nativeFinalDraw &&
+                        candidate.hits >= kStableObservationCount;
+                });
+            if (hasFinalDrawCandidate)
+            {
+                g_detail = "Final-draw candidates are ready; use route candidates, "
+                    "route preview, then route select.";
+                if (!g_candidateReadyLogged)
+                {
+                    g_candidateReadyLogged = true;
+                    diagnostic_log::write(
+                        "route",
+                        "Independent GPS final draws discovered. Select one "
+                        "through the diagnostic console; native displays remain active.");
+                }
+            }
+            else
+            {
+                set_phase_locked(phase_t::fallback);
+                g_detail = "Final-draw discovery timed out; original displays retained.";
+                request_hooks_locked(false);
+                custom_render_probe::set_fallback_mode(
+                    custom_render_probe::fallback_mode_t::forced_off);
+                diagnostic_log::write(
+                    "error",
+                    "Per-display router found no stable 1024x1024 slot-6 GPS "
+                    "draw within 12 seconds; original displays were retained.");
+            }
         }
     }
 
@@ -637,7 +863,17 @@ namespace per_draw_router
             detail << " traceDirect=" << g_directObservations
                 << " traceTargets=" << g_intermediates.size()
                 << " traceDerived=" << g_derivedObservations
+                << " finalDraws=" << g_finalDrawObservations
                 << " candidates=" << g_candidates.size();
+            if (g_previewDeadline != 0)
+            {
+                const uint64_t now = GetTickCount64();
+                detail << " preview=" << g_previewIndex
+                    << " previewHits=" << g_previewHits
+                    << " previewMs="
+                    << (now < g_previewDeadline
+                        ? g_previewDeadline - now : 0);
+            }
             if (!g_observedOutputSizes.empty())
             {
                 detail << " outputs=";
@@ -652,6 +888,229 @@ namespace per_draw_router
         }
         return { g_phase, g_enabled, g_displayId, g_trainedDraws,
             g_routedDraws, detail.str() };
+    }
+
+    std::string command(const std::string& text)
+    {
+        std::istringstream input(text);
+        std::string action;
+        input >> action;
+        std::transform(action.begin(), action.end(), action.begin(),
+            [](unsigned char character) {
+                return static_cast<char>(std::tolower(character));
+            });
+
+        std::unique_lock<std::mutex> lock(g_mutex);
+        auto stable_candidate = [](size_t requested) -> candidate_t* {
+            size_t ordinal{};
+            for (auto& candidate : g_candidates)
+            {
+                if (!candidate.nativeFinalDraw ||
+                    candidate.hits < kStableObservationCount)
+                    continue;
+                if (ordinal++ == requested)
+                    return &candidate;
+            }
+            return nullptr;
+        };
+
+        if (action.empty() || action == "candidates")
+        {
+            std::ostringstream rows;
+            size_t ordinal{};
+            for (const auto& candidate : g_candidates)
+            {
+                if (!candidate.nativeFinalDraw ||
+                    candidate.hits < kStableObservationCount)
+                    continue;
+                rows << "\n" << ordinal
+                    << " kind=" << draw_kind_name(candidate.signature.call.kind)
+                    << " count=" << candidate.signature.call.count
+                    << " start=" << candidate.signature.call.start
+                    << " base=" << candidate.signature.call.base
+                    << " slot=" << candidate.signature.sourceSlot
+                    << " hits=" << candidate.hits
+                    << " resource=0x" << std::hex
+                    << candidate.signature.sourceIdentity
+                    << " ps=0x" << candidate.signature.pixelShader
+                    << std::dec
+                    << " size=" << candidate.width << 'x' << candidate.height
+                    << " format=" << static_cast<unsigned>(candidate.format);
+                ++ordinal;
+            }
+            std::ostringstream output;
+            output << "OK candidates=" << ordinal << rows.str();
+            if (ordinal == 0)
+                output << "\nnone; keep the cockpit visible and run route retrain";
+            return output.str();
+        }
+
+        if (action == "preview")
+        {
+            std::string selection;
+            input >> selection;
+            std::string extra;
+            if (selection == "off" || selection == "stop")
+            {
+                if (input >> extra)
+                    return "ERROR Use route preview off.";
+                g_previewSignature = {};
+                g_previewDeadline = 0;
+                return "OK Final-draw preview stopped; native GPS binding restored.";
+            }
+
+            uint64_t index{};
+            uint64_t seconds{ 8 };
+            try
+            {
+                size_t used{};
+                index = std::stoull(selection, &used, 10);
+                if (used != selection.size()) throw std::invalid_argument("index");
+                std::string duration;
+                if (input >> duration)
+                {
+                    used = 0;
+                    seconds = std::stoull(duration, &used, 10);
+                    if (used != duration.size())
+                        throw std::invalid_argument("seconds");
+                }
+                if (input >> extra)
+                    throw std::invalid_argument("extra");
+            }
+            catch (...)
+            {
+                return "ERROR Use route preview <candidate> [3..60 seconds], or route preview off.";
+            }
+            if (seconds * 1000 < kPreviewMinimumMs ||
+                seconds * 1000 > kPreviewMaximumMs)
+                return "ERROR Preview duration must be 3..60 seconds.";
+            if (!g_customView)
+                return "ERROR The enabled custom display has no live media SRV yet.";
+            if (g_phase == phase_t::active)
+                return "ERROR A route is already active; use route retrain before previewing another candidate.";
+            candidate_t* candidate = stable_candidate(static_cast<size_t>(index));
+            if (!candidate)
+                return "ERROR Candidate index is not in route candidates.";
+
+            g_previewSignature = candidate->signature;
+            g_previewIndex = static_cast<size_t>(index);
+            g_previewHits = 0;
+            g_previewDeadline = GetTickCount64() + seconds * 1000;
+            set_phase_locked(phase_t::training);
+            request_hooks_locked(true, false, draw_kind_t::indexed);
+            custom_render_probe::set_fallback_mode(
+                custom_render_probe::fallback_mode_t::forced_off);
+            std::ostringstream response;
+            response << "OK Previewing candidate " << index << " for "
+                << seconds << " seconds; unmatched screens remain native.";
+            return response.str();
+        }
+
+        if (action == "select")
+        {
+            std::string selection, extra;
+            if (!(input >> selection) || (input >> extra))
+                return "ERROR Use route select <candidate>.";
+            uint64_t index{};
+            try
+            {
+                size_t used{};
+                index = std::stoull(selection, &used, 10);
+                if (used != selection.size())
+                    throw std::invalid_argument("index");
+            }
+            catch (...)
+            {
+                return "ERROR Use route select <candidate>.";
+            }
+            candidate_t* candidate = stable_candidate(static_cast<size_t>(index));
+            if (!candidate)
+                return "ERROR Candidate index is not in route candidates.";
+            g_signature = candidate->signature;
+            g_savedSelector = {
+                candidate->signature.call.kind,
+                candidate->signature.call.count,
+                candidate->signature.call.start,
+                candidate->signature.call.base,
+                candidate->signature.sourceSlot,
+                true };
+            g_previewSignature = {};
+            g_previewDeadline = 0;
+            g_trainingStarted = GetTickCount64();
+            set_phase_locked(phase_t::training);
+            request_hooks_locked(true, false, draw_kind_t::indexed);
+            diagnostic_log::writef(
+                "route",
+                "Final-draw candidate %llu selected: %s count=%u start=%u "
+                "base=%d slot=%u resource=%p.",
+                static_cast<unsigned long long>(index),
+                draw_kind_name(candidate->signature.call.kind),
+                candidate->signature.call.count,
+                candidate->signature.call.start,
+                candidate->signature.call.base,
+                candidate->signature.sourceSlot,
+                reinterpret_cast<void*>(candidate->signature.sourceIdentity));
+
+			const std::string selectedDisplay = g_displayId;
+			const stable_selector_t saved = g_savedSelector;
+			lock.unlock();
+			bool screenFound{};
+			{
+				std::lock_guard<std::mutex> screensLock(g_screens_mutex);
+				for (screen_t& screen : g_screens)
+				{
+					if (screen.type != screen_type_t::CUSTOM ||
+						screen.mediaClientId != selectedDisplay)
+						continue;
+					screen.finalDrawRouteValid = true;
+					screen.finalDrawRouteKind =
+						static_cast<uint32_t>(saved.kind);
+					screen.finalDrawRouteCount = saved.count;
+					screen.finalDrawRouteStart = saved.start;
+					screen.finalDrawRouteBase = saved.base;
+					screen.finalDrawRouteSlot = saved.sourceSlot;
+					screenFound = true;
+					break;
+				}
+			}
+			const bool savedConfiguration = screenFound && settings::save();
+			return savedConfiguration
+				? "OK Candidate selected and saved; route becomes active on the next telemetry update."
+				: "OK Candidate selected for this session, but its persistent setting could not be saved.";
+        }
+
+        if (action == "clear")
+        {
+            std::string extra;
+            if (input >> extra)
+                return "ERROR Use route clear.";
+            g_savedSelector = {};
+            g_previewSignature = {};
+            g_previewDeadline = 0;
+            g_forceRetrain = true;
+			const std::string selectedDisplay = g_displayId;
+			lock.unlock();
+			bool screenFound{};
+			{
+				std::lock_guard<std::mutex> screensLock(g_screens_mutex);
+				for (screen_t& screen : g_screens)
+				{
+					if (screen.type != screen_type_t::CUSTOM ||
+						screen.mediaClientId != selectedDisplay)
+						continue;
+					screen.finalDrawRouteValid = false;
+					screenFound = true;
+					break;
+				}
+			}
+			const bool savedConfiguration = screenFound && settings::save();
+			return savedConfiguration
+				? "OK Saved final-draw selection cleared; route retraining requested."
+				: "OK Session selection cleared, but its persistent setting could not be saved.";
+        }
+
+        return "ERROR Use route candidates, preview <candidate> [seconds], "
+            "preview off, select <candidate>, or clear.";
     }
 
     void notify_pixel_shader_resources(
@@ -698,43 +1157,37 @@ namespace per_draw_router
         std::unique_lock<std::mutex> lock(g_mutex);
         if (g_phase == phase_t::training)
         {
-            ensure_thread_bindings(context);
-            UINT sourceSlot{};
-            uintptr_t sourceIdentity{};
-            unsigned hop{};
-            if (!find_source_locked(sourceSlot, sourceIdentity, hop))
-                return false;
-            if (hop == 0)
+            observe_native_final_draw_locked(context, call);
+
+            if (g_previewDeadline != 0)
             {
-                ++g_directObservations;
-                remember_matching_outputs_locked(context);
+                const uint64_t now = GetTickCount64();
+                if (now >= g_previewDeadline)
+                {
+                    g_previewSignature = {};
+                    g_previewDeadline = 0;
+                }
+                else if (matches_signature(
+                        context, g_previewSignature, call))
+                {
+                    return bind_custom_view_locked(
+                        context, g_previewSignature.sourceSlot,
+                        scope, true, lock);
+                }
             }
-            else
-            {
-                ++g_derivedObservations;
-                observe_candidate_locked(
-                    context, call, sourceSlot, sourceIdentity);
-            }
+
+			// The older compositor trace could activate a shared intermediate
+			// and reproduce the black-screen bug. RenderDoc identified the
+			// independent native screen SRVs, so only an explicit preview and
+			// selection may activate routing now.
             return false;
         }
 
         if (g_phase != phase_t::active || !g_customView ||
             !matches_signature(context, g_signature, call))
             return false;
-
-        ID3D11ShaderResourceView* custom = g_customView;
-        custom->AddRef();
-        const UINT slot = g_signature.sourceSlot;
-        lock.unlock();
-
-        ID3D11ShaderResourceView* nativeView{};
-        context->PSGetShaderResources(slot, 1, &nativeView);
-        context->PSSetShaderResources(slot, 1, &custom);
-        custom->Release();
-        scope.slot = slot;
-        scope.nativeView = nativeView;
-        scope.active = true;
-        return true;
+        return bind_custom_view_locked(
+            context, g_signature.sourceSlot, scope, false, lock);
     }
 
     void end_draw(ID3D11DeviceContext* context, route_scope_t& scope)
@@ -742,9 +1195,13 @@ namespace per_draw_router
         if (!scope.active) return;
         context->PSSetShaderResources(scope.slot, 1, &scope.nativeView);
         if (scope.nativeView) scope.nativeView->Release();
+        const bool preview = scope.preview;
         scope = {};
         std::lock_guard<std::mutex> lock(g_mutex);
-        ++g_routedDraws;
+        if (preview)
+            ++g_previewHits;
+        else
+            ++g_routedDraws;
     }
 
     void shutdown()

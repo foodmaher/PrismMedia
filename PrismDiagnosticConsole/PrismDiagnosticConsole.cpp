@@ -148,7 +148,7 @@ namespace
             const auto runner = directory / L"Invoke-PrismScript.ps1";
             if (script.extension() != L".ps1" || !std::filesystem::is_regular_file(script) ||
                 !std::filesystem::is_regular_file(runner)) {
-                std::cerr << "Keep diagnostics beside this EXE. Use script gps-ab.ps1 or script <full-path.ps1>.\n";
+                std::cerr << "Keep diagnostics beside this EXE. Use script gps-final-draw.ps1 or script <full-path.ps1>.\n";
                 return 4;
             }
             wchar_t system[32768]{};
@@ -220,7 +220,7 @@ int main(int argc, char** argv)
 
     std::cout << "PrismMedia 4.0.0 Diagnostic Console\n"
         << "Connected target PID: " << processId << "\n"
-        << "Enter help for commands, script gps-ab.ps1 for the comparison, or quit.\n\n";
+        << "Enter help for commands, script gps-final-draw.ps1 for calibration, or quit.\n\n";
     for (;;)
     {
         std::cout << "prism> " << std::flush;

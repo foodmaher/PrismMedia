@@ -46,6 +46,7 @@ namespace per_draw_router
         unsigned int slot{};
         ID3D11ShaderResourceView* nativeView{};
         bool active{};
+        bool preview{};
     };
 
     struct status_t
@@ -66,6 +67,12 @@ namespace per_draw_router
     void set_enabled(bool enabled);
     void retrain();
     status_t status();
+
+    // RenderDoc proved that ETS2 presents each addon GPS through its own
+    // 1024x1024 SRV at pixel-shader slot 6. These commands expose the bounded
+    // final-draw discovery so a screen can be previewed and selected without
+    // rebuilding the DLL or suppressing native addon processing.
+    std::string command(const std::string& text);
 
     // Called only by the bounded D3D hook set.
     void notify_pixel_shader_resources(

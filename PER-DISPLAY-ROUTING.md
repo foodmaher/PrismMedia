@@ -10,31 +10,31 @@ both modes:
 That proves media capture and upload are healthy, while the global fallback is
 what affects unrelated GPS accessories. ETS2 1.62 no longer matches the legacy
 global branch and the original router observed no matching `DrawIndexed` call.
-This revision therefore does not depend on that branch: it traces the custom
-media resource through one UI-compositor render target, observes all seven
-D3D11 draw variants and learns the final draw plus pixel-shader resource slot.
+This revision therefore does not depend on that branch. A RenderDoc capture
+confirmed that the two visible addon GPS surfaces use independent 1024x1024
+R8G8B8A8 SRVs at pixel-shader slot 6. The router discovers those final draws,
+previews one candidate at a time, and saves the explicitly selected draw.
 
 ## One validation run
 
 1. Build and install `Release|x64` while keeping version 4.0.0.
 2. Start ETS2 and enter the same truck with one enabled custom display.
 3. Keep the custom display and the extra smartphone visible for 3–5 seconds.
-4. Confirm the configured display shows media and the extra smartphone shows
-   its original game GPS instead of black/static replacement content.
-5. Optionally open `PrismDiagnosticConsole.exe` and enter `route status`.
+4. Open `PrismDiagnosticConsole.exe` and enter
+   `script gps-final-draw.ps1` for the one-time calibration.
+5. Confirm the selected display shows media and every unmatched GPS/smartphone
+   shows its original game content, then enter `route status`.
 
-First enter `capabilities` and confirm `perDrawRoute=2 compositorTrace=1` so an
-older 4.0.0 DLL cannot be mistaken for this revision. Success is `detail=active`
-with an increasing `routed` count. Training is automatic, does not issue the
-game's texture-reload command and keeps the legacy global fallback off.
+First enter `capabilities` and confirm
+`perDrawRoute=3 finalDrawSwap=1 routeCalibration=1` so an older 4.0.0 DLL
+cannot be mistaken for this revision. Success is `detail=active` with an
+increasing `routed` count. The selection is stored in the normal 4.0.0 config;
+new runtime resource identities are rediscovered automatically after restart.
 
-If it reports `fallback`, copy `PrismMedia.log` and the complete `route status`
-line. Its bounded trace counters (`traceDirect`, `traceTargets`, `traceDerived`,
-`candidates`, and observed output sizes) identify in one run whether the custom
-texture reached the compositor, produced a target, or reached a final draw.
-Original GPS/smartphone displays remain enabled. If the truck was reconfigured
-or reloaded, `route retrain` starts a fresh bounded learning window without
-rebuilding.
+If it reports `fallback`, copy `PrismMedia.log`, `route candidates`, and the
+complete `route status` line. Original GPS/smartphone displays remain enabled.
+Use `route clear` and rerun the calibration only when a truck/mod update changes
+the stable final draw; rebuilding the plugin is not required.
 
 The current router intentionally learns one enabled custom display at a time.
 With two or more enabled custom displays it leaves original displays untouched

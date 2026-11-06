@@ -279,6 +279,9 @@ namespace
                 "  set release_window_us <1000..5000000>\n"
                 "  fallback <auto|on|off>\n"
                 "  route <status|on|off|retrain>\n"
+                "  route candidates\n"
+                "  route preview <candidate> [3..60 seconds] | route preview off\n"
+                "  route select <candidate> | route clear\n"
                 "  addon arm [10..300 seconds] (validates hook, disables fallback, reloads)\n"
                 "  addon status | addon row <index> | addon dump\n"
                 "  addon candidates\n"
@@ -300,8 +303,9 @@ namespace
         }
         if (verb == "capabilities")
             return "OK host=4.0.0 script=external-powershell captureSchema=1 "
-                "liveDraw=1 reloadProbe=1 fallbackLease=1 perDrawRoute=2 "
-                "compositorTrace=1 addonCapture=1 addonIsolation=1 "
+                "liveDraw=1 reloadProbe=1 fallbackLease=1 perDrawRoute=3 "
+                "compositorTrace=1 finalDrawSwap=1 routeCalibration=1 "
+                "addonCapture=1 addonIsolation=1 "
                 "arbitraryNativeHooks=0";
         if (verb == "addon")
         {
@@ -464,13 +468,14 @@ namespace
         }
         if (verb == "route")
         {
-            std::string action, extra;
+            std::string action;
             input >> action;
             action = lowercase(action);
-            if (input >> extra)
-                return "ERROR Use route status, on, off, or retrain.";
             if (action.empty() || action == "status")
             {
+                std::string extra;
+                if (input >> extra)
+                    return "ERROR Use route status without extra arguments.";
                 const auto route = per_draw_router::status();
                 std::ostringstream output;
                 output << "OK enabled=" << (route.enabled ? 1 : 0)
@@ -482,11 +487,25 @@ namespace
             }
             if (g_addonFallbackLease)
                 return "ERROR Cancel the addon capture before changing routing.";
-            if (action == "on") per_draw_router::set_enabled(true);
-            else if (action == "off") per_draw_router::set_enabled(false);
-            else if (action == "retrain") per_draw_router::retrain();
-            else return "ERROR Use route status, on, off, or retrain.";
-            return "OK Per-display route " + action + " accepted.";
+            if (action == "on" || action == "off" || action == "retrain")
+            {
+                std::string extra;
+                if (input >> extra)
+                    return "ERROR Use route on, off, or retrain without extra arguments.";
+                if (action == "on") per_draw_router::set_enabled(true);
+                else if (action == "off") per_draw_router::set_enabled(false);
+                else per_draw_router::retrain();
+                return "OK Per-display route " + action + " accepted.";
+            }
+            if (action == "candidates" || action == "preview" ||
+                action == "select" || action == "clear")
+            {
+                std::string rest;
+                std::getline(input, rest);
+                return per_draw_router::command(action + rest);
+            }
+            return "ERROR Use route status/on/off/retrain/candidates, "
+                "route preview/select, or route clear.";
         }
         if (verb == "run")
         {

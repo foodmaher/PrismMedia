@@ -386,6 +386,19 @@ namespace settings {
             screen.override_texture = read_string(path, section.c_str(), "OverrideTexture");
             screen.override_texture_size_w = GetPrivateProfileIntA(section.c_str(), "OverrideWidth", 0, path.c_str());
             screen.override_texture_size_h = GetPrivateProfileIntA(section.c_str(), "OverrideHeight", 0, path.c_str());
+			screen.finalDrawRouteValid = GetPrivateProfileIntA(
+				section.c_str(), "FinalDrawRouteValid", 0, path.c_str()) != 0;
+			screen.finalDrawRouteKind = GetPrivateProfileIntA(
+				section.c_str(), "FinalDrawRouteKind", 0, path.c_str());
+			screen.finalDrawRouteCount = GetPrivateProfileIntA(
+				section.c_str(), "FinalDrawRouteCount", 0, path.c_str());
+			screen.finalDrawRouteStart = GetPrivateProfileIntA(
+				section.c_str(), "FinalDrawRouteStart", 0, path.c_str());
+			screen.finalDrawRouteBase = static_cast<int32_t>(
+				GetPrivateProfileIntA(
+					section.c_str(), "FinalDrawRouteBase", 0, path.c_str()));
+			screen.finalDrawRouteSlot = GetPrivateProfileIntA(
+				section.c_str(), "FinalDrawRouteSlot", 6, path.c_str());
             screen.targetLiveTextureWidth = (std::clamp)(
                 GetPrivateProfileIntA(section.c_str(), "TargetWidth", 1280, path.c_str()), 64U, 7680U);
             screen.targetLiveTextureHeight = (std::clamp)(
@@ -760,6 +773,12 @@ namespace settings {
             WritePrivateProfileStringA(section.c_str(), "OverrideTexture", screen.override_texture.c_str(), temporaryPath.c_str());
             write_number(temporaryPath, section.c_str(), "OverrideWidth", screen.override_texture_size_w);
             write_number(temporaryPath, section.c_str(), "OverrideHeight", screen.override_texture_size_h);
+			write_number(temporaryPath, section.c_str(), "FinalDrawRouteValid", screen.finalDrawRouteValid ? 1 : 0);
+			write_number(temporaryPath, section.c_str(), "FinalDrawRouteKind", screen.finalDrawRouteKind);
+			write_number(temporaryPath, section.c_str(), "FinalDrawRouteCount", screen.finalDrawRouteCount);
+			write_number(temporaryPath, section.c_str(), "FinalDrawRouteStart", screen.finalDrawRouteStart);
+			write_number(temporaryPath, section.c_str(), "FinalDrawRouteBase", static_cast<uint32_t>(screen.finalDrawRouteBase));
+			write_number(temporaryPath, section.c_str(), "FinalDrawRouteSlot", screen.finalDrawRouteSlot);
             write_number(temporaryPath, section.c_str(), "TargetWidth", screen.targetLiveTextureWidth);
             write_number(temporaryPath, section.c_str(), "TargetHeight", screen.targetLiveTextureHeight);
             write_number(temporaryPath, section.c_str(), "Framerate", screen.framerate);

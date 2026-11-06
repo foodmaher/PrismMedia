@@ -61,6 +61,7 @@ jobs:
           Copy-Item 'ADDON-ISOLATION-REVISION.md' $Package
           Copy-Item 'PER-DISPLAY-ROUTING.md' $Package
           Copy-Item 'COMPOSITOR-TRACE-REVISION.md' $Package
+          Copy-Item 'FINAL-DRAW-ROUTING.md' $Package
           @"
           PrismMedia 4.0.0
           Remove the old PrismTextureStreamerFB.dll, then copy PrismMedia.dll
@@ -70,12 +71,11 @@ jobs:
 
           PrismDiagnosticConsole.exe is optional. Start the game first, then
           run the console. Keep its diagnostics folder beside the EXE.
-          Enter: route status
-          Per-display routing is automatic for one enabled custom display.
-          Confirm: capabilities includes perDrawRoute=2 compositorTrace=1
-          For the two-candidate Tjs/smartphone test, confirm addonIsolation=1
-          and follow ADDON-ISOLATION-REVISION.md.
-          See PER-DISPLAY-ROUTING.md for the one-run validation and
+          Enter: script gps-final-draw.ps1
+          Confirm: capabilities includes
+          perDrawRoute=3 finalDrawSwap=1 routeCalibration=1
+          The selected final draw is saved and unmatched GPS screens remain native.
+          See FINAL-DRAW-ROUTING.md for the one-time calibration and
           DIAGNOSTIC-CONSOLE.md for recovery and capture instructions.
           "@ | Set-Content "$Package\INSTALL.txt"
       - uses: actions/upload-artifact@v4

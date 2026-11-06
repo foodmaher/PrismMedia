@@ -75,12 +75,13 @@ custom screen visible for a few seconds, then run:
 route status
 ```
 
-Run `capabilities` once and require `perDrawRoute=2 compositorTrace=1`. Expected:
-`enabled=1`, `detail=active`, and a `routed` count that increases.
-The configured screen should show media while every unconfigured GPS/smartphone
-screen shows its original game texture. `route retrain` safely repeats the
-automatic learning window. `route off` disables per-display routing and leaves
-the selected fallback mode available for diagnostics; `route on` enables it.
+Run `capabilities` once and require
+`perDrawRoute=3 finalDrawSwap=1 routeCalibration=1`. For first-time setup run
+`script gps-final-draw.ps1`. It discovers stable 1024x1024 slot-6 GPS draws,
+previews them one at a time, and saves the selected draw with that custom
+display. Expected afterward: `enabled=1`, `detail=active`, and a `routed` count
+that increases. Every unmatched GPS/smartphone keeps its original game SRV.
+Use `route clear` before deliberately calibrating a different screen.
 
 ## Install once, then change scripts
 

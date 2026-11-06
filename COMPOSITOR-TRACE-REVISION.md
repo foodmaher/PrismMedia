@@ -1,7 +1,8 @@
 # PrismMedia 4.0.0 — compositor-trace revision
 
-This source keeps the public version at **4.0.0** and replaces the previous
-fixed `DrawIndexed`/slot-6 route learner with a bounded compositor trace.
+This historical note describes the compositor-trace experiment. The current
+4.0.0 source supersedes automatic compositor activation with the safer,
+RenderDoc-confirmed final-draw calibration in `FINAL-DRAW-ROUTING.md`.
 
 ## What changed
 
@@ -16,7 +17,8 @@ fixed `DrawIndexed`/slot-6 route learner with a bounded compositor trace.
   original SRV immediately.
 - Training keeps the unsupported legacy global fallback off, so unrelated
   smartphone and GPS displays retain their original game content.
-- `capabilities` reports `perDrawRoute=2 compositorTrace=1`.
+- The superseding build reports
+  `perDrawRoute=3 finalDrawSwap=1 routeCalibration=1`.
 - A failed `route status` includes `traceDirect`, `traceTargets`,
   `traceDerived`, `candidates`, and observed output sizes so one run identifies
   which stage was not observed.
@@ -28,7 +30,8 @@ fixed `DrawIndexed`/slot-6 route learner with a bounded compositor trace.
    outside the game plugin folder, then restart the game.
 3. Enable exactly one custom display and keep it visible in the truck for at
    least 15 seconds.
-4. Run `capabilities`; require `perDrawRoute=2 compositorTrace=1`.
+4. Run `capabilities`; require
+   `perDrawRoute=3 finalDrawSwap=1 routeCalibration=1`.
 5. Run `route status` twice. Success is `detail=active` with an increasing
    `routed` value while unconfigured GPS/smartphone screens stay native.
 

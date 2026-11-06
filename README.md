@@ -176,7 +176,9 @@ or a desktop window onto supported ETS2/ATS truck displays.
    seconds. It should continue showing media while unconfigured GPS accessories
    show their original game content. The optional console command `route status`
    should then report `active` and an increasing `routed` count. Run
-   `capabilities` once and confirm `perDrawRoute=2 compositorTrace=1`.
+   `capabilities` once and confirm
+   `perDrawRoute=3 finalDrawSwap=1 routeCalibration=1`. On first use, run
+   `script gps-final-draw.ps1`; the selected draw is saved for later starts.
 
 `config-recommended.ini` is a sanitized copy of the recommended 4.0 profile.
 It contains no media URL or account data.

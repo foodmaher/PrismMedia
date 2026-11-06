@@ -1,0 +1,36 @@
+name: Build PrismMedia 4.0.0
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Configure MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64
+        shell: pwsh
+        run: |
+          $solutionDir = "$env:GITHUB_WORKSPACE\"
+          msbuild `
+            ".\PrismTextureStreamerFB\PrismTextureStreamerFB.vcxproj" `
+            /m `
+            /t:Rebuild `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            "/p:SolutionDir=$solutionDir"
+
+      - name: Upload DLL and PDB
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrismMedia-4.0.0-Release-x64
+          path: |
+            x64/Release/PrismMedia.dll
+            x64/Release/PrismMedia.pdb
+          if-no-files-found: error

@@ -3,21 +3,25 @@
 This revision adds a bounded addon-display ownership capture for the exact ETS2
 executable inspected during the Tjs GPS investigation. The live executable is
 validated before any hook is installed. A single console command captures the
-addon object, display descriptor, descriptor index, `AddonWindow` name and
+addon object, display descriptor, the raw descriptor field, R9 text attempt and
 returned output handle while preserving the game's original call.
 
 The earlier compositor tracer remains available through `route status`, but it
 is no longer presented as the final fix. Runtime testing showed that the custom
 texture is not sampled with the global compatibility branch disabled, so a
 learned GPU draw alone cannot establish display ownership. The new capture is
-designed to map the selected tablet addon before a selective update or final
-texture-use fix is implemented.
+designed to map the selected tablet addon. The capture proved the returned
+handle and descriptor `+0x160` field are not stable display identities, so this
+revision adds a bounded live-candidate isolation test rather than hard-coding
+either value. See
+[ADDON-ISOLATION-REVISION.md](ADDON-ISOLATION-REVISION.md).
 
 The reusable diagnostic host remains available in
 [DIAGNOSTIC-CONSOLE.md](DIAGNOSTIC-CONSOLE.md). External PowerShell tests can
 still be edited and rerun without recompiling. The built-in `addon arm 60`
 command also supports repeated capture runs without changing a script or
-rebuilding the DLL.
+rebuilding the DLL. `addon candidates` and `addon isolate` can test both
+persistent addon records in the same game session and same build.
 
 This 4.0.0 source revision includes the guarded combined one-cycle test
 described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md). One reload now

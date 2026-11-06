@@ -9,5 +9,6 @@ namespace addon_display_probe
     std::string command(const std::string& arguments);
     void tick();
     bool active();
+    bool isolating();
     void shutdown();
 }

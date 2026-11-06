@@ -23,14 +23,50 @@ addon cancel
 nothing. On success, it temporarily disables the compatibility fallback and
 per-draw router, arms the bounded capture, and requests one truck-texture
 reload. It records RDX (addon object), R8 (display descriptor), R9
-(`AddonWindow` name), the descriptor value at `+0x160`, and the returned output
-handle. The previous fallback and routing modes are restored automatically on
+(pointer plus a bounded text attempt), the raw descriptor value at `+0x160`,
+and the returned output handle. The previous fallback and routing modes are restored automatically on
 timeout, cancellation, or sample-limit completion. `addon dump` writes every
 completed row to `PrismMedia.log`.
 
-This is a mapping diagnostic only. It never suppresses an addon record and it
+`addon arm` is mapping-only: it never suppresses an addon record. The separate
+bounded `addon isolate` command below can suppress one learned live record; it
 does not patch the short conditional jump reported in the inspected game
 executable.
+
+### Test both live addon candidates without rebuilding
+
+After `addon arm 60` reaches its sample limit, keep the same truck, accessories,
+and camera loaded. The capture normally leaves one high-count candidate for
+each active addon display. List them with:
+
+```text
+addon candidates
+```
+
+Only candidates with at least 16 samples and an observed return value equal to
+RCX on every sample can be tested. Try each high-count candidate in the same
+session:
+
+```text
+addon isolate 0 20
+addon isolate status
+addon isolate 1 20
+addon isolate off
+```
+
+Isolation temporarily disables the global fallback and old per-draw router,
+then skips native processing only for the selected live `(RDX,R8)` pair. Every
+unmatched addon—including the smartphone candidate—continues through the
+original game function. It returns the previously observed RCX value and
+automatically restores the prior fallback/routing state after 5–120 seconds,
+on `addon isolate off`, on `addon cancel`, or when the plugin shuts down.
+
+Candidate pointers are valid only for the current loaded truck objects. Do not
+reload, change truck, or change accessories between capture and isolation. If
+that happens, run `addon arm 60` again. A candidate test is still diagnostic:
+it can establish which live record controls the Tjs tablet and whether
+selective suppression preserves the smartphone, but it is not persisted as a
+production rule.
 
 For the normal validation, start the game, enter the truck, keep the configured
 custom screen visible for a few seconds, then run:

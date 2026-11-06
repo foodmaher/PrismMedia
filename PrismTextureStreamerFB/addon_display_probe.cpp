@@ -15,6 +15,7 @@
 #include <intrin.h>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -27,6 +28,10 @@ namespace
     constexpr uint64_t kDefaultDurationSeconds = 60;
     constexpr uint64_t kMinimumDurationSeconds = 10;
     constexpr uint64_t kMaximumDurationSeconds = 300;
+    constexpr uint64_t kDefaultIsolationSeconds = 20;
+    constexpr uint64_t kMinimumIsolationSeconds = 5;
+    constexpr uint64_t kMaximumIsolationSeconds = 120;
+    constexpr uint32_t kMinimumCandidateSamples = 16;
 
     using addon_create_t = uintptr_t(__fastcall*)(
         uintptr_t, uintptr_t, uintptr_t, uintptr_t,
@@ -47,6 +52,17 @@ namespace
         char windowName[96]{};
     };
 
+    struct candidate_t
+    {
+        uintptr_t addonObject{};
+        uintptr_t descriptor{};
+        uint32_t occurrences{};
+        uint32_t returnMatches{};
+        uint32_t firstSample{};
+        uint32_t descriptorField32{};
+        uint64_t descriptorField64{};
+    };
+
     std::atomic<bool> g_active{};
     std::atomic<bool> g_hookInstalled{};
     std::atomic<bool> g_resolutionAttempted{};
@@ -55,6 +71,12 @@ namespace
     std::atomic<uint32_t> g_droppedSamples{};
     std::atomic<uint32_t> g_inFlightCallbacks{};
     std::atomic<uint64_t> g_deadline{};
+    std::atomic<bool> g_isolateEnabled{};
+    std::atomic<uintptr_t> g_isolateObject{};
+    std::atomic<uintptr_t> g_isolateDescriptor{};
+    std::atomic<uint32_t> g_isolateCandidate{ UINT32_MAX };
+    std::atomic<uint32_t> g_isolateHits{};
+    std::atomic<uint64_t> g_isolateDeadline{};
     std::array<sample_t, kMaximumSamples> g_samples{};
     std::array<std::atomic<bool>, kMaximumSamples> g_sampleReady{};
     addon_create_t g_original{};
@@ -188,8 +210,24 @@ namespace
     {
         const uintptr_t returnAddress =
             reinterpret_cast<uintptr_t>(_ReturnAddress());
+        const bool selectedCaller = returnAddress == g_expectedReturn;
+        const bool isolateMatch = selectedCaller &&
+            g_isolateEnabled.load(std::memory_order_acquire) &&
+            rdx == g_isolateObject.load(std::memory_order_acquire) &&
+            r8 == g_isolateDescriptor.load(std::memory_order_acquire);
+        if (isolateMatch)
+        {
+            // Both completed captures showed this exact call returning RCX for
+            // every recorded addon.  Returning it here makes the smallest
+            // reversible experiment possible: suppress one learned addon
+            // update without changing any other record or the caller branch.
+            g_inFlightCallbacks.fetch_add(1, std::memory_order_acq_rel);
+            g_isolateHits.fetch_add(1, std::memory_order_acq_rel);
+            g_inFlightCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+            return rcx;
+        }
         const bool selectedCall = g_active.load(std::memory_order_acquire) &&
-            returnAddress == g_expectedReturn;
+            selectedCaller;
         uint32_t reserved = UINT32_MAX;
         sample_t pending{};
         if (selectedCall)
@@ -381,6 +419,95 @@ namespace
             sample = {};
     }
 
+    std::vector<candidate_t> build_candidates()
+    {
+        std::vector<candidate_t> candidates;
+        const uint32_t count = (std::min)(
+            g_sampleCount.load(std::memory_order_acquire), kMaximumSamples);
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            if (!g_sampleReady[index].load(std::memory_order_acquire))
+                continue;
+            const sample_t& sample = g_samples[index];
+            auto match = std::find_if(candidates.begin(), candidates.end(),
+                [&sample](const candidate_t& candidate) {
+                    return candidate.addonObject == sample.addonObject &&
+                        candidate.descriptor == sample.descriptor;
+                });
+            if (match == candidates.end())
+            {
+                candidate_t candidate{};
+                candidate.addonObject = sample.addonObject;
+                candidate.descriptor = sample.descriptor;
+                candidate.firstSample = index;
+                candidate.descriptorField32 = sample.descriptorIndex32;
+                candidate.descriptorField64 = sample.descriptorIndex64;
+                candidates.push_back(candidate);
+                match = candidates.end() - 1;
+            }
+            ++match->occurrences;
+            if (sample.outputHandle == sample.rcx)
+                ++match->returnMatches;
+        }
+        std::stable_sort(candidates.begin(), candidates.end(),
+            [](const candidate_t& left, const candidate_t& right) {
+                return left.occurrences > right.occurrences;
+            });
+        return candidates;
+    }
+
+    void stop_isolation()
+    {
+        g_isolateEnabled.store(false, std::memory_order_release);
+        g_isolateDeadline.store(0, std::memory_order_release);
+        g_isolateObject.store(0, std::memory_order_release);
+        g_isolateDescriptor.store(0, std::memory_order_release);
+        g_isolateCandidate.store(UINT32_MAX, std::memory_order_release);
+    }
+
+    std::string candidates_text()
+    {
+        if (g_active.load(std::memory_order_acquire))
+            return "ERROR Wait for addon capture to finish before listing candidates.";
+        const auto candidates = build_candidates();
+        std::ostringstream output;
+        output << "OK candidates=" << candidates.size();
+        for (size_t index = 0; index < candidates.size(); ++index)
+        {
+            const auto& candidate = candidates[index];
+            output << " " << index << "={samples=" << candidate.occurrences
+                << ",returnRcx="
+                << (candidate.returnMatches == candidate.occurrences ? 1 : 0)
+                << ",object=0x" << std::hex << candidate.addonObject
+                << ",descriptor=0x" << candidate.descriptor
+                << ",field32=0x" << candidate.descriptorField32
+                << ",field64=0x" << candidate.descriptorField64
+                << std::dec << ",firstRow=" << candidate.firstSample << "}";
+        }
+        return output.str();
+    }
+
+    std::string isolation_status_text()
+    {
+        std::ostringstream output;
+        const uint32_t candidate =
+            g_isolateCandidate.load(std::memory_order_acquire);
+        output << "OK active="
+            << (g_isolateEnabled.load(std::memory_order_acquire) ? 1 : 0)
+            << " candidate=";
+        if (candidate == UINT32_MAX)
+            output << "none";
+        else
+            output << candidate;
+        output << " hits=" << g_isolateHits.load(std::memory_order_acquire)
+            << " object=0x" << std::hex
+            << g_isolateObject.load(std::memory_order_acquire)
+            << " descriptor=0x"
+            << g_isolateDescriptor.load(std::memory_order_acquire)
+            << std::dec;
+        return output.str();
+    }
+
     std::string status_text()
     {
         std::ostringstream output;
@@ -388,6 +515,8 @@ namespace
             << " installed=" << (g_hookInstalled.load() ? 1 : 0)
             << " samples=" << g_completedSamples.load()
             << " dropped=" << g_droppedSamples.load()
+            << " isolate=" << (g_isolateEnabled.load() ? 1 : 0)
+            << " isolateHits=" << g_isolateHits.load()
             << " callRva=0x" << std::hex << kAddonCallRva
             << " targetRva=0x" << kExpectedTargetRva << std::dec
             << " detail=" << g_validationDetail
@@ -497,6 +626,8 @@ namespace addon_display_probe
                 return "ERROR Use addon arm [10..300 seconds].";
             if (g_active.load(std::memory_order_acquire))
                 return "ERROR Addon capture is already active.";
+            if (g_isolateEnabled.load(std::memory_order_acquire))
+                return "ERROR Turn addon isolation off before a new capture.";
             if (g_inFlightCallbacks.load(std::memory_order_acquire) != 0)
                 return "ERROR The previous addon call is still completing; retry.";
             if (!resolve_and_install())
@@ -514,6 +645,100 @@ namespace addon_display_probe
                 static_cast<unsigned long long>(seconds));
             return "OK Addon capture armed for " +
                 std::to_string(seconds) + " seconds.";
+        }
+
+        if (action == "candidates")
+        {
+            std::string extra;
+            if (input >> extra)
+                return "ERROR Use addon candidates.";
+            return candidates_text();
+        }
+
+        if (action == "isolate")
+        {
+            std::string selection, duration, extra;
+            input >> selection;
+            selection = lowercase(selection);
+            if (selection.empty() || selection == "status")
+            {
+                if (input >> extra)
+                    return "ERROR Use addon isolate status.";
+                return isolation_status_text();
+            }
+            if (selection == "off" || selection == "stop")
+            {
+                if (input >> extra)
+                    return "ERROR Use addon isolate off.";
+                if (g_active.load(std::memory_order_acquire))
+                    return "ERROR Addon capture is active; use addon cancel.";
+                const uint32_t hits =
+                    g_isolateHits.load(std::memory_order_acquire);
+                stop_isolation();
+                diagnostic_log::writef_important(
+                    "addon", "Selective addon isolation stopped after %u hits.",
+                    hits);
+                return "OK Addon isolation stopped; hits=" +
+                    std::to_string(hits) + ".";
+            }
+            if (g_active.load(std::memory_order_acquire))
+                return "ERROR Wait for addon capture to finish before isolation.";
+            uint64_t candidateIndex{};
+            uint64_t seconds = kDefaultIsolationSeconds;
+            try
+            {
+                size_t consumed{};
+                candidateIndex = std::stoull(selection, &consumed, 10);
+                if (consumed != selection.size())
+                    return "ERROR Use addon isolate <candidate> [5..120 seconds].";
+                if (input >> duration)
+                {
+                    consumed = 0;
+                    seconds = std::stoull(duration, &consumed, 10);
+                    if (consumed != duration.size())
+                        return "ERROR Use addon isolate <candidate> [5..120 seconds].";
+                }
+            }
+            catch (...)
+            {
+                return "ERROR Use addon isolate <candidate> [5..120 seconds].";
+            }
+            if ((input >> extra) || seconds < kMinimumIsolationSeconds ||
+                seconds > kMaximumIsolationSeconds)
+                return "ERROR Use addon isolate <candidate> [5..120 seconds].";
+            const auto candidates = build_candidates();
+            if (candidateIndex >= candidates.size())
+                return "ERROR Candidate does not exist; run addon candidates.";
+            const auto& candidate = candidates[static_cast<size_t>(candidateIndex)];
+            if (candidate.occurrences < kMinimumCandidateSamples)
+                return "ERROR Candidate is transient; capture at least 16 matching calls.";
+            if (candidate.returnMatches != candidate.occurrences)
+                return "ERROR Candidate return value was not consistently RCX; isolation refused.";
+            if (!g_hookInstalled.load(std::memory_order_acquire) || !g_original)
+                return "ERROR The validated addon hook is not installed; run addon arm first.";
+
+            g_isolateEnabled.store(false, std::memory_order_release);
+            g_isolateHits.store(0, std::memory_order_release);
+            g_isolateCandidate.store(
+                static_cast<uint32_t>(candidateIndex), std::memory_order_release);
+            g_isolateObject.store(candidate.addonObject, std::memory_order_release);
+            g_isolateDescriptor.store(candidate.descriptor, std::memory_order_release);
+            g_isolateDeadline.store(
+                GetTickCount64() + seconds * 1000, std::memory_order_release);
+            g_isolateEnabled.store(true, std::memory_order_release);
+            diagnostic_log::writef_important(
+                "addon",
+                "Selective addon isolation enabled: candidate=%llu samples=%u "
+                "object=0x%llX descriptor=0x%llX duration=%llu seconds.",
+                static_cast<unsigned long long>(candidateIndex),
+                candidate.occurrences,
+                static_cast<unsigned long long>(candidate.addonObject),
+                static_cast<unsigned long long>(candidate.descriptor),
+                static_cast<unsigned long long>(seconds));
+            return "OK Isolating addon candidate " +
+                std::to_string(candidateIndex) + " for " +
+                std::to_string(seconds) +
+                " seconds; unmatched displays keep native processing.";
         }
 
         if (action == "row")
@@ -549,51 +774,83 @@ namespace addon_display_probe
         {
             g_active.store(false, std::memory_order_release);
             g_deadline.store(0, std::memory_order_release);
-            return "OK Addon capture stopped.";
+            const uint32_t hits =
+                g_isolateHits.load(std::memory_order_acquire);
+            stop_isolation();
+            return "OK Addon capture and isolation stopped; isolationHits=" +
+                std::to_string(hits) + ".";
         }
 
         if (action == "clear")
         {
             if (g_active.load(std::memory_order_acquire) ||
+                g_isolateEnabled.load(std::memory_order_acquire) ||
                 g_inFlightCallbacks.load(std::memory_order_acquire) != 0)
-                return "ERROR Stop the addon capture before clearing it.";
+                return "ERROR Stop addon capture/isolation before clearing it.";
             clear_samples();
             return "OK Addon capture samples cleared.";
         }
 
         return "ERROR Use addon arm [10..300], status, row <index>, dump, "
-            "cancel, or clear.";
+            "candidates, isolate <candidate> [5..120], isolate off, cancel, "
+            "or clear.";
     }
 
     void tick()
     {
-        if (!g_active.load(std::memory_order_acquire))
-            return;
-        const uint64_t deadline = g_deadline.load(std::memory_order_acquire);
-        const bool full = g_sampleCount.load(std::memory_order_acquire) >=
-            kMaximumSamples;
-        if (full || (deadline != 0 && GetTickCount64() >= deadline))
+        const uint64_t now = GetTickCount64();
+        if (g_active.load(std::memory_order_acquire))
         {
-            g_active.store(false, std::memory_order_release);
-            diagnostic_log::writef_important(
-                "addon",
-                "Addon display capture ended (%s): completed=%u dropped=%u. "
-                "Use 'addon dump' to write every row.",
-                full ? "sample limit" : "timeout",
-                g_completedSamples.load(std::memory_order_acquire),
-                g_droppedSamples.load(std::memory_order_acquire));
+            const uint64_t deadline =
+                g_deadline.load(std::memory_order_acquire);
+            const bool full = g_sampleCount.load(std::memory_order_acquire) >=
+                kMaximumSamples;
+            if (full || (deadline != 0 && now >= deadline))
+            {
+                g_active.store(false, std::memory_order_release);
+                diagnostic_log::writef_important(
+                    "addon",
+                    "Addon display capture ended (%s): completed=%u dropped=%u. "
+                    "Use 'addon dump' to write every row.",
+                    full ? "sample limit" : "timeout",
+                    g_completedSamples.load(std::memory_order_acquire),
+                    g_droppedSamples.load(std::memory_order_acquire));
+            }
+        }
+        if (g_isolateEnabled.load(std::memory_order_acquire))
+        {
+            const uint64_t deadline =
+                g_isolateDeadline.load(std::memory_order_acquire);
+            if (deadline != 0 && now >= deadline)
+            {
+                const uint32_t hits =
+                    g_isolateHits.load(std::memory_order_acquire);
+                stop_isolation();
+                diagnostic_log::writef_important(
+                    "addon",
+                    "Selective addon isolation expired safely after %u hits.",
+                    hits);
+            }
         }
     }
 
     bool active()
     {
         tick();
-        return g_active.load(std::memory_order_acquire);
+        return g_active.load(std::memory_order_acquire) ||
+            g_isolateEnabled.load(std::memory_order_acquire);
+    }
+
+    bool isolating()
+    {
+        tick();
+        return g_isolateEnabled.load(std::memory_order_acquire);
     }
 
     void shutdown()
     {
         g_active.store(false, std::memory_order_release);
+        stop_isolation();
         const uint64_t started = GetTickCount64();
         while (g_inFlightCallbacks.load(std::memory_order_acquire) != 0 &&
             GetTickCount64() - started < 250)

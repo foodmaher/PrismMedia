@@ -58,6 +58,7 @@ jobs:
           Copy-Item 'PERFORMANCE-NOTES.md' $Runtime
           Copy-Item 'README.md' $Package
           Copy-Item 'DIAGNOSTIC-CONSOLE.md' $Package
+          Copy-Item 'ADDON-ISOLATION-REVISION.md' $Package
           Copy-Item 'PER-DISPLAY-ROUTING.md' $Package
           Copy-Item 'COMPOSITOR-TRACE-REVISION.md' $Package
           @"
@@ -72,6 +73,8 @@ jobs:
           Enter: route status
           Per-display routing is automatic for one enabled custom display.
           Confirm: capabilities includes perDrawRoute=2 compositorTrace=1
+          For the two-candidate Tjs/smartphone test, confirm addonIsolation=1
+          and follow ADDON-ISOLATION-REVISION.md.
           See PER-DISPLAY-ROUTING.md for the one-run validation and
           DIAGNOSTIC-CONSOLE.md for recovery and capture instructions.
           "@ | Set-Content "$Package\INSTALL.txt"

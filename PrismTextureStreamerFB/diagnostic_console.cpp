@@ -281,6 +281,8 @@ namespace
                 "  route <status|on|off|retrain>\n"
                 "  addon arm [10..300 seconds] (validates hook, disables fallback, reloads)\n"
                 "  addon status | addon row <index> | addon dump\n"
+                "  addon candidates\n"
+                "  addon isolate <candidate> [5..120 seconds] | addon isolate off\n"
                 "  addon cancel | addon clear\n"
                 "  snapshot\n"
                 "  ping\n"
@@ -299,7 +301,8 @@ namespace
         if (verb == "capabilities")
             return "OK host=4.0.0 script=external-powershell captureSchema=1 "
                 "liveDraw=1 reloadProbe=1 fallbackLease=1 perDrawRoute=2 "
-                "compositorTrace=1 addonCapture=1 arbitraryNativeHooks=0";
+                "compositorTrace=1 addonCapture=1 addonIsolation=1 "
+                "arbitraryNativeHooks=0";
         if (verb == "addon")
         {
             std::string args;
@@ -344,9 +347,62 @@ namespace
                     "texture reload was accepted.";
             }
 
+            if (action == "isolate")
+            {
+                std::string selection;
+                addonInput >> selection;
+                selection = lowercase(selection);
+                const bool stopping = selection == "off" ||
+                    selection == "stop";
+                const bool readOnly = selection.empty() ||
+                    selection == "status";
+                if (!stopping && !readOnly)
+                {
+                    const bool continuing = addon_display_probe::isolating();
+                    if (!continuing)
+                    {
+                        if (!driving)
+                            return "ERROR Enter the truck before isolating an addon.";
+                        if (g_addonFallbackLease)
+                            return "ERROR An addon fallback lease already exists.";
+                        g_addonSavedFallback =
+                            custom_render_probe::fallback_mode();
+                        g_addonSavedRouteEnabled =
+                            per_draw_router::status().enabled;
+                        per_draw_router::set_enabled(false);
+                        per_draw_router::update(driving);
+                        custom_render_probe::set_fallback_mode(
+                            custom_render_probe::fallback_mode_t::forced_off);
+                        custom_render_probe::update(customDisplayActive);
+                    }
+                    const std::string response =
+                        addon_display_probe::command(args);
+                    if (response.rfind("OK ", 0) != 0)
+                    {
+                        if (!continuing)
+                        {
+                            per_draw_router::set_enabled(
+                                g_addonSavedRouteEnabled);
+                            custom_render_probe::set_fallback_mode(
+                                g_addonSavedFallback);
+                            custom_render_probe::update(customDisplayActive);
+                        }
+                        return response;
+                    }
+                    if (!continuing)
+                        g_addonFallbackLease = true;
+                    return response +
+                        " Global fallback and per-draw routing are temporarily off.";
+                }
+            }
+
             const std::string response =
                 addon_display_probe::command(args);
-            if ((action == "cancel" || action == "stop") &&
+            const bool isolateStopped = action == "isolate" &&
+                (lowercase(trim(args.substr(action.size()))) == "off" ||
+                 lowercase(trim(args.substr(action.size()))) == "stop");
+            if (response.rfind("OK ", 0) == 0 &&
+                (action == "cancel" || action == "stop" || isolateStopped) &&
                 g_addonFallbackLease)
             {
                 restore_addon_environment(customDisplayActive);
@@ -600,6 +656,8 @@ namespace
                     readOnlyVerb == "capture status" ||
                     readOnlyVerb.rfind("capture row ", 0) == 0 ||
                     readOnlyVerb == "addon status" ||
+                    readOnlyVerb == "addon candidates" ||
+                    readOnlyVerb == "addon isolate status" ||
                     readOnlyVerb.rfind("addon row ", 0) == 0)
                 {
                     const std::string response = execute_command(
@@ -666,7 +724,7 @@ namespace diagnostic_console
         {
             restore_addon_environment(customDisplayActive);
             diagnostic_log::write(
-                "addon", "Addon capture ended; previous fallback mode restored.");
+                "addon", "Addon capture/isolation ended; previous fallback mode restored.");
         }
         if (g_lease && GetTickCount64() >= g_leaseDeadline) {
             runtime_draw_probe::shutdown();

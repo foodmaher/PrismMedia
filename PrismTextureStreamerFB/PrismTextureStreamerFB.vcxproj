@@ -141,6 +141,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="addon_display_probe.cpp" />
     <ClCompile Include="camera_bridge_client.cpp" />
     <ClCompile Include="custom_render_probe.cpp" />
     <ClCompile Include="diagnostic_console.cpp" />
@@ -168,6 +169,7 @@
     <ClCompile Include="win32\win32.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="addon_display_probe.h" />
     <ClInclude Include="bmem.h" />
     <ClInclude Include="camera_bridge_client.h" />
     <ClInclude Include="custom_render_probe.h" />

@@ -1,25 +1,23 @@
 # PrismMedia 4.0.0
 
-This revision includes the compositor-tracing per-display routing fix developed
-from the live isolation captures. With one enabled custom display, PrismMedia
-follows its media texture through one matching UI render target, observes all
-seven D3D11 draw variants, and learns the final draw plus shader-resource slot.
-It then substitutes the media SRV only for that exact draw and immediately
-restores the native GPS texture, so unconfigured smartphone and accessory
-screens remain game-controlled.
+This revision adds a bounded addon-display ownership capture for the exact ETS2
+executable inspected during the Tjs GPS investigation. The live executable is
+validated before any hook is installed. A single console command captures the
+addon object, display descriptor, descriptor index, `AddonWindow` name and
+returned output handle while preserving the game's original call.
 
-Training and activation are automatic after entering the truck. No diagnostic
-console command or texture reload is required. `route status` reports
-`training`, `active`, or a safe original-display state. A texture identity or
-route-sequence change retrains automatically. Training keeps the unsupported
-legacy global branch off. If learning fails within 12 seconds, PrismMedia
-removes the temporary hooks and retains the game's original displays instead
-of blacking unrelated screens. This is the actual fix candidate; its final ETS2
-confirmation still requires one in-game run.
+The earlier compositor tracer remains available through `route status`, but it
+is no longer presented as the final fix. Runtime testing showed that the custom
+texture is not sampled with the global compatibility branch disabled, so a
+learned GPU draw alone cannot establish display ownership. The new capture is
+designed to map the selected tablet addon before a selective update or final
+texture-use fix is implemented.
 
 The reusable diagnostic host remains available in
 [DIAGNOSTIC-CONSOLE.md](DIAGNOSTIC-CONSOLE.md). External PowerShell tests can
-still be edited and rerun without recompiling.
+still be edited and rerun without recompiling. The built-in `addon arm 60`
+command also supports repeated capture runs without changing a script or
+rebuilding the DLL.
 
 This 4.0.0 source revision includes the guarded combined one-cycle test
 described in [CUSTOM-RENDER-PROBE.md](CUSTOM-RENDER-PROBE.md). One reload now

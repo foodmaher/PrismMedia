@@ -29,6 +29,9 @@ $Runtime = Join-Path $Package 'PrismMedia'
 New-Item -ItemType Directory -Path $Runtime | Out-Null
 Copy-Item $Dll $Package
 Copy-Item $DiagnosticConsole $Package
+if (Test-Path (Join-Path $Output 'diagnostics')) {
+    Copy-Item (Join-Path $Output 'diagnostics') $Package -Recurse
+}
 Copy-Item (Join-Path $ClientDirectory '*') $Runtime -Recurse
 Get-ChildItem $Runtime -Recurse -File | Where-Object { $_.Extension -in '.pdb', '.xml' } | Remove-Item -Force
 

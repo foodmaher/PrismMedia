@@ -1,11 +1,36 @@
 # PrismMedia 4.0.0 — reusable diagnostic host
 
 This host retains live draw captures and reloadable PowerShell scripts. The
-4.0.0 plugin now also contains the compositor-tracing per-display fix candidate
-derived from the completed isolation session. It follows the configured custom
-texture through one render target and supports every D3D11 draw variant exposed
-by the host. Routing is automatic; the console is optional for status, recovery,
-and future diagnostics.
+4.0.0 plugin also retains the compositor tracer, while the new addon-display
+ownership capture maps the game object responsible for the selected Tjs GPS.
+The console can repeat these bounded tests without rebuilding the DLL.
+
+## Addon display ownership capture
+
+The diagnostic host can repeatedly capture the verified ETS2 addon-display
+creation call without rebuilding the plugin:
+
+```text
+addon arm 60
+addon status
+addon row 0
+addon dump
+addon cancel
+```
+
+`addon arm` first validates that live executable RVA `0x543845` contains an
+`E8` call to RVA `0x542FC0`. A mismatch returns the live bytes and installs
+nothing. On success, it temporarily disables the compatibility fallback and
+per-draw router, arms the bounded capture, and requests one truck-texture
+reload. It records RDX (addon object), R8 (display descriptor), R9
+(`AddonWindow` name), the descriptor value at `+0x160`, and the returned output
+handle. The previous fallback and routing modes are restored automatically on
+timeout, cancellation, or sample-limit completion. `addon dump` writes every
+completed row to `PrismMedia.log`.
+
+This is a mapping diagnostic only. It never suppresses an addon record and it
+does not patch the short conditional jump reported in the inspected game
+executable.
 
 For the normal validation, start the game, enter the truck, keep the configured
 custom screen visible for a few seconds, then run:

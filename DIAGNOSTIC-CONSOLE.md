@@ -76,7 +76,7 @@ route status
 ```
 
 Run `capabilities` once and require
-`perDrawRoute=6 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1 routeRecovery=1`. For legacy console setup run
+`perDrawRoute=6 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1 routeRecovery=2 ownerMapper=1 stickyRoute=1`. For legacy console setup run
 `script gps-final-draw.ps1`. It discovers stable 1024x1024 slot-6 GPS draws,
 previews them one at a time, and saves the selected draw with that custom
 display. Expected afterward: `enabled=1`, `detail=active`, and a `routed` count

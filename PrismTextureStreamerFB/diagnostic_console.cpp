@@ -287,6 +287,10 @@ namespace
                 "  addon candidates\n"
                 "  addon isolate <candidate> [5..120 seconds] | addon isolate off\n"
                 "  addon cancel | addon clear\n"
+                "  owner arm [10..300 seconds] | owner status | owner list\n"
+                "  owner row <index> | owner scan <candidate>\n"
+                "  owner watch <candidate> | owner watch off | owner resources\n"
+                "  owner dump | owner clear\n"
                 "  snapshot\n"
                 "  ping\n"
                 "  capabilities\n"
@@ -306,9 +310,19 @@ namespace
                 "liveDraw=1 reloadProbe=1 fallbackLease=1 perDrawRoute=6 "
                 "compositorTrace=1 finalDrawSwap=1 routeCalibration=1 "
 				"groupedPassRouting=1 visualPicker=1 privateMediaTexture=1 "
-                "hookTransitionGuard=4 pickerInput=4 routeRecovery=1 "
+                "hookTransitionGuard=5 pickerInput=4 routeRecovery=2 "
                 "addonCapture=1 addonIsolation=1 "
+                "ownerMapper=1 stickyRoute=1 "
                 "arbitraryNativeHooks=0";
+        if (verb == "owner")
+        {
+            std::string args;
+            std::getline(input, args);
+            args = trim(args);
+            if (!driving && args.rfind("arm", 0) == 0)
+                return "ERROR Enter the truck before arming owner capture.";
+            return addon_display_probe::owner_command(args);
+        }
         if (verb == "addon")
         {
             std::string args;

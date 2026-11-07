@@ -32,7 +32,7 @@ final draw receives that texture; every unmatched screen keeps its native SRV.
 The old console calibration remains available for expert recovery. `capabilities`
 for this source must report
 `perDrawRoute=6 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1
-hookTransitionGuard=4 pickerInput=4 routeRecovery=1`.
+hookTransitionGuard=5 pickerInput=4 routeRecovery=2 ownerMapper=1 stickyRoute=1`.
 
 Revision 3 creates the picker's private D3D texture without holding the screen
 registry mutex. This is required because PrismMedia's `CreateTexture2D` hook
@@ -43,11 +43,12 @@ button was pressed.
 The selected click point, structural draw fields, candidate fallback and the
 complete grouped-pass count are saved with the custom display. Absolute draw
 offsets, buffers, shaders and resource pointers are never treated as durable.
-After a restart, pause, truck reload or return from an exterior camera, the
-router first leaves every screen native, waits for the new candidate set and
-all expected passes to settle, then briefly repeats the saved-point probe. It
-activates only after that live probe uniquely identifies the same visible
-screen. Ambiguous recovery leaves all screens native and requests another pick.
+Head movement, exterior cameras and short pauses retain an already active exact
+resource route. They never run saved-point probes. After genuine resource
+recreation or restart, automatic visual recovery remains disabled because a
+frame coordinate is not an accessory identity. Every screen stays native until
+the owner mapper confirms the replacement resource or the user explicitly
+runs the picker again.
 
 Configurations saved by an older 4.0.0 revision do not contain a click point.
 They remain safe, but need one new visual pick after installing this revision.

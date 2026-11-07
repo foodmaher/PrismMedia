@@ -13,8 +13,11 @@
 #include <cstdio>
 #include <cstring>
 #include <intrin.h>
+#include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -56,11 +59,22 @@ namespace
     {
         uintptr_t addonObject{};
         uintptr_t descriptor{};
+        uintptr_t outputHandle{};
         uint32_t occurrences{};
         uint32_t returnMatches{};
         uint32_t firstSample{};
         uint32_t descriptorField32{};
         uint64_t descriptorField64{};
+        std::string windowName;
+    };
+
+    struct owner_resource_t
+    {
+        uintptr_t identity{};
+        uint32_t exactHits{};
+        uint32_t nearbyHits{};
+        uint64_t firstTick{};
+        uint64_t lastTick{};
     };
 
     std::atomic<bool> g_active{};
@@ -77,6 +91,16 @@ namespace
     std::atomic<uint32_t> g_isolateCandidate{ UINT32_MAX };
     std::atomic<uint32_t> g_isolateHits{};
     std::atomic<uint64_t> g_isolateDeadline{};
+    std::atomic<bool> g_ownerWatchEnabled{};
+    std::atomic<uintptr_t> g_ownerWatchObject{};
+    std::atomic<uintptr_t> g_ownerWatchDescriptor{};
+    std::atomic<uint32_t> g_ownerWatchCandidate{ UINT32_MAX };
+    std::atomic<uint64_t> g_ownerLastCallTick{};
+    std::atomic<uint32_t> g_ownerLastCallThread{};
+    std::atomic<uint64_t> g_ownerWatchCalls{};
+    std::mutex g_ownerResourceMutex;
+    std::vector<owner_resource_t> g_ownerResources;
+    thread_local uint32_t t_ownerWatchDepth{};
     std::array<sample_t, kMaximumSamples> g_samples{};
     std::array<std::atomic<bool>, kMaximumSamples> g_sampleReady{};
     addon_create_t g_original{};
@@ -148,6 +172,21 @@ namespace
             access == PAGE_EXECUTE_WRITECOPY;
     }
 
+    bool safe_copy_memory(uintptr_t source, void* destination, size_t bytes)
+    {
+        if (!destination || !readable_range(source, bytes)) return false;
+        __try
+        {
+            std::memcpy(destination, reinterpret_cast<const void*>(source),
+                bytes);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
     void copy_ascii(uintptr_t source, char* destination, size_t capacity)
     {
         if (!destination || capacity == 0)
@@ -211,6 +250,10 @@ namespace
         const uintptr_t returnAddress =
             reinterpret_cast<uintptr_t>(_ReturnAddress());
         const bool selectedCaller = returnAddress == g_expectedReturn;
+        const bool ownerWatchMatch = selectedCaller &&
+            g_ownerWatchEnabled.load(std::memory_order_acquire) &&
+            rdx == g_ownerWatchObject.load(std::memory_order_acquire) &&
+            r8 == g_ownerWatchDescriptor.load(std::memory_order_acquire);
         const bool isolateMatch = selectedCaller &&
             g_isolateEnabled.load(std::memory_order_acquire) &&
             rdx == g_isolateObject.load(std::memory_order_acquire) &&
@@ -258,10 +301,25 @@ namespace
             }
         }
 
+        if (ownerWatchMatch)
+        {
+            ++t_ownerWatchDepth;
+            g_ownerWatchCalls.fetch_add(1, std::memory_order_acq_rel);
+        }
+
         // The original function always runs exactly once.
         const uintptr_t result = g_original(
             rcx, rdx, r8, r9,
             argument5, argument6, argument7, argument8);
+
+        if (ownerWatchMatch)
+        {
+            g_ownerLastCallThread.store(
+                GetCurrentThreadId(), std::memory_order_release);
+            g_ownerLastCallTick.store(
+                GetTickCount64(), std::memory_order_release);
+            if (t_ownerWatchDepth != 0) --t_ownerWatchDepth;
+        }
 
         if (selectedCall)
         {
@@ -440,8 +498,10 @@ namespace
                 candidate.addonObject = sample.addonObject;
                 candidate.descriptor = sample.descriptor;
                 candidate.firstSample = index;
+                candidate.outputHandle = sample.outputHandle;
                 candidate.descriptorField32 = sample.descriptorIndex32;
                 candidate.descriptorField64 = sample.descriptorIndex64;
+                candidate.windowName = sample.windowName;
                 candidates.push_back(candidate);
                 match = candidates.end() - 1;
             }
@@ -454,6 +514,129 @@ namespace
                 return left.occurrences > right.occurrences;
             });
         return candidates;
+    }
+
+    bool interesting_owner_text(const std::string& value)
+    {
+        std::string lower = lowercase(value);
+        return lower.find("gps") != std::string::npos ||
+            lower.find("addon") != std::string::npos ||
+            lower.find("window") != std::string::npos ||
+            lower.find(".sii") != std::string::npos ||
+            lower.find(".tobj") != std::string::npos ||
+            lower.find("ui/") != std::string::npos ||
+            lower.find("vehicle/") != std::string::npos;
+    }
+
+    void append_owner_text(
+        std::vector<std::string>& values,
+        const char* text)
+    {
+        if (!text || !text[0]) return;
+        std::string value(text);
+        if (value.size() < 4 || !interesting_owner_text(value) ||
+            std::find(values.begin(), values.end(), value) != values.end())
+            return;
+        if (values.size() < 24) values.push_back(std::move(value));
+    }
+
+    std::vector<std::string> scan_owner_strings(uintptr_t root)
+    {
+        std::vector<std::string> result;
+        constexpr size_t bytes = 0x400;
+        std::array<uint8_t, bytes> memory{};
+        if (!safe_copy_memory(root, memory.data(), memory.size()))
+            return result;
+
+        char inlineText[160]{};
+        size_t inlineLength{};
+        for (size_t offset = 0; offset < bytes; ++offset)
+        {
+            const uint8_t value = memory[offset];
+            if (value >= 0x20 && value <= 0x7E &&
+                inlineLength + 1 < sizeof(inlineText))
+            {
+                inlineText[inlineLength++] = static_cast<char>(value);
+                inlineText[inlineLength] = '\0';
+            }
+            else
+            {
+                append_owner_text(result, inlineText);
+                inlineLength = 0;
+                inlineText[0] = '\0';
+            }
+        }
+        append_owner_text(result, inlineText);
+
+        for (size_t offset = 0; offset + sizeof(uintptr_t) <= bytes;
+            offset += sizeof(uintptr_t))
+        {
+            uintptr_t pointer{};
+            std::memcpy(&pointer, memory.data() + offset, sizeof(pointer));
+            char pointedText[160]{};
+            copy_ascii(pointer, pointedText, sizeof(pointedText));
+            append_owner_text(result, pointedText);
+        }
+        return result;
+    }
+
+    void stop_owner_watch()
+    {
+        g_ownerWatchEnabled.store(false, std::memory_order_release);
+        g_ownerWatchObject.store(0, std::memory_order_release);
+        g_ownerWatchDescriptor.store(0, std::memory_order_release);
+        g_ownerWatchCandidate.store(UINT32_MAX, std::memory_order_release);
+        g_ownerLastCallTick.store(0, std::memory_order_release);
+        g_ownerLastCallThread.store(0, std::memory_order_release);
+        g_ownerWatchCalls.store(0, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(g_ownerResourceMutex);
+        g_ownerResources.clear();
+    }
+
+    std::string owner_status_text()
+    {
+        std::lock_guard<std::mutex> lock(g_ownerResourceMutex);
+        std::ostringstream output;
+        const uint32_t candidate =
+            g_ownerWatchCandidate.load(std::memory_order_acquire);
+        output << "OK installed="
+            << (g_hookInstalled.load(std::memory_order_acquire) ? 1 : 0)
+            << " capture="
+            << (g_active.load(std::memory_order_acquire) ? 1 : 0)
+            << " watching="
+            << (g_ownerWatchEnabled.load(std::memory_order_acquire) ? 1 : 0)
+            << " candidate=";
+        if (candidate == UINT32_MAX) output << "none";
+        else output << candidate;
+        output << " calls="
+            << g_ownerWatchCalls.load(std::memory_order_acquire)
+            << " resources=" << g_ownerResources.size()
+            << " object=0x" << std::hex
+            << g_ownerWatchObject.load(std::memory_order_acquire)
+            << " descriptor=0x"
+            << g_ownerWatchDescriptor.load(std::memory_order_acquire)
+            << std::dec;
+        return output.str();
+    }
+
+    std::string owner_resources_text()
+    {
+        std::lock_guard<std::mutex> lock(g_ownerResourceMutex);
+        std::ostringstream output;
+        output << "OK resources=" << g_ownerResources.size();
+        for (size_t index = 0; index < g_ownerResources.size(); ++index)
+        {
+            const auto& resource = g_ownerResources[index];
+            output << " " << index << "={identity=0x" << std::hex
+                << resource.identity << std::dec
+                << ",exact=" << resource.exactHits
+                << ",near=" << resource.nearbyHits
+                << ",firstTick=" << resource.firstTick
+                << ",lastTick=" << resource.lastTick << "}";
+        }
+        if (g_ownerResources.empty())
+            output << " none; keep the watched screen visible and native processing active";
+        return output.str();
     }
 
     void stop_isolation()
@@ -480,9 +663,13 @@ namespace
                 << (candidate.returnMatches == candidate.occurrences ? 1 : 0)
                 << ",object=0x" << std::hex << candidate.addonObject
                 << ",descriptor=0x" << candidate.descriptor
+                << ",output=0x" << candidate.outputHandle
                 << ",field32=0x" << candidate.descriptorField32
                 << ",field64=0x" << candidate.descriptorField64
-                << std::dec << ",firstRow=" << candidate.firstSample << "}";
+                << std::dec << ",name='"
+                << (candidate.windowName.empty()
+                    ? "<unreadable>" : candidate.windowName)
+                << "',firstRow=" << candidate.firstSample << "}";
         }
         return output.str();
     }
@@ -796,6 +983,196 @@ namespace addon_display_probe
             "or clear.";
     }
 
+    std::string owner_command(const std::string& arguments)
+    {
+        std::istringstream input(trim(arguments));
+        std::string action;
+        input >> action;
+        action = lowercase(action);
+        if (action.empty() || action == "status")
+            return owner_status_text();
+
+        if (action == "arm")
+        {
+            std::string rest;
+            std::getline(input, rest);
+            if (g_isolateEnabled.load(std::memory_order_acquire))
+                return "ERROR Turn addon isolation off before owner capture.";
+            stop_owner_watch();
+            return command("arm" + rest);
+        }
+
+        if (action == "list" || action == "candidates")
+            return candidates_text();
+
+        if (action == "row")
+        {
+            std::string index, extra;
+            if (!(input >> index) || (input >> extra))
+                return "ERROR Use owner row <index>.";
+            return command("row " + index);
+        }
+
+        if (action == "scan")
+        {
+            std::string selection, extra;
+            if (!(input >> selection) || (input >> extra))
+                return "ERROR Use owner scan <candidate>.";
+            uint64_t candidateIndex{};
+            try
+            {
+                size_t consumed{};
+                candidateIndex = std::stoull(selection, &consumed, 10);
+                if (consumed != selection.size())
+                    throw std::invalid_argument("candidate");
+            }
+            catch (...)
+            {
+                return "ERROR Use owner scan <candidate>.";
+            }
+            const auto candidates = build_candidates();
+            if (candidateIndex >= candidates.size())
+                return "ERROR Candidate does not exist; run owner list.";
+            const auto& candidate =
+                candidates[static_cast<size_t>(candidateIndex)];
+            std::vector<std::string> strings =
+                scan_owner_strings(candidate.addonObject);
+            const std::vector<std::string> descriptorStrings =
+                scan_owner_strings(candidate.descriptor);
+            for (const auto& value : descriptorStrings)
+                if (std::find(strings.begin(), strings.end(), value) ==
+                    strings.end() && strings.size() < 24)
+                    strings.push_back(value);
+            const std::vector<std::string> outputStrings =
+                scan_owner_strings(candidate.outputHandle);
+            for (const auto& value : outputStrings)
+                if (std::find(strings.begin(), strings.end(), value) ==
+                    strings.end() && strings.size() < 24)
+                    strings.push_back(value);
+            std::ostringstream output;
+            output << "OK candidate=" << candidateIndex
+                << " strings=" << strings.size();
+            for (size_t index = 0; index < strings.size(); ++index)
+                output << " " << index << "='" << strings[index] << "'";
+            if (strings.empty())
+                output << " none; owner paths may be stored as engine tokens rather than ASCII";
+            return output.str();
+        }
+
+        if (action == "watch")
+        {
+            std::string selection, extra;
+            if (!(input >> selection))
+                return owner_status_text();
+            selection = lowercase(selection);
+            if (selection == "off" || selection == "stop")
+            {
+                if (input >> extra)
+                    return "ERROR Use owner watch off.";
+                stop_owner_watch();
+                return "OK Owner watch stopped; native processing unchanged.";
+            }
+            if (input >> extra)
+                return "ERROR Use owner watch <candidate>.";
+            uint64_t candidateIndex{};
+            try
+            {
+                size_t consumed{};
+                candidateIndex = std::stoull(selection, &consumed, 10);
+                if (consumed != selection.size())
+                    throw std::invalid_argument("candidate");
+            }
+            catch (...)
+            {
+                return "ERROR Use owner watch <candidate>.";
+            }
+            if (!g_hookInstalled.load(std::memory_order_acquire))
+                return "ERROR Run owner arm first so the validated addon hook is installed.";
+            if (g_active.load(std::memory_order_acquire))
+                return "ERROR Wait for owner capture to finish before watching one candidate.";
+            const auto candidates = build_candidates();
+            if (candidateIndex >= candidates.size())
+                return "ERROR Candidate does not exist; run owner list.";
+            const auto& candidate =
+                candidates[static_cast<size_t>(candidateIndex)];
+            stop_owner_watch();
+            g_ownerWatchCandidate.store(
+                static_cast<uint32_t>(candidateIndex),
+                std::memory_order_release);
+            g_ownerWatchObject.store(
+                candidate.addonObject, std::memory_order_release);
+            g_ownerWatchDescriptor.store(
+                candidate.descriptor, std::memory_order_release);
+            g_ownerWatchEnabled.store(true, std::memory_order_release);
+            diagnostic_log::writef_important(
+                "owner",
+                "Owner watch started: candidate=%llu object=0x%llX descriptor=0x%llX. Native processing is unchanged.",
+                static_cast<unsigned long long>(candidateIndex),
+                static_cast<unsigned long long>(candidate.addonObject),
+                static_cast<unsigned long long>(candidate.descriptor));
+            return "OK Owner watch started for candidate " +
+                std::to_string(candidateIndex) +
+                "; run route retrain while its screen is visible, then owner resources.";
+        }
+
+        if (action == "resources")
+            return owner_resources_text();
+
+        if (action == "dump")
+        {
+            diagnostic_log::writef_important(
+                "owner", "%s", owner_status_text().c_str());
+            diagnostic_log::writef_important(
+                "owner", "%s", owner_resources_text().c_str());
+            return "OK Owner mapping status written to PrismMedia.log.";
+        }
+
+        if (action == "clear")
+        {
+            if (g_active.load(std::memory_order_acquire))
+                return "ERROR Stop owner capture before clearing it.";
+            stop_owner_watch();
+            clear_samples();
+            return "OK Owner samples and resource correlations cleared.";
+        }
+
+        return "ERROR Use owner arm [10..300], status, list, row <index>, "
+            "scan <candidate>, watch <candidate>, watch off, resources, "
+            "dump, or clear.";
+    }
+
+    void observe_final_draw(uintptr_t resourceIdentity)
+    {
+        if (!resourceIdentity ||
+            !g_ownerWatchEnabled.load(std::memory_order_acquire))
+            return;
+        const uint64_t now = GetTickCount64();
+        const bool exact = t_ownerWatchDepth != 0;
+        const uint64_t ownerTick =
+            g_ownerLastCallTick.load(std::memory_order_acquire);
+        const bool nearby = !exact && ownerTick != 0 && now >= ownerTick &&
+            now - ownerTick <= 8 &&
+            GetCurrentThreadId() ==
+                g_ownerLastCallThread.load(std::memory_order_acquire);
+        if (!exact && !nearby) return;
+
+        std::lock_guard<std::mutex> lock(g_ownerResourceMutex);
+        auto found = std::find_if(
+            g_ownerResources.begin(), g_ownerResources.end(),
+            [resourceIdentity](const owner_resource_t& resource) {
+                return resource.identity == resourceIdentity;
+            });
+        if (found == g_ownerResources.end())
+        {
+            if (g_ownerResources.size() >= 32) return;
+            g_ownerResources.push_back({ resourceIdentity, 0, 0, now, now });
+            found = g_ownerResources.end() - 1;
+        }
+        if (exact) ++found->exactHits;
+        else ++found->nearbyHits;
+        found->lastTick = now;
+    }
+
     void tick()
     {
         const uint64_t now = GetTickCount64();
@@ -851,6 +1228,7 @@ namespace addon_display_probe
     {
         g_active.store(false, std::memory_order_release);
         stop_isolation();
+        stop_owner_watch();
         const uint64_t started = GetTickCount64();
         while (g_inFlightCallbacks.load(std::memory_order_acquire) != 0 &&
             GetTickCount64() - started < 250)

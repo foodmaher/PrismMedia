@@ -2,6 +2,7 @@
 #include "per_draw_router.h"
 
 #include "custom_render_probe.h"
+#include "addon_display_probe.h"
 #include "diagnostic_log.h"
 #include "dx11/CreateTexture2D.h"
 #include "screens.h"
@@ -33,7 +34,6 @@ namespace
     constexpr uint64_t kPreviewMinimumMs = 3000;
     constexpr uint64_t kPreviewMaximumMs = 60000;
     constexpr uint64_t kCandidateSettleMs = 500;
-    constexpr uint64_t kActiveRouteStaleMs = 1500;
 
     struct draw_signature_t
     {
@@ -135,8 +135,7 @@ namespace
         static_cast<int>(per_draw_router::phase_t::waiting_texture) };
     std::atomic<unsigned> g_fastKind{
         static_cast<unsigned>(per_draw_router::draw_kind_t::none) };
-    std::atomic<UINT> g_fastCount{}, g_fastStart{};
-    std::atomic<INT> g_fastBase{};
+    std::atomic<UINT> g_fastCount{};
     std::atomic<uint64_t> g_bindingGeneration{ 1 };
     thread_local tracked_bindings_t t_bindings;
 
@@ -341,6 +340,22 @@ namespace
         ID3D11ShaderResourceView* view{};
         context->PSGetShaderResources(expected.sourceSlot, 1, &view);
         const bool sourceMatches = same_identity(view, expected.sourceIdentity);
+        if (view) view->Release();
+        return sourceMatches;
+    }
+
+    bool matches_owned_resource(
+        ID3D11DeviceContext* context,
+        const draw_signature_t& expected,
+        const per_draw_router::draw_call_t& call)
+    {
+        if (!expected.valid || call.kind != expected.call.kind ||
+            call.count != expected.call.count)
+            return false;
+        ID3D11ShaderResourceView* view{};
+        context->PSGetShaderResources(expected.sourceSlot, 1, &view);
+        const bool sourceMatches = same_identity(
+            view, expected.sourceIdentity);
         if (view) view->Release();
         return sourceMatches;
     }
@@ -565,6 +580,8 @@ namespace
             view, width, height, format, identity);
         if (view) view->Release();
         if (!matches) return;
+
+        addon_display_probe::observe_final_draw(identity);
 
         const draw_signature_t signature = capture_signature(
             context, call, kFinalDrawSourceSlot, identity);
@@ -811,6 +828,11 @@ namespace per_draw_router
 {
     void update(bool driving, bool interiorCamera)
     {
+        // Camera visibility is not resource ownership. A selected screen may
+        // disappear from the frame while its addon and SRV remain valid.
+        // Never retrain merely because the exterior camera or head pose hides
+        // the draw; exact signatures become active again when it reappears.
+        (void)interiorCamera;
         ID3D11Texture2D* texture{};
         uint64_t routeSequence{};
         std::string displayId;
@@ -865,7 +887,13 @@ namespace per_draw_router
             g_detail = "Per-display routing was disabled from the console.";
             return;
         }
-        if (!driving || !interiorCamera || eligible == 0)
+        if (!driving && g_phase == phase_t::active && g_targetTexture)
+        {
+            if (texture) texture->Release();
+            g_detail = "Active owner/resource route retained while paused; no visual rediscovery will run.";
+            return;
+        }
+        if (!driving || eligible == 0)
         {
             if (texture) texture->Release();
             request_hooks_locked(false);
@@ -873,8 +901,6 @@ namespace per_draw_router
             set_phase_locked(phase_t::waiting_texture);
             if (!driving)
                 g_detail = "Suspended while the game is paused or outside the driving state.";
-            else if (!interiorCamera)
-                g_detail = "Suspended outside the cockpit; resources will be reacquired on return.";
             else
                 g_detail = "Waiting for one enabled custom display in the truck.";
             custom_render_probe::set_fallback_mode(
@@ -893,13 +919,7 @@ namespace per_draw_router
             return;
         }
 
-        const uint64_t now = GetTickCount64();
-        const uint64_t lastRouteActivity = (std::max)(
-            g_routeActivatedTick, g_lastRoutedTick);
-        const bool staleActiveRoute = g_phase == phase_t::active &&
-            lastRouteActivity != 0 &&
-            now - lastRouteActivity >= kActiveRouteStaleMs;
-        const bool changed = g_forceRetrain || staleActiveRoute ||
+        const bool changed = g_forceRetrain ||
             texture != g_targetTexture || routeSequence != g_routeSequence ||
             displayId != g_displayId;
         if (changed)
@@ -975,8 +995,6 @@ namespace per_draw_router
                 static_cast<unsigned>(g_signature.call.kind),
                 std::memory_order_relaxed);
             g_fastCount.store(g_signature.call.count, std::memory_order_relaxed);
-            g_fastStart.store(g_signature.call.start, std::memory_order_relaxed);
-            g_fastBase.store(g_signature.call.base, std::memory_order_relaxed);
             set_phase_locked(phase_t::active);
             g_routeActivatedTick = GetTickCount64();
             g_lastRoutedTick = 0;
@@ -1422,45 +1440,11 @@ namespace per_draw_router
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         hint = {};
-        if (g_phase != phase_t::training || !g_savedSelector.valid ||
-            g_savedSelector.pickerX < 0.0f ||
-            g_savedSelector.pickerY < 0.0f ||
-            !g_customView || !candidates_settled())
-            return false;
-
-        bool completeGroup{};
-        const uint32_t expected = (std::max)(
-            1u, g_savedSelector.expectedPasses);
-        for (size_t index = 0; index < g_candidates.size(); ++index)
-        {
-            const candidate_t& candidate = g_candidates[index];
-            if (!candidate.nativeFinalDraw ||
-                candidate.hits < kStableObservationCount)
-                continue;
-            bool represented{};
-            for (size_t prior = 0; prior < index; ++prior)
-            {
-                if (g_candidates[prior].hits >= kStableObservationCount &&
-                    same_physical_group(g_candidates[prior], candidate))
-                {
-                    represented = true;
-                    break;
-                }
-            }
-            if (!represented && physical_group_passes(candidate) >= expected)
-            {
-                completeGroup = true;
-                break;
-            }
-        }
-        if (!completeGroup) return false;
-
-        hint.generation = g_recoveryGeneration;
-        hint.displayId = g_displayId;
-        hint.normalizedX = g_savedSelector.pickerX;
-        hint.normalizedY = g_savedSelector.pickerY;
-        hint.expectedPasses = expected;
-        return true;
+        // Frame coordinates are not accessory identities. Automatic visual
+        // recovery caused media to jump when camera visibility changed, so it
+        // is permanently disabled. Owner mapping or an explicit picker action
+        // is required after genuine resource recreation.
+        return false;
     }
 
     bool picker_set_probe(
@@ -1562,9 +1546,7 @@ namespace per_draw_router
         if (fastPhase == static_cast<int>(phase_t::active) &&
             (static_cast<unsigned>(call.kind) !=
                     g_fastKind.load(std::memory_order_relaxed) ||
-             call.count != g_fastCount.load(std::memory_order_relaxed) ||
-             call.start != g_fastStart.load(std::memory_order_relaxed) ||
-             call.base != g_fastBase.load(std::memory_order_relaxed)))
+             call.count != g_fastCount.load(std::memory_order_relaxed)))
             return false;
 
         std::unique_lock<std::mutex> lock(g_mutex);
@@ -1616,7 +1598,7 @@ namespace per_draw_router
             return false;
 		for (const auto& signature : g_routeSignatures)
 		{
-			if (!matches_signature(context, signature, call))
+			if (!matches_owned_resource(context, signature, call))
 				continue;
 			return bind_custom_view_locked(
 				context, signature.sourceSlot, scope, false, lock);

@@ -13,10 +13,13 @@ smartphone screens keep their original game resources.
 
 The public version remains 4.0.0. The diagnostic capability marker for this
 source is `perDrawRoute=6 groupedPassRouting=1 visualPicker=1
-privateMediaTexture=1 hookTransitionGuard=4 pickerInput=4 routeRecovery=1`.
-The saved click point now reacquires regenerated GPU resources after restart,
-pause and camera changes, and routing waits for every saved screen pass before
-activation. The legacy TOBJ and console calibration paths remain
+privateMediaTexture=1 hookTransitionGuard=5 pickerInput=4 routeRecovery=2
+ownerMapper=1 stickyRoute=1`. An active exact route now remains attached while
+head/camera visibility changes, and automatic frame-position recovery is
+disabled so it cannot jump to another visible GPS or flash probe colours.
+The owner mapper can correlate live addon objects with final-draw resources
+from the console without rebuilding; see [OWNER-MAPPER.md](OWNER-MAPPER.md).
+The legacy TOBJ and console calibration paths remain
 available for compatibility and recovery.
 
 This revision adds a bounded addon-display ownership capture for the exact ETS2

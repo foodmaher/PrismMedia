@@ -69,6 +69,7 @@ jobs:
           Copy-Item 'COMPOSITOR-TRACE-REVISION.md' $Package
           Copy-Item 'FINAL-DRAW-ROUTING.md' $Package
           Copy-Item 'PICKER-CRASH-FIX.md' $Package
+          Copy-Item 'OWNER-MAPPER.md' $Package
           @"
           PrismMedia 4.0.0
           Remove the old PrismTextureStreamerFB.dll, then copy PrismMedia.dll
@@ -81,8 +82,8 @@ jobs:
           Recommended: choose media, open System > Truck screen routing,
           press Pick truck screen, and double-click the intended display.
           Confirm: capabilities includes perDrawRoute=6 groupedPassRouting=1
-          visualPicker=1 privateMediaTexture=1 hookTransitionGuard=4
-          pickerInput=4 routeRecovery=1. The
+          visualPicker=1 privateMediaTexture=1 hookTransitionGuard=5
+          pickerInput=4 routeRecovery=2 ownerMapper=1 stickyRoute=1. The
           selected final draw is saved and unmatched GPS screens remain native.
           See FINAL-DRAW-ROUTING.md for visual calibration and
           DIAGNOSTIC-CONSOLE.md for recovery and capture instructions.

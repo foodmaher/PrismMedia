@@ -48,6 +48,7 @@ Copy-Item (Join-Path $ProjectRoot 'PER-DISPLAY-ROUTING.md') $Package
 Copy-Item (Join-Path $ProjectRoot 'COMPOSITOR-TRACE-REVISION.md') $Package
 Copy-Item (Join-Path $ProjectRoot 'FINAL-DRAW-ROUTING.md') $Package
 Copy-Item (Join-Path $ProjectRoot 'PICKER-CRASH-FIX.md') $Package
+Copy-Item (Join-Path $ProjectRoot 'OWNER-MAPPER.md') $Package
 
 @"
 PrismMedia 4.0.0
@@ -66,7 +67,8 @@ rebuilding PrismMedia.dll. See DIAGNOSTIC-CONSOLE.md.
 
 For the ETS2 1.62 visual final-draw picker, see FINAL-DRAW-ROUTING.md. Confirm
 `perDrawRoute=6 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1`
-and `hookTransitionGuard=4 pickerInput=4 routeRecovery=1` before testing so an older 4.0.0 DLL is not
+and `hookTransitionGuard=5 pickerInput=4 routeRecovery=2 ownerMapper=1 stickyRoute=1`
+before testing so an older 4.0.0 DLL is not
 mistaken for this revision. The matching PrismMedia.pdb remains beside the
 normal build outputs in x64\Release for crash-address resolution; it is not
 required in the game's plugins folder.

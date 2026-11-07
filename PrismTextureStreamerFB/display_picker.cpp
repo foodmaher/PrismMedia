@@ -634,8 +634,10 @@ namespace display_picker
             ImGuiWindowFlags_NoNav;
         ImGui::Begin("##prism_visual_picker", nullptr, flags);
         ImGuiIO& io = ImGui::GetIO();
-        ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
-        ImGui::InvisibleButton("##picker_surface", viewport->Size);
+
+        // The click-to-pick stage reads ImGui's global mouse state directly.
+        // A full-viewport InvisibleButton is unnecessary and overlaps the
+        // confirmation controls, preventing them from receiving clicks.
 
         ImDrawList* draw = ImGui::GetWindowDrawList();
         const ImVec2 panelMin(
@@ -653,9 +655,11 @@ namespace display_picker
         draw->AddText(ImVec2(panelMin.x + 20.0f, panelMin.y + 49.0f),
             IM_COL32(185, 215, 230, 255), g_status.c_str());
         draw->AddText(ImVec2(panelMin.x + 20.0f, panelMin.y + 76.0f),
-            IM_COL32(145, 164, 177, 255), "Escape cancels without changing any native screen.");
+            IM_COL32(145, 164, 177, 255),
+            "Escape or gamepad B cancels without changing any native screen.");
 
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))
         {
             per_draw_router::picker_clear_probe();
             g_stage = stage_t::idle;
@@ -687,10 +691,24 @@ namespace display_picker
         if (g_stage == stage_t::confirming &&
             GetTickCount64() - g_stageTick >= 3000)
         {
+            const bool acceptKey =
+                ImGui::IsKeyPressed(ImGuiKey_1) ||
+                ImGui::IsKeyPressed(ImGuiKey_Keypad1) ||
+                ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false);
+            const bool fallbackKey =
+                ImGui::IsKeyPressed(ImGuiKey_2) ||
+                ImGui::IsKeyPressed(ImGuiKey_Keypad2) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft, false);
+            const bool retryKey =
+                ImGui::IsKeyPressed(ImGuiKey_3) ||
+                ImGui::IsKeyPressed(ImGuiKey_Keypad3) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
             ImGui::SetCursorScreenPos(ImVec2(
                 panelMin.x + 20.0f, panelMax.y + 18.0f));
             ImGui::BeginGroup();
-            if (ImGui::Button("Use this screen", ImVec2(190.0f, 42.0f)))
+            if (ImGui::Button("Use this screen [1 / A]", ImVec2(190.0f, 42.0f)) ||
+                acceptKey)
             {
                 std::ostringstream select;
                 select << "select " << g_selectedCandidate;
@@ -703,14 +721,16 @@ namespace display_picker
                 g_stageTick = GetTickCount64();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Numbered fallback", ImVec2(190.0f, 42.0f)))
+            if (ImGui::Button("Numbered fallback [2 / X]", ImVec2(190.0f, 42.0f)) ||
+                fallbackKey)
             {
                 g_stage = stage_t::fallback;
                 g_manualCandidate = 0;
                 g_status = "Numbered fallback started.";
             }
             ImGui::SameLine();
-            if (ImGui::Button("Try click again", ImVec2(170.0f, 42.0f)))
+            if (ImGui::Button("Try click again [3 / Y]", ImVec2(170.0f, 42.0f)) ||
+                retryKey)
             {
                 per_draw_router::picker_clear_probe();
                 g_stage = stage_t::click;
@@ -729,7 +749,11 @@ namespace display_picker
                 g_status = "Preparing numbered screen 1...";
             }
             ImGui::BeginDisabled(g_manualCandidate == 0);
-            if (ImGui::Button("Previous number", ImVec2(170.0f, 42.0f)))
+            const bool previousRequested =
+                ImGui::Button("Previous number", ImVec2(170.0f, 42.0f)) ||
+                ImGui::IsKeyPressed(ImGuiKey_LeftArrow) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, false);
+            if (g_manualCandidate > 0 && previousRequested)
             {
                 --g_manualCandidate;
                 release_view(g_numberView);
@@ -737,14 +761,20 @@ namespace display_picker
             ImGui::EndDisabled();
             ImGui::SameLine();
             ImGui::BeginDisabled(g_manualCandidate + 1 >= g_candidateCount);
-            if (ImGui::Button("Next number", ImVec2(170.0f, 42.0f)))
+            const bool nextRequested =
+                ImGui::Button("Next number", ImVec2(170.0f, 42.0f)) ||
+                ImGui::IsKeyPressed(ImGuiKey_RightArrow) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, false);
+            if (g_manualCandidate + 1 < g_candidateCount && nextRequested)
             {
                 ++g_manualCandidate;
                 release_view(g_numberView);
             }
             ImGui::EndDisabled();
             ImGui::SameLine();
-            if (ImGui::Button("Use numbered screen", ImVec2(210.0f, 42.0f)))
+            if (ImGui::Button("Use numbered screen [Enter / A]", ImVec2(210.0f, 42.0f)) ||
+                ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false))
             {
                 per_draw_router::picker_clear_probe();
                 std::ostringstream select;

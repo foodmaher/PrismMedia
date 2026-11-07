@@ -1,4 +1,4 @@
-# PrismMedia 4.0.0 — visual-picker crash fix (revision 3)
+# PrismMedia 4.0.0 — visual-picker crash and input fix
 
 The matching Release DLL and PDB identify the 2026-11-07 picker crash as a
 same-thread recursive mutex lock, not an RTSS failure and not a MinHook state
@@ -34,4 +34,21 @@ After building and installing, run `capabilities` in
 `PrismDiagnosticConsole.exe`. The result must include
 `hookTransitionGuard=3`. The session log must contain `Picker deadlock guard
 revision 3 active` before testing **Pick truck screen**.
+
+## Picker input revision 3
+
+The full-viewport invisible ImGui input surface was removed because it
+overlapped and intercepted the three confirmation buttons. The controls are
+now directly clickable and have keyboard and controller fallbacks:
+
+- **Use this screen:** `1`, `Enter`, or gamepad `A`.
+- **Numbered fallback:** `2` or gamepad `X`.
+- **Try click again:** `3` or gamepad `Y`.
+- **Cancel:** `Escape` or gamepad `B`.
+- In numbered mode: Left/Right arrow or D-pad, then `Enter` or gamepad `A`.
+
+When the picker saves, cancels, or closes, it now disables the temporary
+mouse-unlock hook and returns mouse input to ETS2 automatically.
+
+The `capabilities` result includes `pickerInput=3` in this revision.
 

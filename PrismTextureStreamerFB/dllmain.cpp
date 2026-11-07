@@ -836,7 +836,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 
     diagnostic_log::write(
         "session",
-        "Picker deadlock guard revision 3 active "
+        "Picker deadlock guard revision 3 active; picker input revision 3 active "
         "(plugin-owned textures are created outside the screen registry lock; "
         "stable DrawIndexed bridge retained).");
     diagnostic_log::write("session", "Plugin initialization completed.");

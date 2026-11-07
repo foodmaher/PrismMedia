@@ -396,7 +396,8 @@ HRESULT hooked_present(IDXGISwapChain* SwapChain, UINT SyncInterval, UINT Flags)
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
-    submit_imgui_gamepad_navigation(Gui::is_visible());
+    submit_imgui_gamepad_navigation(
+        Gui::is_visible() || display_picker::active());
     ImGui::NewFrame();
 
     if (!pending_callbacks.empty()) {

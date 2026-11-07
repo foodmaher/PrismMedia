@@ -32,7 +32,7 @@ final draw receives that texture; every unmatched screen keeps its native SRV.
 The old console calibration remains available for expert recovery. `capabilities`
 for this source must report
 `perDrawRoute=5 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1
-hookTransitionGuard=3`.
+hookTransitionGuard=3 pickerInput=3`.
 
 Revision 3 creates the picker's private D3D texture without holding the screen
 registry mutex. This is required because PrismMedia's `CreateTexture2D` hook

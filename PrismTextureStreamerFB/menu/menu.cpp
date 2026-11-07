@@ -2826,7 +2826,17 @@ namespace
             ImGui::TextUnformatted("Open the plugin menu (Ctrl+F8) for the download page.");
             ImGui::End();
         }
+        const bool pickerWasActive = display_picker::active();
         display_picker::draw_overlay();
+        const bool pickerIsActive = display_picker::active();
+        if (pickerWasActive && !pickerIsActive && !menuVisible.load())
+        {
+            // Pick truck screen is launched from the menu, but the menu is
+            // hidden without disabling its mouse-unlock hook so the picker
+            // can still be clicked. Restore normal ETS2 mouse handling as
+            // soon as the picker saves, cancels, or otherwise closes.
+            set_visible(false);
+        }
         if (menuVisible.load()) draw_menu();
         if (saveNowRequest)
         {

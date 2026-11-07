@@ -33,6 +33,15 @@ namespace
         error
     };
 
+    enum class recovery_stage_t
+    {
+        idle,
+        probe_white,
+        probe_black,
+        complete,
+        failed
+    };
+
     struct colour_t { float r{}, g{}, b{}; };
 
     std::mutex g_mutex;
@@ -51,6 +60,25 @@ namespace
     ID3D11ShaderResourceView* g_whiteView{};
     ID3D11ShaderResourceView* g_blackView{};
     ID3D11ShaderResourceView* g_numberView{};
+    recovery_stage_t g_recoveryStage{ recovery_stage_t::idle };
+    uint64_t g_recoveryGeneration{};
+    size_t g_recoveryCandidateCount{};
+    size_t g_recoveryCandidate{};
+    float g_recoveryX{ -1.0f };
+    float g_recoveryY{ -1.0f };
+    colour_t g_recoveryWhiteSample;
+    std::vector<float> g_recoveryScores;
+
+    void reset_recovery_locked(bool clearProbe)
+    {
+        if (clearProbe) per_draw_router::picker_clear_probe();
+        g_recoveryStage = recovery_stage_t::idle;
+        g_recoveryCandidateCount = 0;
+        g_recoveryCandidate = 0;
+        g_recoveryX = -1.0f;
+        g_recoveryY = -1.0f;
+        g_recoveryScores.clear();
+    }
 
     void release_view(ID3D11ShaderResourceView*& view)
     {
@@ -454,6 +482,8 @@ namespace display_picker
 
         {
             std::lock_guard<std::mutex> lock(g_mutex);
+            reset_recovery_locked(false);
+            g_recoveryGeneration = 0;
             g_displayId = displayId;
             g_candidateCount = 0;
             g_probeCandidate = 0;
@@ -495,7 +525,143 @@ namespace display_picker
     {
         ensure_private_media_textures(device, context);
         std::lock_guard<std::mutex> lock(g_mutex);
-        if (g_stage == stage_t::idle) return;
+        if (g_stage == stage_t::idle)
+        {
+            per_draw_router::recovery_hint_t hint;
+            if (!per_draw_router::picker_recovery_hint(hint))
+            {
+                if (g_recoveryStage == recovery_stage_t::probe_white ||
+                    g_recoveryStage == recovery_stage_t::probe_black)
+                    reset_recovery_locked(true);
+                return;
+            }
+            if (!ensure_probe_views(device)) return;
+
+            if (hint.generation != g_recoveryGeneration)
+            {
+                reset_recovery_locked(true);
+                g_recoveryGeneration = hint.generation;
+                g_recoveryCandidateCount =
+                    per_draw_router::picker_candidate_count();
+                g_recoveryX = hint.normalizedX;
+                g_recoveryY = hint.normalizedY;
+                if (g_recoveryCandidateCount == 0 ||
+                    !per_draw_router::picker_set_probe(0, g_whiteView))
+                {
+                    g_recoveryStage = recovery_stage_t::failed;
+                    diagnostic_log::write(
+                        "route", "Automatic screen reacquisition could not start; native screens were retained.");
+                    return;
+                }
+                g_recoveryStage = recovery_stage_t::probe_white;
+                diagnostic_log::writef(
+                    "route", "Automatically validating %llu current screen candidate(s) at saved picker point %.4f,%.4f.",
+                    static_cast<unsigned long long>(g_recoveryCandidateCount),
+                    g_recoveryX, g_recoveryY);
+                return;
+            }
+
+            if (g_recoveryStage == recovery_stage_t::complete ||
+                g_recoveryStage == recovery_stage_t::failed)
+                return;
+
+            colour_t sample;
+            if (!sample_backbuffer(
+                    swapChain, device, context,
+                    g_recoveryX, g_recoveryY, sample))
+            {
+                reset_recovery_locked(true);
+                g_recoveryStage = recovery_stage_t::failed;
+                diagnostic_log::write(
+                    "route", "Automatic screen reacquisition could not sample the backbuffer; native screens were retained.");
+                return;
+            }
+
+            if (g_recoveryStage == recovery_stage_t::probe_white)
+            {
+                g_recoveryWhiteSample = sample;
+                if (!per_draw_router::picker_set_probe(
+                        g_recoveryCandidate, g_blackView))
+                {
+                    reset_recovery_locked(true);
+                    g_recoveryStage = recovery_stage_t::failed;
+                    return;
+                }
+                g_recoveryStage = recovery_stage_t::probe_black;
+                return;
+            }
+
+            if (g_recoveryStage != recovery_stage_t::probe_black) return;
+            g_recoveryScores.push_back(
+                colour_distance(g_recoveryWhiteSample, sample));
+            ++g_recoveryCandidate;
+            if (g_recoveryCandidate < g_recoveryCandidateCount)
+            {
+                if (!per_draw_router::picker_set_probe(
+                        g_recoveryCandidate, g_whiteView))
+                {
+                    reset_recovery_locked(true);
+                    g_recoveryStage = recovery_stage_t::failed;
+                    return;
+                }
+                g_recoveryStage = recovery_stage_t::probe_white;
+                return;
+            }
+
+            per_draw_router::picker_clear_probe();
+            size_t best{};
+            size_t second{};
+            for (size_t index = 0; index < g_recoveryScores.size(); ++index)
+            {
+                if (g_recoveryScores[index] > g_recoveryScores[best])
+                {
+                    second = best;
+                    best = index;
+                }
+                else if (index != best &&
+                    (second == best ||
+                     g_recoveryScores[index] > g_recoveryScores[second]))
+                    second = index;
+            }
+            const float bestScore = g_recoveryScores.empty()
+                ? 0.0f : g_recoveryScores[best];
+            const float secondScore = g_recoveryScores.size() > 1
+                ? g_recoveryScores[second] : 0.0f;
+            const bool confident = bestScore >= 0.10f &&
+                (g_recoveryScores.size() == 1 ||
+                 bestScore >= secondScore * 1.35f + 0.025f);
+            if (!confident)
+            {
+                g_recoveryStage = recovery_stage_t::failed;
+                diagnostic_log::writef(
+                    "route", "Automatic screen reacquisition was ambiguous (best %.4f, next %.4f); native screens were retained.",
+                    bestScore, secondScore);
+                return;
+            }
+
+            std::ostringstream selection;
+            selection.setf(std::ios::fixed);
+            selection.precision(4);
+            selection << "select " << best << ' '
+                << g_recoveryX << ' ' << g_recoveryY;
+            const std::string response =
+                per_draw_router::command(selection.str());
+            if (response.rfind("OK", 0) == 0)
+            {
+                g_recoveryStage = recovery_stage_t::complete;
+                diagnostic_log::writef(
+                    "route", "Automatically reacquired saved screen as candidate %llu; all native unmatched screens remain active.",
+                    static_cast<unsigned long long>(best));
+            }
+            else
+            {
+                g_recoveryStage = recovery_stage_t::failed;
+                diagnostic_log::writef(
+                    "route", "Automatic screen reacquisition was rejected: %s",
+                    response.c_str());
+            }
+            return;
+        }
         if (!ensure_probe_views(device))
         {
             g_stage = stage_t::error;
@@ -711,7 +877,10 @@ namespace display_picker
                 acceptKey)
             {
                 std::ostringstream select;
-                select << "select " << g_selectedCandidate;
+                select.setf(std::ios::fixed);
+                select.precision(4);
+                select << "select " << g_selectedCandidate << ' '
+                    << g_clickX << ' ' << g_clickY;
                 const std::string response = per_draw_router::command(select.str());
                 g_status = response.rfind("OK", 0) == 0
                     ? "Screen selected and saved. Other truck screens remain native."
@@ -802,6 +971,8 @@ namespace display_picker
         release_view(g_whiteView);
         release_view(g_blackView);
         release_view(g_numberView);
+        reset_recovery_locked(false);
+        g_recoveryGeneration = 0;
         g_stage = stage_t::idle;
     }
 }

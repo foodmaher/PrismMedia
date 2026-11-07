@@ -163,6 +163,12 @@ struct screen_t
 	uint32_t finalDrawRouteStart{};
 	int32_t finalDrawRouteBase{};
 	uint32_t finalDrawRouteSlot{ 6 };
+	// Durable visual-picker identity. Draw offsets, buffers and resources are
+	// session-local; the click point is re-probed whenever ETS2 recreates them.
+	uint32_t finalDrawRouteCandidate{ UINT32_MAX };
+	uint32_t finalDrawRoutePasses{};
+	float finalDrawPickerX{ -1.0f };
+	float finalDrawPickerY{ -1.0f };
 	bool suspiciousMagentaFrame{};
 	bool suspiciousBlackFrame{};
 	bool sourceFrameStale{};

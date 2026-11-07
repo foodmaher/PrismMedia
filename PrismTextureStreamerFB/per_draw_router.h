@@ -60,11 +60,20 @@ namespace per_draw_router
         std::string detail;
     };
 
+    struct recovery_hint_t
+    {
+        uint64_t generation{};
+        std::string displayId;
+        float normalizedX{ -1.0f };
+        float normalizedY{ -1.0f };
+        uint32_t expectedPasses{};
+    };
+
     // Called from the telemetry thread. With one enabled custom display this
     // traces that texture through one UI-compositor render target, learns the
     // exact final screen draw and SRV slot, then leaves only that draw hook
     // enabled. It does not depend on the version-specific global fallback.
-    void update(bool driving);
+    void update(bool driving, bool interiorCamera = true);
     void set_enabled(bool enabled);
     void retrain();
     status_t status();
@@ -79,6 +88,7 @@ namespace per_draw_router
     // individual shader passes. A temporary probe replaces every pass in one
     // group and is always restored immediately after each draw.
     size_t picker_candidate_count();
+    bool picker_recovery_hint(recovery_hint_t& hint);
     bool picker_set_probe(
         size_t candidate,
         ID3D11ShaderResourceView* probeView);

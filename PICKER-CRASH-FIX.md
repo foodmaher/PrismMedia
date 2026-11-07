@@ -32,7 +32,7 @@ matching. The stable DrawIndexed bridge from revision 2 is also retained.
 
 After building and installing, run `capabilities` in
 `PrismDiagnosticConsole.exe`. The result must include
-`hookTransitionGuard=3`. The session log must contain `Picker deadlock guard
+`hookTransitionGuard=4`. The session log must contain `Picker deadlock guard
 revision 3 active` before testing **Pick truck screen**.
 
 ## Picker input revision 3
@@ -50,5 +50,5 @@ now directly clickable and have keyboard and controller fallbacks:
 When the picker saves, cancels, or closes, it now disables the temporary
 mouse-unlock hook and returns mouse input to ETS2 automatically.
 
-The `capabilities` result includes `pickerInput=3` in this revision.
+The `capabilities` result includes `pickerInput=4` in this revision.
 

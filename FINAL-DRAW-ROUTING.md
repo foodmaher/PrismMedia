@@ -31,8 +31,8 @@ final draw receives that texture; every unmatched screen keeps its native SRV.
 
 The old console calibration remains available for expert recovery. `capabilities`
 for this source must report
-`perDrawRoute=5 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1
-hookTransitionGuard=3 pickerInput=3`.
+`perDrawRoute=6 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1
+hookTransitionGuard=4 pickerInput=4 routeRecovery=1`.
 
 Revision 3 creates the picker's private D3D texture without holding the screen
 registry mutex. This is required because PrismMedia's `CreateTexture2D` hook
@@ -40,11 +40,18 @@ also reads that registry. Holding the mutex across the D3D call caused a
 same-thread recursive lock and an uncaught `std::system_error` when the picker
 button was pressed.
 
-The selected stable draw arguments are saved with the custom display. Pointer
-identities are never saved; after a game or truck reload, the router observes
-the new resources and restores the saved selection only when it has one unique
-match. If a game/mod update changes the draw, enter `route clear` and rerun the
-script. No DLL rebuild is needed.
+The selected click point, structural draw fields, candidate fallback and the
+complete grouped-pass count are saved with the custom display. Absolute draw
+offsets, buffers, shaders and resource pointers are never treated as durable.
+After a restart, pause, truck reload or return from an exterior camera, the
+router first leaves every screen native, waits for the new candidate set and
+all expected passes to settle, then briefly repeats the saved-point probe. It
+activates only after that live probe uniquely identifies the same visible
+screen. Ambiguous recovery leaves all screens native and requests another pick.
+
+Configurations saved by an older 4.0.0 revision do not contain a click point.
+They remain safe, but need one new visual pick after installing this revision.
+No further DLL rebuild is required for ordinary screen reacquisition.
 
 Legacy manual equivalents are `route candidates`, `route preview <n> 10`,
 `route preview off`, and `route select <n>`.

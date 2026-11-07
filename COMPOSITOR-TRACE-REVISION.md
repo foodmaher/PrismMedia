@@ -18,7 +18,7 @@ RenderDoc-confirmed final-draw calibration in `FINAL-DRAW-ROUTING.md`.
 - Training keeps the unsupported legacy global fallback off, so unrelated
   smartphone and GPS displays retain their original game content.
 - The superseding build reports
-  `perDrawRoute=5 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1`.
+  `perDrawRoute=6 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1 routeRecovery=1`.
 - A failed `route status` includes `traceDirect`, `traceTargets`,
   `traceDerived`, `candidates`, and observed output sizes so one run identifies
   which stage was not observed.
@@ -31,7 +31,7 @@ RenderDoc-confirmed final-draw calibration in `FINAL-DRAW-ROUTING.md`.
 3. Enable exactly one custom display and keep it visible in the truck for at
    least 15 seconds.
 4. Run `capabilities`; require
-   `perDrawRoute=5 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1`.
+   `perDrawRoute=6 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1 routeRecovery=1`.
 5. Run `route status` twice. Success is `detail=active` with an increasing
    `routed` value while unconfigured GPS/smartphone screens stay native.
 

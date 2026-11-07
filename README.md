@@ -12,8 +12,11 @@ captures use the numbered fallback in the same build. Unmatched GPS and
 smartphone screens keep their original game resources.
 
 The public version remains 4.0.0. The diagnostic capability marker for this
-source is `perDrawRoute=5 groupedPassRouting=1 visualPicker=1
-privateMediaTexture=1`. The legacy TOBJ and console calibration paths remain
+source is `perDrawRoute=6 groupedPassRouting=1 visualPicker=1
+privateMediaTexture=1 hookTransitionGuard=4 pickerInput=4 routeRecovery=1`.
+The saved click point now reacquires regenerated GPU resources after restart,
+pause and camera changes, and routing waits for every saved screen pass before
+activation. The legacy TOBJ and console calibration paths remain
 available for compatibility and recovery.
 
 This revision adds a bounded addon-display ownership capture for the exact ETS2

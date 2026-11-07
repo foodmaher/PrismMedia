@@ -730,7 +730,8 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
     diagnostic_console::update(
         g_telemetry_driving.load(std::memory_order_acquire), has_custom);
     per_draw_router::update(
-        g_telemetry_driving.load(std::memory_order_acquire));
+        g_telemetry_driving.load(std::memory_order_acquire),
+        g_camera_interior_hint.load(std::memory_order_acquire));
     custom_render_probe::update(has_custom);
 }
 

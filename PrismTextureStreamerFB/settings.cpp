@@ -405,6 +405,15 @@ namespace settings {
 					section.c_str(), "FinalDrawRouteBase", 0, path.c_str()));
 			screen.finalDrawRouteSlot = GetPrivateProfileIntA(
 				section.c_str(), "FinalDrawRouteSlot", 6, path.c_str());
+			screen.finalDrawRouteCandidate = GetPrivateProfileIntA(
+				section.c_str(), "FinalDrawRouteCandidate", UINT32_MAX,
+				path.c_str());
+			screen.finalDrawRoutePasses = GetPrivateProfileIntA(
+				section.c_str(), "FinalDrawRoutePasses", 0, path.c_str());
+			screen.finalDrawPickerX = read_float(
+				path, section.c_str(), "FinalDrawPickerX", -1.0f);
+			screen.finalDrawPickerY = read_float(
+				path, section.c_str(), "FinalDrawPickerY", -1.0f);
             screen.targetLiveTextureWidth = (std::clamp)(
                 GetPrivateProfileIntA(section.c_str(), "TargetWidth", 1280, path.c_str()), 64U, 7680U);
             screen.targetLiveTextureHeight = (std::clamp)(
@@ -786,6 +795,10 @@ namespace settings {
 			write_number(temporaryPath, section.c_str(), "FinalDrawRouteStart", screen.finalDrawRouteStart);
 			write_number(temporaryPath, section.c_str(), "FinalDrawRouteBase", static_cast<uint32_t>(screen.finalDrawRouteBase));
 			write_number(temporaryPath, section.c_str(), "FinalDrawRouteSlot", screen.finalDrawRouteSlot);
+			write_number(temporaryPath, section.c_str(), "FinalDrawRouteCandidate", screen.finalDrawRouteCandidate);
+			write_number(temporaryPath, section.c_str(), "FinalDrawRoutePasses", screen.finalDrawRoutePasses);
+			write_float(temporaryPath, section.c_str(), "FinalDrawPickerX", screen.finalDrawPickerX);
+			write_float(temporaryPath, section.c_str(), "FinalDrawPickerY", screen.finalDrawPickerY);
             write_number(temporaryPath, section.c_str(), "TargetWidth", screen.targetLiveTextureWidth);
             write_number(temporaryPath, section.c_str(), "TargetHeight", screen.targetLiveTextureHeight);
             write_number(temporaryPath, section.c_str(), "Framerate", screen.framerate);

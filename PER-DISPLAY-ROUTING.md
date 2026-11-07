@@ -26,7 +26,7 @@ previews one candidate at a time, and saves the explicitly selected draw.
    shows its original game content, then enter `route status`.
 
 The optional console `capabilities` command should report
-`perDrawRoute=5 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1` so an older 4.0.0 DLL
+`perDrawRoute=6 groupedPassRouting=1 visualPicker=1 privateMediaTexture=1 routeRecovery=1` so an older 4.0.0 DLL
 cannot be mistaken for this revision. Success is `detail=active` with an
 increasing `routed` count. The selection is stored in the normal 4.0.0 config;
 new runtime resource identities are rediscovered automatically after restart.

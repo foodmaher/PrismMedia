@@ -303,10 +303,10 @@ namespace
         }
         if (verb == "capabilities")
             return "OK host=4.0.0 script=external-powershell captureSchema=1 "
-                "liveDraw=1 reloadProbe=1 fallbackLease=1 perDrawRoute=5 "
+                "liveDraw=1 reloadProbe=1 fallbackLease=1 perDrawRoute=6 "
                 "compositorTrace=1 finalDrawSwap=1 routeCalibration=1 "
 				"groupedPassRouting=1 visualPicker=1 privateMediaTexture=1 "
-                "hookTransitionGuard=3 pickerInput=3 "
+                "hookTransitionGuard=4 pickerInput=4 routeRecovery=1 "
                 "addonCapture=1 addonIsolation=1 "
                 "arbitraryNativeHooks=0";
         if (verb == "addon")

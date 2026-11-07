@@ -1,102 +1,106 @@
-name: Build Windows 4.0.0
+name: Build PrismMedia
+run-name: Build PrismMedia from ${{ github.ref_name }} (#${{ github.run_number }})
 
 on:
   workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
 
 jobs:
   build:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+
       - uses: microsoft/setup-msbuild@v2
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-      - name: Validate runtime diagnostic host
-        shell: powershell
+
+      - name: Read product version
+        id: version
+        shell: pwsh
         run: |
-          cl /nologo /EHsc /std:c++17 tests\diagnostic_options_test.cpp /Fe:diagnostic-options-test.exe
-          if ($LASTEXITCODE -ne 0) { throw 'Options test compilation failed' }
-          & .\diagnostic-options-test.exe
-          if ($LASTEXITCODE -ne 0) { throw 'Options tests failed' }
-          cl /nologo /EHsc /std:c++17 tests\runtime_draw_probe_test.cpp PrismTextureStreamerFB\runtime_draw_probe.cpp /Fe:runtime-draw-test.exe /link d3d11.lib
-          if ($LASTEXITCODE -ne 0) { throw 'WARP capture test compilation failed' }
-          $json = & .\runtime-draw-test.exe
-          if ($LASTEXITCODE -ne 0) { throw 'WARP capture tests failed' }
-          $row = $json | ConvertFrom-Json
-          if ($row.texture.width -ne 64 -or $row.hits -ne 2 -or $row.psSrvs.Count -ne 128) { throw 'Invalid capture JSON' }
-          & .\tests\diagnostic_scripts_test.ps1
+          $Text = Get-Content 'PrismTextureStreamerFB\version.h' -Raw
+          if ($Text -notmatch 'g_version\s*=\s*"([^"]+)"') {
+            throw 'Could not read g_version from version.h.'
+          }
+          "value=$($Matches[1])" >> $env:GITHUB_OUTPUT
+          "PrismMedia version: $($Matches[1])"
+
       - name: Verify bundled libraries
         shell: pwsh
         run: |
-          foreach ($File in @('Lib\ImGuiR.lib','Lib\ImGuiD.lib','Lib\minhook.x64.lib')) {
-            if (-not (Test-Path $File)) { throw "Missing required library: $File" }
+          foreach ($File in @(
+            'Lib\ImGuiR.lib',
+            'Lib\ImGuiD.lib',
+            'Lib\minhook.x64.lib'
+          )) {
+            if (-not (Test-Path $File)) {
+              throw "Missing required library: $File"
+            }
           }
+
       - name: Build x64 Release
         shell: pwsh
-        run: msbuild PrismTextureStreamerFB.sln /m /restore /t:Build /p:Configuration=Release /p:Platform=x64
-      - name: Verify debug symbols
+        run: >
+          msbuild PrismTextureStreamerFB.sln /m /restore /t:Build
+          /p:Configuration=Release /p:Platform=x64
+
+      - name: Assemble production package
         shell: pwsh
         run: |
-          if (-not (Test-Path 'x64\Release\PrismMedia.pdb')) {
-            throw 'PrismMedia.pdb was not produced by the Release build.'
-          }
-      - name: Assemble 4.0.0 package
-        shell: pwsh
-        run: |
-          $Package = 'package'
+          $Version = '${{ steps.version.outputs.value }}'
+          $Package = "package\PrismMedia-$Version"
           $Runtime = "$Package\PrismMedia"
           $Client = 'PrismMediaClient\bin\x64\Release\net48'
-          foreach ($File in @('x64\Release\PrismMedia.dll','x64\Release\PrismCameraBridge.dll','x64\Release\PrismDiagnosticConsole.exe',"$Client\PrismMediaClient.exe")) {
-            if (-not (Test-Path $File)) { throw "Missing build output: $File" }
+          foreach ($File in @(
+            'x64\Release\PrismMedia.dll',
+            'x64\Release\PrismCameraBridge.dll',
+            "$Client\PrismMediaClient.exe"
+          )) {
+            if (-not (Test-Path $File)) {
+              throw "Missing build output: $File"
+            }
           }
+
           New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
           Copy-Item 'x64\Release\PrismMedia.dll' $Package
-          Copy-Item 'x64\Release\PrismDiagnosticConsole.exe' $Package
-          Copy-Item 'diagnostics' $Package -Recurse
           Copy-Item "$Client\*" $Runtime -Recurse
-          Get-ChildItem $Runtime -Recurse -File | Where-Object { $_.Extension -in '.pdb','.xml' } | Remove-Item -Force
+          Get-ChildItem $Runtime -Recurse -File |
+            Where-Object { $_.Extension -in '.pdb', '.xml' } |
+            Remove-Item -Force
+
           $Bridge = "$Runtime\SPF-OPTIONAL\PrismCameraBridge"
           New-Item -ItemType Directory -Path $Bridge -Force | Out-Null
           Copy-Item 'x64\Release\PrismCameraBridge.dll' $Bridge
           Copy-Item 'SPF-BRIDGE-INSTALL.txt' "$Runtime\SPF-OPTIONAL"
           Copy-Item 'config-recommended.ini' $Runtime
-          Copy-Item 'PERFORMANCE-NOTES.md' $Runtime
           Copy-Item 'README.md' $Package
-          Copy-Item 'DIAGNOSTIC-CONSOLE.md' $Package
-          Copy-Item 'ADDON-ISOLATION-REVISION.md' $Package
-          Copy-Item 'PER-DISPLAY-ROUTING.md' $Package
-          Copy-Item 'COMPOSITOR-TRACE-REVISION.md' $Package
-          Copy-Item 'FINAL-DRAW-ROUTING.md' $Package
-          Copy-Item 'PICKER-CRASH-FIX.md' $Package
-          Copy-Item 'OWNER-MAPPER.md' $Package
-          @"
-          PrismMedia 4.0.0
-          Remove the old PrismTextureStreamerFB.dll, then copy PrismMedia.dll
-          and the PrismMedia folder to:
-          <ETS2 or ATS>\bin\win_x64\plugins
-          Open the UI with Ctrl+F8.
 
-          PrismDiagnosticConsole.exe is optional. Start the game first, then
-          run the console. Keep its diagnostics folder beside the EXE.
-          Recommended: choose media, open System > Truck screen routing,
-          press Pick truck screen, and double-click the intended display.
-          Confirm: capabilities includes perDrawRoute=6 groupedPassRouting=1
-          visualPicker=1 privateMediaTexture=1 hookTransitionGuard=5
-          pickerInput=4 routeRecovery=2 ownerMapper=1 stickyRoute=1. The
-          selected final draw is saved and unmatched GPS screens remain native.
-          See FINAL-DRAW-ROUTING.md for visual calibration and
-          DIAGNOSTIC-CONSOLE.md for recovery and capture instructions.
+          @"
+          PrismMedia $Version
+
+          Copy PrismMedia.dll and the PrismMedia folder to:
+          <ETS2 or ATS>\bin\win_x64\plugins
+
+          Open the plugin with Ctrl+F8. For an accessory display, create a
+          Custom screen, open System, scan the installed truck accessories,
+          choose one, and create the local adapter mod.
+
+          Enable "PrismMedia Generated Display" in Mod Manager above the
+          original accessory mod, then restart the game once.
           "@ | Set-Content "$Package\INSTALL.txt"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: PrismMedia-4.0.0
-          path: package
+          name: PrismMedia-${{ steps.version.outputs.value }}
+          path: package/PrismMedia-${{ steps.version.outputs.value }}
           if-no-files-found: error
           retention-days: 30
+
       - uses: actions/upload-artifact@v4
         with:
-          name: PrismMedia-4.0.0-debug-symbols
+          name: PrismMedia-${{ steps.version.outputs.value }}-symbols
           path: x64/Release/PrismMedia.pdb
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
+

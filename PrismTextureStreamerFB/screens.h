@@ -54,11 +54,12 @@ struct screen_t
 
 	std::string original_texture; // /vehicle/truck/share/gps.tobj
 	std::string override_texture; // /home/PrismTextureStreamer/gps.tobj
-	// Custom displays can own a private dynamic media texture and bind it only
-	// at a visually selected final truck-screen draw. This removes the normal
-	// picker workflow's dependency on a TOBJ path while retaining the legacy
-	// redirect fields above for compatibility.
-	bool visualPickerMode{};
+	// Adapter displays are bound by a locally generated accessory model and a
+	// private material/TOBJ. Their GPU identity is therefore stable across
+	// cameras, reloads and game sessions; no frame-order routing is involved.
+	bool adapterMode{};
+	std::string adapterDataPath;
+	std::string adapterName;
 
 	uint32_t override_texture_size_w{}; // 64
 	uint32_t override_texture_size_h{}; // 2048
@@ -155,20 +156,6 @@ struct screen_t
 	uint64_t textureRouteSequence{};
 	uint64_t textureRouteMatchedSequence{};
 	uint64_t lastTextureRouteSkipLogTick{};
-	// Stable final-draw selector. Runtime resource and shader pointers are not
-	// persisted because they change on every game run.
-	bool finalDrawRouteValid{};
-	uint32_t finalDrawRouteKind{};
-	uint32_t finalDrawRouteCount{};
-	uint32_t finalDrawRouteStart{};
-	int32_t finalDrawRouteBase{};
-	uint32_t finalDrawRouteSlot{ 6 };
-	// Durable visual-picker identity. Draw offsets, buffers and resources are
-	// session-local; the click point is re-probed whenever ETS2 recreates them.
-	uint32_t finalDrawRouteCandidate{ UINT32_MAX };
-	uint32_t finalDrawRoutePasses{};
-	float finalDrawPickerX{ -1.0f };
-	float finalDrawPickerY{ -1.0f };
 	bool suspiciousMagentaFrame{};
 	bool suspiciousBlackFrame{};
 	bool sourceFrameStale{};

@@ -818,6 +818,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
     Gui::init();
 
     settings::load();
+    accessory_bridge::start_auto();
     update_checker::start();
     diagnostic_log::write(
         "session",

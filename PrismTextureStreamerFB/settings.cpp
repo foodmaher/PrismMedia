@@ -359,7 +359,7 @@ namespace settings {
                 0.0f, 1.0f);
         }
 
-        const int count = (std::min)(GetPrivateProfileIntA("General", "ScreenCount", 0, path.c_str()), 16U);
+        const int count = (std::min)(GetPrivateProfileIntA("General", "ScreenCount", 0, path.c_str()), 64U);
         if (count <= 0)
         {
             std::lock_guard<std::mutex> lock(g_screens_mutex);
@@ -587,9 +587,17 @@ namespace settings {
                      existing.original_texture == screen.original_texture);
             }
             std::string overrideStatus;
-            override_assets::ensure(
-                screen, usedDimensions, usedOverridePaths,
-                identityConflict, overrideStatus);
+            if (screen.adapterMode &&
+                screen.adapterDataPath.rfind("auto:", 0) == 0)
+            {
+                override_assets::write_exact(screen, overrideStatus);
+            }
+            else
+            {
+                override_assets::ensure(
+                    screen, usedDimensions, usedOverridePaths,
+                    identityConflict, overrideStatus);
+            }
 
             if (originalTextureConflict)
             {

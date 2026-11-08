@@ -1,3 +1,4 @@
+using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -12,31 +13,57 @@ namespace PrismMediaClient
 {
     internal static class AccessoryBridgeService
     {
+        private const string GeneratedModName = "PrismMedia_Generated_Display";
+
         private sealed class Accessory
         {
             public string Name;
-            public string DataPath;
-            public string Source;
             public string Definition;
             public string InteriorModel;
             public string ExteriorModel;
             public string UiTexture;
         }
 
+        private sealed class AdapterGroup
+        {
+            public string Id;
+            public string Name;
+            public string InteriorModel;
+            public string ExteriorModel;
+            public string UiTexture;
+            public string MediaTobj;
+            public uint Width;
+            public uint Height;
+            public readonly List<Accessory> Definitions = new List<Accessory>();
+        }
+
+        private sealed class ModCandidate
+        {
+            public string Locator;
+            public string DisplayName;
+            public int ActiveScore;
+            public readonly List<Accessory> Accessories = new List<Accessory>();
+        }
+
         private sealed class ArchiveView : IDisposable
         {
+            private readonly string directoryRoot;
             private readonly Stream owner;
             private readonly ZipArchive archive;
 
-            private ArchiveView(Stream owner, ZipArchive archive)
+            private ArchiveView(string root) { directoryRoot = root; }
+            private ArchiveView(Stream stream, ZipArchive zip)
             {
-                this.owner = owner;
-                this.archive = archive;
+                owner = stream;
+                archive = zip;
             }
 
             public static ArchiveView Open(string locator)
             {
                 string[] parts = locator.Split(new[] { '|' }, 2);
+                if (parts.Length == 1 && Directory.Exists(parts[0]))
+                    return new ArchiveView(Path.GetFullPath(parts[0]));
+
                 FileStream file = File.Open(parts[0], FileMode.Open,
                     FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 ZipArchive outer = new ZipArchive(file, ZipArchiveMode.Read, false);
@@ -62,12 +89,18 @@ namespace PrismMediaClient
 
             public bool Exists(string path)
             {
-                return FindEntry(archive, path) != null;
+                string wanted = Normalize(path).TrimStart('/');
+                if (directoryRoot != null)
+                    return File.Exists(PhysicalPath(wanted));
+                return FindEntry(archive, wanted) != null;
             }
 
             public byte[] Read(string path)
             {
-                ZipArchiveEntry entry = FindEntry(archive, path);
+                string wanted = Normalize(path).TrimStart('/');
+                if (directoryRoot != null)
+                    return File.ReadAllBytes(PhysicalPath(wanted));
+                ZipArchiveEntry entry = FindEntry(archive, wanted);
                 if (entry == null)
                     throw new FileNotFoundException("Mod entry was not found.", path);
                 using (Stream input = entry.Open())
@@ -80,19 +113,39 @@ namespace PrismMediaClient
 
             public IEnumerable<string> Entries
             {
-                get { return archive.Entries.Select(e => Normalize(e.FullName)); }
+                get
+                {
+                    if (directoryRoot != null)
+                    {
+                        return Directory.EnumerateFiles(directoryRoot, "*",
+                            SearchOption.AllDirectories).Select(path => Normalize(
+                                path.Substring(directoryRoot.Length).TrimStart(
+                                    Path.DirectorySeparatorChar,
+                                    Path.AltDirectorySeparatorChar)));
+                    }
+                    return archive.Entries.Select(entry => Normalize(entry.FullName));
+                }
+            }
+
+            private string PhysicalPath(string virtualPath)
+            {
+                string relative = virtualPath.Replace('/', Path.DirectorySeparatorChar);
+                string full = Path.GetFullPath(Path.Combine(directoryRoot, relative));
+                string prefix = directoryRoot.TrimEnd(
+                    Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
+                    Path.DirectorySeparatorChar;
+                if (!full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Invalid path inside directory mod.");
+                return full;
             }
 
             public void Dispose()
             {
-                archive.Dispose();
-                owner.Dispose();
+                if (archive != null) archive.Dispose();
+                if (owner != null) owner.Dispose();
             }
         }
 
-        private static readonly Regex UnitRegex = new Regex(
-            @"(?ms)^\s*([A-Za-z0-9_]+)\s*:\s*([^\s\{]+)\s*\{(.*?)^\s*\}",
-            RegexOptions.Compiled);
         private static readonly Regex MaterialPathRegex = new Regex(
             @"/automat/[0-9a-fA-F]{2}/[0-9a-fA-F]{16}\.mat",
             RegexOptions.Compiled);
@@ -102,16 +155,12 @@ namespace PrismMediaClient
             string mode = GetArgument(args, "--bridge-mode");
             if (string.IsNullOrWhiteSpace(mode))
                 return false;
-
             string result = GetArgument(args, "--result");
             try
             {
-                if (string.Equals(mode, "scan", StringComparison.OrdinalIgnoreCase))
-                    Scan(args, result);
-                else if (string.Equals(mode, "generate", StringComparison.OrdinalIgnoreCase))
-                    Generate(args, result);
-                else
-                    WriteError(result, "Unknown accessory bridge mode.");
+                if (!string.Equals(mode, "auto", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Unknown accessory bridge mode.");
+                GenerateAutomatically(args, result);
             }
             catch (Exception error)
             {
@@ -120,338 +169,502 @@ namespace PrismMediaClient
             return true;
         }
 
-        private static void Scan(string[] args, string resultPath)
+        private static void GenerateAutomatically(string[] args, string resultPath)
         {
             string gameHome = GetArgument(args, "--game-home");
             string gameExe = GetArgument(args, "--game-exe");
-            string save = FindNewestSave(gameHome);
-            if (string.IsNullOrWhiteSpace(save))
+            if (string.IsNullOrWhiteSpace(gameHome) ||
+                string.IsNullOrWhiteSpace(gameExe))
+                throw new InvalidDataException("The game folders could not be located.");
+
+            string gameLog = ReadTextIfPresent(Path.Combine(gameHome, "game.log.txt"));
+            List<ModCandidate> candidates = new List<ModCandidate>();
+            foreach (string locator in FindModLocators(gameHome, gameExe))
+            {
+                ModCandidate candidate = InspectCandidate(locator, gameLog);
+                if (candidate != null)
+                    candidates.Add(candidate);
+            }
+            ModCandidate selected = SelectCandidate(candidates);
+            if (selected == null)
             {
                 WriteError(resultPath,
-                    "No truck save was found. Leave the upgrade shop and make one quicksave.");
+                    "No active ZIP-compatible TJS display mod was found in the local mod folder or any Steam Workshop library.");
                 return;
             }
 
-            string text = ReadSave(save);
-            List<string> dataPaths = InstalledAccessoryPaths(text);
-            if (dataPaths.Count == 0)
-            {
-                WriteError(resultPath,
-                    "The newest save has no readable installed accessory list. Set g_save_format to 2, then quicksave once.");
-                return;
-            }
+            List<AdapterGroup> groups = BuildGroups(selected.Accessories);
+            if (groups.Count == 0)
+                throw new InvalidDataException(
+                    "The selected TJS package has no compatible display definitions.");
 
-            List<string> archives = FindModArchives(gameHome, gameExe);
-            List<Accessory> found = new List<Accessory>();
-            foreach (string dataPath in dataPaths.Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                string entryPath = Normalize(dataPath).TrimStart('/');
-                foreach (string locator in archives)
-                {
-                    try
-                    {
-                        using (ArchiveView archive = ArchiveView.Open(locator))
-                        {
-                            if (!archive.Exists(entryPath))
-                                continue;
-                            string definition = DecodeText(archive.Read(entryPath));
-                            Accessory item = ParseAccessory(definition);
-                            if (item == null)
-                                continue;
-                            item.DataPath = dataPath;
-                            item.Source = locator;
-                            item.Definition = entryPath;
-                            found.Add(item);
-                            break;
-                        }
-                    }
-                    catch
-                    {
-                        // Non-ZIP SCS archives and unrelated broken mods are ignored.
-                    }
-                }
-            }
+            string modRoot = Path.Combine(gameHome, "mod", GeneratedModName);
+            string fingerprint = SourceFingerprint(selected, groups);
+            bool generated = !string.Equals(
+                ReadMarkerValue(Path.Combine(modRoot, ".prismmedia.ini"), "Fingerprint"),
+                fingerprint, StringComparison.OrdinalIgnoreCase);
+            if (generated)
+                GenerateMod(selected, groups, gameHome, modRoot, fingerprint);
 
+            bool active = GeneratedModActive(gameLog, modRoot);
             StringBuilder output = new StringBuilder();
             output.AppendLine("[Result]");
             output.AppendLine("Status=ok");
-            output.AppendLine("Message=" + IniValue(found.Count == 0
-                ? "No installed display accessory was found in ZIP-compatible local or Workshop mods."
-                : "Installed display accessories found: " + found.Count.ToString(CultureInfo.InvariantCulture)));
-            output.AppendLine("Save=" + IniValue(save));
-            output.AppendLine("Count=" + found.Count.ToString(CultureInfo.InvariantCulture));
-            for (int index = 0; index < found.Count; ++index)
+            output.AppendLine("Message=" + IniValue(BuildResultMessage(
+                selected, groups.Count, generated, active)));
+            output.AppendLine("Source=" + IniValue(selected.DisplayName));
+            output.AppendLine("SourceLocator=" + IniValue(selected.Locator));
+            output.AppendLine("ModPath=" + IniValue(modRoot));
+            output.AppendLine("Count=" + groups.Count.ToString(CultureInfo.InvariantCulture));
+            output.AppendLine("Generated=" + (generated ? "1" : "0"));
+            output.AppendLine("Active=" + (active ? "1" : "0"));
+            output.AppendLine("RestartRequired=" + (generated ? "1" : "0"));
+            for (int index = 0; index < groups.Count; ++index)
             {
-                Accessory item = found[index];
+                AdapterGroup group = groups[index];
                 output.AppendLine();
-                output.AppendLine("[Accessory" + index.ToString(CultureInfo.InvariantCulture) + "]");
-                output.AppendLine("Name=" + IniValue(item.Name));
-                output.AppendLine("DataPath=" + IniValue(item.DataPath));
-                output.AppendLine("Source=" + IniValue(item.Source));
-                output.AppendLine("Definition=" + IniValue(item.Definition));
-                output.AppendLine("InteriorModel=" + IniValue(item.InteriorModel));
-                output.AppendLine("ExteriorModel=" + IniValue(item.ExteriorModel));
-                output.AppendLine("UiTexture=" + IniValue(item.UiTexture));
+                output.AppendLine("[Adapter" + index.ToString(CultureInfo.InvariantCulture) + "]");
+                output.AppendLine("Id=" + group.Id);
+                output.AppendLine("Name=" + IniValue(group.Name));
+                output.AppendLine("UiTexture=" + IniValue(group.UiTexture));
+                output.AppendLine("MediaTobj=" + IniValue(group.MediaTobj));
+                output.AppendLine("Width=" + group.Width.ToString(CultureInfo.InvariantCulture));
+                output.AppendLine("Height=" + group.Height.ToString(CultureInfo.InvariantCulture));
+                output.AppendLine("Definitions=" + group.Definitions.Count.ToString(CultureInfo.InvariantCulture));
             }
             WriteResult(resultPath, output.ToString());
         }
 
-        private static void Generate(string[] args, string resultPath)
+        private static ModCandidate InspectCandidate(string locator, string gameLog)
         {
-            string gameHome = GetArgument(args, "--game-home");
-            string source = GetArgument(args, "--source");
-            string definitionPath = Normalize(GetArgument(args, "--definition")).TrimStart('/');
-            string displayId = SafeName(GetArgument(args, "--display-id"));
-            string prismTexture = GetArgument(args, "--media-tobj");
-            if (string.IsNullOrWhiteSpace(gameHome) ||
-                string.IsNullOrWhiteSpace(source) ||
-                string.IsNullOrWhiteSpace(definitionPath) ||
-                string.IsNullOrWhiteSpace(prismTexture))
-                throw new InvalidDataException("The selected accessory is incomplete.");
-
-            string modRoot = Path.Combine(gameHome, "mod",
-                "PrismMedia_Generated_Display");
-            Directory.CreateDirectory(modRoot);
-
-            using (ArchiveView archive = ArchiveView.Open(source))
+            string normalizedLocator = Normalize(locator);
+            if (normalizedLocator.IndexOf("/" + GeneratedModName + "/",
+                    StringComparison.OrdinalIgnoreCase) >= 0 ||
+                normalizedLocator.EndsWith("/" + GeneratedModName,
+                    StringComparison.OrdinalIgnoreCase))
+                return null;
+            try
             {
-                string definition = DecodeText(archive.Read(definitionPath));
-                Accessory item = ParseAccessory(definition);
-                if (item == null)
-                    throw new InvalidDataException("The selected definition is not a display accessory.");
-
-                Dictionary<string, string> modelMap = new Dictionary<string, string>(
-                    StringComparer.OrdinalIgnoreCase);
-                foreach (string model in new[] { item.InteriorModel, item.ExteriorModel })
+                using (ArchiveView archive = ArchiveView.Open(locator))
                 {
-                    if (string.IsNullOrWhiteSpace(model) || modelMap.ContainsKey(model))
-                        continue;
-                    modelMap[model] = CopyPrivateModel(
-                        archive, modRoot, model, item.UiTexture,
-                        prismTexture, displayId);
+                    List<string> entries = archive.Entries.ToList();
+                    string manifest = entries.FirstOrDefault(path => string.Equals(
+                        path.TrimStart('/'), "manifest.sii",
+                        StringComparison.OrdinalIgnoreCase));
+                    string manifestText = manifest == null ? "" :
+                        DecodeText(archive.Read(manifest));
+                    string displayName = ReadQuoted(manifestText, "display_name") ??
+                        Path.GetFileNameWithoutExtension(locator.Split('|')[0]);
+                    bool tjsEvidence = locator.IndexOf("tjs",
+                        StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        manifestText.IndexOf("tjs",
+                        StringComparison.OrdinalIgnoreCase) >= 0;
+                    ModCandidate result = new ModCandidate
+                    {
+                        Locator = locator,
+                        DisplayName = displayName
+                    };
+                    foreach (string path in entries.Where(path =>
+                        path.EndsWith(".sii", StringComparison.OrdinalIgnoreCase) &&
+                        path.StartsWith("def/", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        byte[] bytes;
+                        try { bytes = archive.Read(path); }
+                        catch { continue; }
+                        if (bytes.Length > 2 * 1024 * 1024)
+                            continue;
+                        string definition = DecodeText(bytes);
+                        Accessory accessory = ParseAccessory(definition);
+                        if (accessory == null)
+                            continue;
+                        accessory.Definition = Normalize(path).TrimStart('/');
+                        result.Accessories.Add(accessory);
+                        tjsEvidence = tjsEvidence || definition.IndexOf("tjs",
+                            StringComparison.OrdinalIgnoreCase) >= 0;
+                    }
+                    if (!tjsEvidence || result.Accessories.Count == 0)
+                        return null;
+                    result.ActiveScore = ActiveScore(result, gameLog);
+                    return result;
                 }
+            }
+            catch { return null; }
+        }
 
-                foreach (KeyValuePair<string, string> pair in modelMap)
-                    definition = ReplaceQuotedPath(definition, pair.Key, pair.Value);
-                WriteBytes(modRoot, definitionPath,
-                    new UTF8Encoding(false).GetBytes(definition));
+        private static ModCandidate SelectCandidate(List<ModCandidate> candidates)
+        {
+            if (candidates.Count == 0) return null;
+            if (candidates.Count == 1) return candidates[0];
+            List<ModCandidate> ranked = candidates
+                .OrderByDescending(candidate => candidate.ActiveScore)
+                .ThenByDescending(candidate => candidate.Accessories.Count).ToList();
+            if (ranked[0].ActiveScore <= 0) return null;
+            if (ranked.Count > 1 && ranked[0].ActiveScore == ranked[1].ActiveScore &&
+                ranked[0].Accessories.Count == ranked[1].Accessories.Count)
+                return null;
+            return ranked[0];
+        }
+
+        private static int ActiveScore(ModCandidate candidate, string gameLog)
+        {
+            if (string.IsNullOrWhiteSpace(gameLog)) return 0;
+            string log = Normalize(gameLog).ToLowerInvariant();
+            string source = Normalize(candidate.Locator.Split('|')[0]).ToLowerInvariant();
+            int score = 0;
+            if (log.Contains(source)) score += 1000;
+            string fileName = Path.GetFileName(source);
+            if (!string.IsNullOrWhiteSpace(fileName) && log.Contains(fileName)) score += 200;
+            Match workshop = Regex.Match(source,
+                @"/workshop/content/(?:227300|270880)/([0-9]+)",
+                RegexOptions.IgnoreCase);
+            if (workshop.Success && log.Contains(workshop.Groups[1].Value)) score += 300;
+            string display = (candidate.DisplayName ?? "").ToLowerInvariant();
+            if (display.Length >= 4 && log.Contains(display)) score += 100;
+            return score;
+        }
+
+        private static List<AdapterGroup> BuildGroups(List<Accessory> accessories)
+        {
+            Dictionary<string, AdapterGroup> groups = new Dictionary<string, AdapterGroup>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (Accessory accessory in accessories)
+            {
+                string key = Normalize(accessory.InteriorModel).ToLowerInvariant() + "|" +
+                    Normalize(accessory.ExteriorModel).ToLowerInvariant() + "|" +
+                    Normalize(accessory.UiTexture).ToLowerInvariant();
+                AdapterGroup group;
+                if (!groups.TryGetValue(key, out group))
+                {
+                    string id = ShortHash(key, 8);
+                    group = new AdapterGroup
+                    {
+                        Id = id,
+                        InteriorModel = accessory.InteriorModel,
+                        ExteriorModel = accessory.ExteriorModel,
+                        UiTexture = accessory.UiTexture,
+                        MediaTobj = "/home/PrismTextureStreamer/adapter_" + id + ".tobj"
+                    };
+                    groups.Add(key, group);
+                }
+                group.Definitions.Add(accessory);
             }
 
-            WriteManifest(modRoot);
-            WriteResult(resultPath,
-                "[Result]\r\nStatus=ok\r\nMessage=" +
-                IniValue("Generated local mod: " + modRoot) +
-                "\r\nModPath=" + IniValue(modRoot) + "\r\n");
+            HashSet<ulong> dimensions = new HashSet<ulong>();
+            foreach (AdapterGroup group in groups.Values.OrderBy(group => group.Id))
+            {
+                Accessory common = group.Definitions
+                    .GroupBy(item => item.Name ?? "Display", StringComparer.OrdinalIgnoreCase)
+                    .OrderByDescending(items => items.Count()).First().First();
+                group.Name = (common.Name ?? "TJS display") + " - " +
+                    Path.GetFileNameWithoutExtension(group.InteriorModel);
+                byte[] hash = HashBytes(group.Id);
+                uint slot = (uint)((hash[8] | (hash[9] << 8)) % 4096);
+                for (uint attempt = 0; attempt < 4096; ++attempt)
+                {
+                    uint selected = (slot + attempt) % 4096;
+                    uint width = 132U + (selected % 64U) * 4U;
+                    uint height = 2052U + (selected / 64U) * 4U;
+                    ulong packed = ((ulong)width << 32) | height;
+                    if (dimensions.Add(packed))
+                    {
+                        group.Width = width;
+                        group.Height = height;
+                        break;
+                    }
+                }
+            }
+            return groups.Values.OrderBy(group => group.Name,
+                StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private static void GenerateMod(ModCandidate source,
+            List<AdapterGroup> groups, string gameHome, string modRoot,
+            string fingerprint)
+        {
+            string modParent = Path.GetFullPath(Path.Combine(gameHome, "mod"));
+            string expected = Path.GetFullPath(Path.Combine(modParent, GeneratedModName));
+            if (!string.Equals(expected, Path.GetFullPath(modRoot),
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Generated mod path validation failed.");
+            Directory.CreateDirectory(modParent);
+            string stage = expected + ".tmp";
+            if (Directory.Exists(stage)) Directory.Delete(stage, true);
+            Directory.CreateDirectory(stage);
+            try
+            {
+                using (ArchiveView archive = ArchiveView.Open(source.Locator))
+                {
+                    foreach (AdapterGroup group in groups)
+                    {
+                        Dictionary<string, string> modelMap =
+                            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (string model in new[] { group.InteriorModel, group.ExteriorModel })
+                        {
+                            if (string.IsNullOrWhiteSpace(model) || modelMap.ContainsKey(model)) continue;
+                            modelMap[model] = CopyPrivateModel(archive, stage, model,
+                                group.UiTexture, group.MediaTobj, group.Id);
+                        }
+                        foreach (Accessory accessory in group.Definitions)
+                        {
+                            string definition = DecodeText(archive.Read(accessory.Definition));
+                            foreach (KeyValuePair<string, string> pair in modelMap)
+                                definition = ReplaceQuotedPath(definition, pair.Key, pair.Value);
+                            WriteBytes(stage, accessory.Definition,
+                                new UTF8Encoding(false).GetBytes(definition));
+                        }
+                    }
+                }
+                WriteManifest(stage);
+                File.WriteAllText(Path.Combine(stage, ".prismmedia.ini"),
+                    "[Adapter]\r\nFingerprint=" + fingerprint +
+                    "\r\nSource=" + IniValue(source.Locator) +
+                    "\r\nGroups=" + groups.Count.ToString(CultureInfo.InvariantCulture) +
+                    "\r\n", new UTF8Encoding(false));
+                if (Directory.Exists(expected)) Directory.Delete(expected, true);
+                Directory.Move(stage, expected);
+            }
+            catch
+            {
+                if (Directory.Exists(stage)) Directory.Delete(stage, true);
+                throw;
+            }
         }
 
         private static string CopyPrivateModel(ArchiveView archive,
             string modRoot, string modelPath, string uiTexture,
-            string prismTexture, string displayId)
+            string prismTexture, string groupId)
         {
             string normalized = Normalize(modelPath).TrimStart('/');
             string extension = Path.GetExtension(normalized);
+            if (string.IsNullOrWhiteSpace(extension))
+                throw new InvalidDataException("A display model has no file extension.");
             string stem = normalized.Substring(0, normalized.Length - extension.Length);
-            string privateStem = "vehicle/prismmedia/" + displayId + "/" +
-                SafeName(Path.GetFileName(stem));
+            string privateStem = "vehicle/prismmedia/" + groupId + "/" +
+                SafeName(Path.GetFileName(stem)) + "_" + ShortHash(normalized, 4);
             byte[] pmd = archive.Read(normalized);
-
             string pmdText = Encoding.ASCII.GetString(pmd);
-            string selectedMaterial = null;
-            foreach (Match match in MaterialPathRegex.Matches(pmdText))
+            int patched = 0;
+            foreach (string originalMaterial in MaterialPathRegex.Matches(pmdText)
+                .Cast<Match>().Select(match => match.Value)
+                .Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                string materialPath = Normalize(match.Value).TrimStart('/');
-                if (!archive.Exists(materialPath))
-                    continue;
+                string materialPath = Normalize(originalMaterial).TrimStart('/');
+                if (!archive.Exists(materialPath)) continue;
                 string material = DecodeText(archive.Read(materialPath));
-                if (material.IndexOf(uiTexture,
-                        StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    selectedMaterial = match.Value;
-                    string privateMaterial = PrivateMaterialPath(displayId);
-                    byte[] before = Encoding.ASCII.GetBytes(selectedMaterial);
-                    byte[] after = Encoding.ASCII.GetBytes(privateMaterial);
-                    if (before.Length != after.Length)
-                        throw new InvalidDataException("Private material path length is invalid.");
-                    ReplaceBytes(pmd, before, after);
-                    material = ReplaceQuotedPath(material, uiTexture, prismTexture);
-                    WriteBytes(modRoot, privateMaterial.TrimStart('/'),
-                        new UTF8Encoding(false).GetBytes(material));
-                    break;
-                }
+                if (material.IndexOf(uiTexture, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                string privateMaterial = PrivateMaterialPath(
+                    groupId + "|" + normalized + "|" + originalMaterial);
+                patched += ReplaceBytes(pmd, Encoding.ASCII.GetBytes(originalMaterial),
+                    Encoding.ASCII.GetBytes(privateMaterial));
+                material = ReplaceQuotedPath(material, uiTexture, prismTexture);
+                WriteBytes(modRoot, privateMaterial.TrimStart('/'),
+                    new UTF8Encoding(false).GetBytes(material));
             }
-            if (selectedMaterial == null)
+            if (patched == 0)
                 throw new InvalidDataException(
-                    "The model material that uses the GPS picture could not be identified.");
-
+                    "The model material that uses the GPS picture could not be identified: " + modelPath);
             WriteBytes(modRoot, privateStem + ".pmd", pmd);
             foreach (string suffix in new[] { ".pmg", ".pma", ".pmc" })
             {
                 string sourcePath = stem + suffix;
                 if (archive.Exists(sourcePath))
-                    WriteBytes(modRoot, privateStem + suffix,
-                        archive.Read(sourcePath));
+                    WriteBytes(modRoot, privateStem + suffix, archive.Read(sourcePath));
             }
             return "/" + privateStem + ".pmd";
-        }
-
-        private static string PrivateMaterialPath(string displayId)
-        {
-            using (SHA256 sha = SHA256.Create())
-            {
-                byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(displayId));
-                StringBuilder value = new StringBuilder("/automat/pm/");
-                for (int index = 0; index < 8; ++index)
-                    value.Append(hash[index].ToString("x2", CultureInfo.InvariantCulture));
-                value.Append(".mat");
-                return value.ToString();
-            }
         }
 
         private static Accessory ParseAccessory(string definition)
         {
             string interior = ReadQuoted(definition, "interior_model");
-            if (string.IsNullOrWhiteSpace(interior))
-                interior = ReadQuoted(definition, "model");
+            if (string.IsNullOrWhiteSpace(interior)) interior = ReadQuoted(definition, "model");
             string exterior = ReadQuoted(definition, "exterior_model");
             string texture = ReadQuoted(definition, "ui_drawable_texture_path");
-            if (string.IsNullOrWhiteSpace(interior) ||
-                string.IsNullOrWhiteSpace(texture))
+            if (string.IsNullOrWhiteSpace(interior) || string.IsNullOrWhiteSpace(texture))
                 return null;
             return new Accessory
             {
                 Name = ReadQuoted(definition, "name") ?? Path.GetFileNameWithoutExtension(interior),
                 InteriorModel = Normalize(interior),
-                ExteriorModel = string.IsNullOrWhiteSpace(exterior)
-                    ? Normalize(interior) : Normalize(exterior),
+                ExteriorModel = string.IsNullOrWhiteSpace(exterior) ? Normalize(interior) : Normalize(exterior),
                 UiTexture = Normalize(texture)
             };
         }
 
-        private static List<string> InstalledAccessoryPaths(string text)
+        private static List<string> FindModLocators(string gameHome, string gameExe)
         {
-            Dictionary<string, string> units = new Dictionary<string, string>(
-                StringComparer.OrdinalIgnoreCase);
-            string playerBody = null;
-            foreach (Match unit in UnitRegex.Matches(text))
+            HashSet<string> roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            roots.Add(Path.Combine(gameHome, "mod"));
+            foreach (string workshop in SteamWorkshopRoots(gameExe)) roots.Add(workshop);
+            HashSet<string> locators = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string root in roots)
             {
-                string type = unit.Groups[1].Value;
-                string id = TrimToken(unit.Groups[2].Value);
-                string body = unit.Groups[3].Value;
-                units[type + "|" + id] = body;
-                if (string.Equals(type, "player", StringComparison.OrdinalIgnoreCase))
-                    playerBody = body;
+                if (!Directory.Exists(root)) continue;
+                try
+                {
+                    foreach (string file in Directory.EnumerateFiles(root, "*",
+                        SearchOption.AllDirectories).Where(path =>
+                            path.EndsWith(".scs", StringComparison.OrdinalIgnoreCase) ||
+                            path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)))
+                        AddArchiveLocators(locators, file);
+                    foreach (string folder in Directory.EnumerateDirectories(root, "*",
+                        SearchOption.TopDirectoryOnly))
+                        locators.Add(folder);
+                }
+                catch { }
             }
-            if (playerBody == null)
-                return new List<string>();
-            string truck = ReadToken(playerBody, "my_truck") ??
-                ReadToken(playerBody, "assigned_truck");
-            string vehicleBody;
-            if (truck == null || !units.TryGetValue("vehicle|" + truck, out vehicleBody))
-                return new List<string>();
-
-            HashSet<string> accessoryIds = new HashSet<string>(
-                Regex.Matches(vehicleBody, @"(?m)^\s*accessories\[\d+\]\s*:\s*([^\s]+)")
-                    .Cast<Match>().Select(m => TrimToken(m.Groups[1].Value)),
-                StringComparer.OrdinalIgnoreCase);
-            List<string> paths = new List<string>();
-            foreach (KeyValuePair<string, string> unit in units)
-            {
-                int divider = unit.Key.IndexOf('|');
-                if (divider < 0 || !unit.Key.Substring(0, divider).StartsWith(
-                        "vehicle_", StringComparison.OrdinalIgnoreCase) ||
-                    !accessoryIds.Contains(unit.Key.Substring(divider + 1)))
-                    continue;
-                string path = ReadQuoted(unit.Value, "data_path");
-                if (!string.IsNullOrWhiteSpace(path))
-                    paths.Add(path);
-            }
-            return paths;
+            return locators.ToList();
         }
 
-        private static string FindNewestSave(string gameHome)
+        private static void AddArchiveLocators(HashSet<string> locators, string file)
         {
-            if (string.IsNullOrWhiteSpace(gameHome) || !Directory.Exists(gameHome))
-                return null;
-            IEnumerable<string> candidates;
+            locators.Add(file);
             try
             {
-                candidates = Directory.EnumerateFiles(gameHome, "game.sii",
-                    SearchOption.AllDirectories)
-                    .Where(path => path.IndexOf(Path.DirectorySeparatorChar +
-                        "save" + Path.DirectorySeparatorChar,
-                        StringComparison.OrdinalIgnoreCase) >= 0);
-                return candidates.OrderByDescending(File.GetLastWriteTimeUtc)
-                    .FirstOrDefault();
+                using (FileStream stream = File.Open(file, FileMode.Open,
+                    FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (ZipArchive zip = new ZipArchive(stream, ZipArchiveMode.Read))
+                {
+                    foreach (ZipArchiveEntry entry in zip.Entries)
+                        if (entry.FullName.EndsWith(".scs", StringComparison.OrdinalIgnoreCase) ||
+                            entry.FullName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                            locators.Add(file + "|" + entry.FullName);
+                }
             }
-            catch
-            {
-                return null;
-            }
+            catch { }
         }
 
-        private static string ReadSave(string path)
+        private static IEnumerable<string> SteamWorkshopRoots(string gameExe)
         {
-            byte[] bytes = File.ReadAllBytes(path);
-            string text = DecodeText(bytes);
-            if (!text.TrimStart().StartsWith("SiiNunit",
-                    StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException(
-                    "The newest save is encoded. Set g_save_format to 2 and quicksave once.");
-            return text;
-        }
-
-        private static List<string> FindModArchives(string gameHome, string gameExe)
-        {
-            List<string> files = new List<string>();
-            AddArchives(files, Path.Combine(gameHome ?? "", "mod"), true);
+            HashSet<string> steamRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 DirectoryInfo directory = new FileInfo(gameExe).Directory;
                 while (directory != null && !string.Equals(directory.Name,
-                    "steamapps", StringComparison.OrdinalIgnoreCase))
-                    directory = directory.Parent;
-                if (directory != null)
-                    AddArchives(files, Path.Combine(directory.FullName,
-                        "workshop", "content", "227300"), true);
+                    "steamapps", StringComparison.OrdinalIgnoreCase)) directory = directory.Parent;
+                if (directory != null && directory.Parent != null) steamRoots.Add(directory.Parent.FullName);
             }
             catch { }
-
-            List<string> locators = new List<string>();
-            foreach (string file in files.Distinct(StringComparer.OrdinalIgnoreCase))
+            try
             {
-                locators.Add(file);
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam"))
+                {
+                    string steamPath = key == null ? null : key.GetValue("SteamPath") as string;
+                    if (!string.IsNullOrWhiteSpace(steamPath))
+                        steamRoots.Add(steamPath.Replace('/', Path.DirectorySeparatorChar));
+                }
+            }
+            catch { }
+            foreach (string steamRoot in steamRoots.ToList())
+            {
+                string libraries = Path.Combine(steamRoot, "steamapps", "libraryfolders.vdf");
                 try
                 {
-                    using (FileStream stream = File.Open(file, FileMode.Open,
-                        FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                    using (ZipArchive zip = new ZipArchive(stream, ZipArchiveMode.Read))
-                    {
-                        foreach (ZipArchiveEntry entry in zip.Entries)
-                        {
-                            if (entry.FullName.EndsWith(".scs",
-                                    StringComparison.OrdinalIgnoreCase) ||
-                                entry.FullName.EndsWith(".zip",
-                                    StringComparison.OrdinalIgnoreCase))
-                                locators.Add(file + "|" + entry.FullName);
-                        }
-                    }
+                    string text = File.ReadAllText(libraries);
+                    foreach (Match match in Regex.Matches(text,
+                        @"""path""\s+""([^""]+)""", RegexOptions.IgnoreCase))
+                        steamRoots.Add(match.Groups[1].Value.Replace(@"\\", @"\"));
                 }
                 catch { }
             }
-            return locators;
+            foreach (string root in steamRoots)
+            {
+                yield return Path.Combine(root, "steamapps", "workshop", "content", "227300");
+                yield return Path.Combine(root, "steamapps", "workshop", "content", "270880");
+            }
         }
 
-        private static void AddArchives(List<string> files, string root, bool recursive)
+        private static bool GeneratedModActive(string gameLog, string modRoot)
         {
-            if (!Directory.Exists(root))
-                return;
+            if (string.IsNullOrWhiteSpace(gameLog)) return false;
+            string log = Normalize(gameLog).ToLowerInvariant();
+            return log.Contains("prismmedia generated display") ||
+                log.Contains(Normalize(modRoot).ToLowerInvariant()) ||
+                log.Contains(GeneratedModName.ToLowerInvariant());
+        }
+
+        private static string SourceFingerprint(ModCandidate source, List<AdapterGroup> groups)
+        {
+            StringBuilder value = new StringBuilder("bridge-schema-2|");
+            string physical = source.Locator.Split('|')[0];
+            value.Append(Normalize(Path.GetFullPath(physical)).ToLowerInvariant());
             try
             {
-                SearchOption option = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-                files.AddRange(Directory.EnumerateFiles(root, "*.scs", option));
-                files.AddRange(Directory.EnumerateFiles(root, "*.zip", option));
+                FileInfo file = new FileInfo(physical);
+                if (file.Exists)
+                    value.Append('|').Append(file.Length).Append('|').Append(file.LastWriteTimeUtc.Ticks);
+                else if (Directory.Exists(physical))
+                {
+                    long newest = Directory.EnumerateFiles(physical, "*", SearchOption.AllDirectories)
+                        .Select(path => File.GetLastWriteTimeUtc(path).Ticks).DefaultIfEmpty(0).Max();
+                    value.Append('|').Append(newest);
+                }
             }
             catch { }
+            foreach (AdapterGroup group in groups.OrderBy(group => group.Id))
+            {
+                value.Append('|').Append(group.Id).Append('|').Append(group.Definitions.Count);
+                foreach (Accessory definition in group.Definitions
+                    .OrderBy(item => item.Definition, StringComparer.OrdinalIgnoreCase))
+                    value.Append('|').Append(definition.Definition.ToLowerInvariant());
+            }
+            return ShortHash(value.ToString(), 16);
+        }
+
+        private static string BuildResultMessage(ModCandidate source,
+            int count, bool generated, bool active)
+        {
+            if (!active)
+                return "Generated " + count.ToString(CultureInfo.InvariantCulture) +
+                    " private display adapters from " + source.DisplayName +
+                    ". Enable 'PrismMedia Generated Display' above the source mod in Mod Manager, then restart the game.";
+            if (generated)
+                return "Updated " + count.ToString(CultureInfo.InvariantCulture) +
+                    " private display adapters from " + source.DisplayName +
+                    ". Restart the game once to load the updated local mod.";
+            return "Automatic display adapter is ready for " + source.DisplayName +
+                " (" + count.ToString(CultureInfo.InvariantCulture) + " private display identities).";
+        }
+
+        private static string PrivateMaterialPath(string seed)
+        {
+            return "/automat/pm/" + ShortHash(seed, 8) + ".mat";
+        }
+
+        private static string ShortHash(string value, int byteCount)
+        {
+            byte[] hash = HashBytes(value);
+            StringBuilder text = new StringBuilder(byteCount * 2);
+            for (int index = 0; index < byteCount; ++index)
+                text.Append(hash[index].ToString("x2", CultureInfo.InvariantCulture));
+            return text.ToString();
+        }
+
+        private static byte[] HashBytes(string value)
+        {
+            using (SHA256 sha = SHA256.Create())
+                return sha.ComputeHash(Encoding.UTF8.GetBytes(value ?? ""));
+        }
+
+        private static string ReadMarkerValue(string path, string key)
+        {
+            try
+            {
+                foreach (string line in File.ReadAllLines(path))
+                {
+                    int equals = line.IndexOf('=');
+                    if (equals > 0 && string.Equals(line.Substring(0, equals).Trim(),
+                            key, StringComparison.OrdinalIgnoreCase))
+                        return line.Substring(equals + 1).Trim();
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static string ReadTextIfPresent(string path)
+        {
+            try { return File.Exists(path) ? File.ReadAllText(path) : ""; }
+            catch { return ""; }
         }
 
         private static void WriteManifest(string modRoot)
@@ -466,7 +679,7 @@ namespace PrismMediaClient
             File.WriteAllText(Path.Combine(modRoot, "manifest.sii"), manifest,
                 new UTF8Encoding(false));
             File.WriteAllText(Path.Combine(modRoot, "description.txt"),
-                "Local PrismMedia adapter. Keep this mod above the source accessory mod.",
+                "Automatically generated private display adapters. Keep this mod above the source TJS accessory mod.",
                 new UTF8Encoding(false));
         }
 
@@ -479,41 +692,37 @@ namespace PrismMediaClient
             File.WriteAllBytes(destination, bytes);
         }
 
-        private static void ReplaceBytes(byte[] value, byte[] before, byte[] after)
+        private static int ReplaceBytes(byte[] value, byte[] before, byte[] after)
         {
+            if (before.Length != after.Length)
+                throw new InvalidDataException("Private material path length is invalid.");
+            int replacements = 0;
             for (int offset = 0; offset <= value.Length - before.Length; ++offset)
             {
                 bool match = true;
                 for (int index = 0; index < before.Length; ++index)
                     match &= value[offset + index] == before[index];
-                if (!match)
-                    continue;
+                if (!match) continue;
                 Buffer.BlockCopy(after, 0, value, offset, after.Length);
-                return;
+                ++replacements;
+                offset += before.Length - 1;
             }
-            throw new InvalidDataException("The model material reference changed unexpectedly.");
+            return replacements;
         }
 
         private static ZipArchiveEntry FindEntry(ZipArchive archive, string path)
         {
             string wanted = Normalize(path).TrimStart('/');
-            return archive.Entries.FirstOrDefault(e => string.Equals(
-                Normalize(e.FullName).TrimStart('/'), wanted,
+            return archive.Entries.FirstOrDefault(entry => string.Equals(
+                Normalize(entry.FullName).TrimStart('/'), wanted,
                 StringComparison.OrdinalIgnoreCase));
         }
 
         private static string ReadQuoted(string text, string key)
         {
-            Match match = Regex.Match(text, @"(?mi)^\s*" + Regex.Escape(key) +
+            Match match = Regex.Match(text ?? "", @"(?mi)^\s*" + Regex.Escape(key) +
                 @"\s*:\s*""([^""]*)""");
             return match.Success ? match.Groups[1].Value : null;
-        }
-
-        private static string ReadToken(string text, string key)
-        {
-            Match match = Regex.Match(text, @"(?mi)^\s*" + Regex.Escape(key) +
-                @"\s*:\s*([^\s]+)");
-            return match.Success ? TrimToken(match.Groups[1].Value) : null;
         }
 
         private static string ReplaceQuotedPath(string text, string oldPath, string newPath)
@@ -530,29 +739,19 @@ namespace PrismMediaClient
             return null;
         }
 
-        private static string TrimToken(string value)
-        {
-            return (value ?? "").Trim().Trim('"');
-        }
-
-        private static string Normalize(string value)
-        {
-            return (value ?? "").Replace('\\', '/');
-        }
+        private static string Normalize(string value) { return (value ?? "").Replace('\\', '/'); }
 
         private static string SafeName(string value)
         {
-            string result = new string((value ?? "display").Where(
-                character => char.IsLetterOrDigit(character) ||
-                    character == '_' || character == '-').ToArray());
+            string result = new string((value ?? "display").Where(character =>
+                char.IsLetterOrDigit(character) || character == '_' || character == '-').ToArray());
             return string.IsNullOrWhiteSpace(result) ? "display" : result;
         }
 
         private static string DecodeText(byte[] value)
         {
             using (MemoryStream stream = new MemoryStream(value))
-            using (StreamReader reader = new StreamReader(stream, Encoding.UTF8,
-                true))
+            using (StreamReader reader = new StreamReader(stream, Encoding.UTF8, true))
                 return reader.ReadToEnd();
         }
 
@@ -569,11 +768,9 @@ namespace PrismMediaClient
 
         private static void WriteResult(string path, string text)
         {
-            if (string.IsNullOrWhiteSpace(path))
-                return;
+            if (string.IsNullOrWhiteSpace(path)) return;
             string directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrWhiteSpace(directory))
-                Directory.CreateDirectory(directory);
+            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
             File.WriteAllText(path, text, new UTF8Encoding(false));
         }
     }

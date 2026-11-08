@@ -11,15 +11,30 @@ Copy these items to `<game>\bin\win_x64\plugins`:
 
 Open the interface with **Ctrl+F8**.
 
-## Bind media to an installed accessory
+## Automatic TJS accessory bridge
 
-1. Add a **Custom** display in PrismMedia and choose its media.
-2. Open **System** and select **Scan installed truck accessories**.
-3. Choose one display from the current truck and select **Create/update local adapter mod**.
-4. Open Mod Manager and enable **PrismMedia Generated Display** above the original accessory mod.
-5. Restart the game once.
+On the first startup PrismMedia checks both locations automatically:
 
-After changing or buying an accessory, leave the upgrade shop, make a quicksave if needed, then scan again. The save must be plain text; set `g_save_format` to `2` and save once if Prism reports an encoded save.
+- `Documents\Euro Truck Simulator 2\mod` (or the ATS equivalent)
+- every Steam library's Workshop folder for ETS2/ATS
+
+The current `game.log.txt` load record is used to prefer the TJS package that
+the game actually loaded. Prism groups all compatible definitions by their 3D
+model and drawable texture, then creates stable Custom display entries and a
+local adapter mod. No save conversion, `g_save_format`, scan button or
+RenderDoc capture is needed.
+
+When PrismMedia reports that generation is complete:
+
+1. Open Mod Manager.
+2. Enable **PrismMedia Generated Display** above the original TJS mod.
+3. Restart the game once.
+4. Open PrismMedia with **Ctrl+F8**, enable the generated Custom display that
+   matches the installed accessory, and choose its media.
+
+The bridge is regenerated only when the source package changes. Buying or
+changing an accessory does not require another scan because all compatible
+definitions are already covered.
 
 Prism never edits or republishes the source accessory mod. It creates this local structure:
 
@@ -27,13 +42,15 @@ Prism never edits or republishes the source accessory mod. It creates this local
 Documents\Euro Truck Simulator 2\mod\PrismMedia_Generated_Display\
 ├── manifest.sii
 ├── description.txt
-├── def\...\selected_accessory.sii
-├── vehicle\prismmedia\<display-id>\model.pmd
-├── vehicle\prismmedia\<display-id>\model.pmg
+├── def\...\compatible_accessories.sii
+├── vehicle\prismmedia\<stable-id>\model.pmd
+├── vehicle\prismmedia\<stable-id>\model.pmg
 └── automat\pm\<private-material>.mat
 ```
 
-The selected accessory definition keeps the game's native UI target, while its copied 3D model uses a private material that points to the display's Prism texture. Other GPS screens therefore keep their native routes and cannot be made black by a shared global replacement.
+Each copied model uses its own private material and Prism texture. Other GPS
+screens keep their native routes and cannot be made black by a shared global
+replacement.
 
 ## Build
 

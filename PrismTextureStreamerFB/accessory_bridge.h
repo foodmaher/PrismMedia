@@ -2,28 +2,17 @@
 
 #include <cstddef>
 #include <string>
-#include <vector>
-
-struct screen_t;
 
 namespace accessory_bridge
 {
-    struct accessory_t
-    {
-        std::string name;
-        std::string dataPath;
-        std::string source;
-        std::string definition;
-        std::string interiorModel;
-        std::string exteriorModel;
-        std::string uiTexture;
-    };
-
+    void start_auto();
     void update();
     void shutdown();
-    bool start_scan();
-    bool start_generate(const screen_t& screen, size_t accessoryIndex);
     bool busy();
-    const std::vector<accessory_t>& accessories();
+    bool mod_active();
+    size_t adapter_count();
+    const std::string& source_name();
     const std::string& status();
+    bool should_show_toast();
+    const std::string& toast_message();
 }

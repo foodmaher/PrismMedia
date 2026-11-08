@@ -82,12 +82,12 @@ jobs:
           Copy PrismMedia.dll and the PrismMedia folder to:
           <ETS2 or ATS>\bin\win_x64\plugins
 
-          Open the plugin with Ctrl+F8. For an accessory display, create a
-          Custom screen, open System, scan the installed truck accessories,
-          choose one, and create the local adapter mod.
+          PrismMedia checks local and Steam Workshop TJS mods automatically
+          and generates stable Custom display adapters without reading saves.
 
           Enable "PrismMedia Generated Display" in Mod Manager above the
-          original accessory mod, then restart the game once.
+          original accessory mod, restart once, then configure the matching
+          Custom display with Ctrl+F8.
           "@ | Set-Content "$Package\INSTALL.txt"
 
       - uses: actions/upload-artifact@v4

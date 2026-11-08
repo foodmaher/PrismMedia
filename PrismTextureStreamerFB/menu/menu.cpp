@@ -779,6 +779,20 @@ namespace
         return (std::max)(1, ordinal);
     }
 
+    std::string screen_display_label(size_t screenIndex)
+    {
+        if (screenIndex >= g_screens.size())
+            return "Display";
+        const screen_t& screen = g_screens[screenIndex];
+        std::string label = screen.adapterMode && !screen.adapterName.empty()
+            ? screen.adapterName
+            : std::string(screen_type_label(screen.type)) + "  " +
+                std::to_string(screen_type_ordinal(screenIndex));
+        if (!screen.enabled)
+            label += "  (off)";
+        return label;
+    }
+
     void draw_home(screen_t& screen)
     {
         const auto stats = screen.source ? screen.source->GetPerformanceStats() : source_performance_stats_t{};
@@ -790,9 +804,9 @@ namespace
         char audioDetail[192]{};
         char brightnessHeadline[64]{};
         char brightnessDetail[192]{};
-        std::snprintf(displayHeadline, sizeof(displayHeadline),
-            "%s %d", screenKind,
-            screen_type_ordinal(static_cast<size_t>(selectedScreen)));
+        std::snprintf(displayHeadline, sizeof(displayHeadline), "%s",
+            screen.adapterMode && !screen.adapterName.empty()
+                ? screen.adapterName.c_str() : screenKind);
         std::snprintf(displayDetail, sizeof(displayDetail),
             "%s\n%ux%u at %u FPS",
             screen.source ? screen.source->GetStatusText().c_str() : "Waiting for source",
@@ -1581,6 +1595,8 @@ namespace
 
     std::string screen_owner_name(const screen_t& screen)
     {
+        if (screen.adapterMode && !screen.adapterName.empty())
+            return screen.adapterName;
         size_t ordinal{};
         for (const auto& candidate : g_screens)
         {
@@ -1595,6 +1611,10 @@ namespace
 
     bool prepare_override_assets(screen_t& screen, std::string& status)
     {
+        if (screen.adapterMode &&
+            screen.adapterDataPath.rfind("auto:", 0) == 0)
+            return override_assets::write_exact(screen, status);
+
         std::string originalLower;
         originalLower.reserve(screen.original_texture.size());
         for (const unsigned char character : screen.original_texture)
@@ -1653,67 +1673,30 @@ namespace
 
         if (screen.type == screen_type_t::CUSTOM)
         {
-            ImGui::SeparatorText("Installed accessory bridge");
+            ImGui::SeparatorText("Automatic accessory bridge");
             ImGui::TextWrapped(
-                "Prism reads the latest truck save and lists only display "
-                "accessories installed on that truck. It then creates a local "
-                "adapter mod with a private model material, so camera changes "
-                "and other GPS screens cannot steal or overwrite this media.");
-
-            ImGui::BeginDisabled(accessory_bridge::busy());
-            if (ImGui::Button(
-                    "Scan installed truck accessories",
-                    ImVec2(-1.0f, 36.0f)))
-                accessory_bridge::start_scan();
-            ImGui::EndDisabled();
-
-            const auto& installed = accessory_bridge::accessories();
-            static int selectedAccessory{};
-            if (selectedAccessory >= static_cast<int>(installed.size()))
-                selectedAccessory = installed.empty() ? 0 :
-                    static_cast<int>(installed.size() - 1);
-            if (!installed.empty())
-            {
-                std::vector<const char*> labels;
-                labels.reserve(installed.size());
-                for (const auto& accessory : installed)
-                    labels.push_back(accessory.name.c_str());
-                ImGui::Combo(
-                    "Installed display", &selectedAccessory,
-                    labels.data(), static_cast<int>(labels.size()));
-
-                ImGui::BeginDisabled(accessory_bridge::busy());
-                if (ImGui::Button(
-                        "Create/update local adapter mod",
-                        ImVec2(-1.0f, 38.0f)))
-                {
-                    std::string assetStatus;
-                    if (prepare_override_assets(screen, assetStatus) &&
-                        accessory_bridge::start_generate(
-                            screen, static_cast<size_t>(selectedAccessory)))
-                    {
-                        const auto& selected = installed[
-                            static_cast<size_t>(selectedAccessory)];
-                        screen.adapterMode = true;
-                        screen.adapterDataPath = selected.dataPath;
-                        screen.adapterName = selected.name;
-                        mark_changed(true);
-                    }
-                }
-                ImGui::EndDisabled();
-            }
+                "Prism checks the local mod folder and all Steam Workshop "
+                "libraries at startup. Compatible TJS definitions receive "
+                "private model materials and stable GPU identities; no save "
+                "conversion or manual scan is required.");
             ImGui::TextWrapped("%s", accessory_bridge::status().c_str());
+            if (!accessory_bridge::source_name().empty())
+                ImGui::TextDisabled(
+                    "Source: %s | Private displays: %zu",
+                    accessory_bridge::source_name().c_str(),
+                    accessory_bridge::adapter_count());
             if (!screen.adapterName.empty())
             {
                 ImGui::TextColored(
                     ImVec4(0.48f, 0.95f, 0.38f, 1.0f),
                     "Selected: %s", screen.adapterName.c_str());
-                ImGui::TextWrapped("%s", screen.adapterDataPath.c_str());
+                ImGui::TextDisabled("Identity: %s", screen.adapterDataPath.c_str());
             }
-            ImGui::TextDisabled(
-                "First use only: enable PrismMedia Generated Display in Mod "
-                "Manager above the source accessory mod, then restart the game. "
-                "After changing the truck accessory, save once and scan again.");
+            if (!accessory_bridge::busy() && !accessory_bridge::mod_active())
+                ImGui::TextColored(
+                    ImVec4(1.0f, 0.74f, 0.24f, 1.0f),
+                    "Enable PrismMedia Generated Display above the source mod "
+                    "in Mod Manager, then restart the game once.");
         }
         else
         {
@@ -2124,35 +2107,24 @@ namespace
                     ImGuiChildFlags_Borders,
                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
                 ImGui::PushFont(ui_font(1)); ImGui::TextDisabled("ACTIVE DISPLAY"); ImGui::PopFont();
-                const char* activeKind = screen_type_label(
-                    g_screens[static_cast<size_t>(selectedScreen)].type);
-                const std::string activeLabel = std::string(activeKind) +
-                    "  " + std::to_string(screen_type_ordinal(
-                        static_cast<size_t>(selectedScreen))) +
-                    (g_screens[static_cast<size_t>(selectedScreen)].enabled
-                        ? "" : "  (off)");
+                const std::string activeLabel = screen_display_label(
+                    static_cast<size_t>(selectedScreen));
                 ImGui::SetNextItemWidth(-1.0f);
                 if (ImGui::BeginCombo("##active_display", activeLabel.c_str()))
                 {
                 for (int i = 0; i < static_cast<int>(g_screens.size()); ++i)
                 {
-                    const char* kind = screen_type_label(
-                        g_screens[static_cast<size_t>(i)].type);
-                    const std::string label = std::string(kind) + "  " +
-                        std::to_string(screen_type_ordinal(
-                            static_cast<size_t>(i))) +
-                        (g_screens[static_cast<size_t>(i)].enabled
-                            ? "" : "  (off)");
+                    const std::string label = screen_display_label(
+                        static_cast<size_t>(i));
                     if (ImGui::Selectable(label.c_str(), selectedScreen == i)) selectedScreen = i;
                 }
                     ImGui::EndCombo();
                 }
-                const float addButtonWidth = (ImGui::GetContentRegionAvail().x - 16.0f) / 3.0f;
+                const float addButtonWidth =
+                    (ImGui::GetContentRegionAvail().x - 8.0f) / 2.0f;
                 if (ImGui::Button("+ GPS", ImVec2(addButtonWidth, 36.0f))) add_screen(screen_type_t::GPS);
                 ImGui::SameLine(0.0f, 8.0f);
-                if (ImGui::Button("+ Dash", ImVec2(addButtonWidth, 36.0f))) add_screen(screen_type_t::DASHBOARD);
-                ImGui::SameLine(0.0f, 8.0f);
-                if (ImGui::Button("+ Custom", ImVec2(-1.0f, 36.0f))) add_screen(screen_type_t::CUSTOM);
+                if (ImGui::Button("+ Dash", ImVec2(-1.0f, 36.0f))) add_screen(screen_type_t::DASHBOARD);
                 ImGui::Dummy(ImVec2(0.0f, 5.0f)); ImGui::Separator(); ImGui::Dummy(ImVec2(0.0f, 5.0f));
                 const char* pages[] = { "Home", "Media", "Audio", "Controls", "Appearance", "System" };
                 const float navButtonHeight = (std::clamp)(
@@ -2312,6 +2284,27 @@ namespace
             ImGui::TextColored(ImVec4(0.35f, 0.95f, 0.45f, 1.0f),
                 "PrismMedia update available: %s", update_checker::latest_tag().c_str());
             ImGui::TextUnformatted("Open the plugin menu (Ctrl+F8) for the download page.");
+            ImGui::End();
+        }
+        if (!menuVisible.load() && accessory_bridge::should_show_toast())
+        {
+            const ImGuiViewport* viewport = ImGui::GetMainViewport();
+            const float offset = update_checker::should_show_toast() ? 88.0f : 18.0f;
+            ImGui::SetNextWindowPos(
+                ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - 18.0f,
+                    viewport->WorkPos.y + offset),
+                ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+            ImGui::SetNextWindowBgAlpha(0.94f);
+            ImGui::Begin("##prism_adapter_toast", nullptr,
+                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration |
+                ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                ImGuiWindowFlags_NoSavedSettings);
+            ImGui::TextColored(
+                ImVec4(0.35f, 0.95f, 0.45f, 1.0f),
+                "PrismMedia display adapter ready");
+            ImGui::PushTextWrapPos(480.0f);
+            ImGui::TextWrapped("%s", accessory_bridge::toast_message().c_str());
+            ImGui::PopTextWrapPos();
             ImGui::End();
         }
         if (menuVisible.load()) draw_menu();

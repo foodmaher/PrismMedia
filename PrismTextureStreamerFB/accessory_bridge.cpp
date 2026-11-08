@@ -2,7 +2,9 @@
 #include "accessory_bridge.h"
 
 #include "diagnostic_log.h"
+#include "override_assets.h"
 #include "screens.h"
+#include "settings.h"
 
 #include <Windows.h>
 #include <ShlObj.h>
@@ -10,16 +12,29 @@
 #include <algorithm>
 #include <cwctype>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace
 {
+    struct adapter_t
+    {
+        std::string id;
+        std::string name;
+        std::string uiTexture;
+        std::string mediaTobj;
+        uint32_t width{};
+        uint32_t height{};
+    };
+
     HANDLE g_process{};
-    enum class operation_t { none, scan, generate } g_operation{};
     std::wstring g_resultPath;
-    std::vector<accessory_bridge::accessory_t> g_accessories;
-    std::string g_status = "Scan the latest truck save to list installed display accessories.";
+    std::string g_status =
+        "Automatic adapter discovery will check local and Workshop TJS mods.";
+    std::string g_sourceName;
+    std::string g_toastMessage;
+    size_t g_adapterCount{};
+    bool g_modActive{};
+    uint64_t g_toastTick{};
 
     std::wstring quote(const std::wstring& value)
     {
@@ -61,7 +76,8 @@ namespace
             return {};
         std::wstring result(path);
         const size_t slash = result.find_last_of(L"\\/");
-        return slash == std::wstring::npos ? std::wstring{} : result.substr(0, slash);
+        return slash == std::wstring::npos ? std::wstring{} :
+            result.substr(0, slash);
     }
 
     std::wstring game_home_directory()
@@ -107,51 +123,112 @@ namespace
         const std::wstring& path)
     {
         std::vector<char> value(32768);
+        const std::string narrowPath(path.begin(), path.end());
         GetPrivateProfileStringA(section, key, "", value.data(),
-            static_cast<DWORD>(value.size()),
-            std::string(path.begin(), path.end()).c_str());
+            static_cast<DWORD>(value.size()), narrowPath.c_str());
         return value.data();
     }
 
-    bool start_process(operation_t operation, std::wstring arguments)
+    bool dimensions_used(uint32_t width, uint32_t height,
+        const screen_t* except)
     {
-        if (g_process)
-            return false;
-        const std::wstring root = module_directory();
-        const std::wstring executable = root + L"\\PrismMedia\\PrismMediaClient.exe";
-        if (GetFileAttributesW(executable.c_str()) == INVALID_FILE_ATTRIBUTES)
-        {
-            g_status = "PrismMediaClient.exe is missing from the PrismMedia folder.";
-            return false;
-        }
+        return std::any_of(g_screens.begin(), g_screens.end(),
+            [&](const screen_t& screen)
+            {
+                return &screen != except &&
+                    screen.override_texture_size_w == width &&
+                    screen.override_texture_size_h == height;
+            });
+    }
 
-        wchar_t temporary[MAX_PATH]{};
-        GetTempPathW(MAX_PATH, temporary);
-        g_resultPath = std::wstring(temporary) + L"PrismMediaAccessoryBridge-" +
-            std::to_wstring(GetCurrentProcessId()) + L".ini";
-        DeleteFileW(g_resultPath.c_str());
-        std::wstring command = quote(executable) + L" --bridge-mode " +
-            (operation == operation_t::scan ? L"scan" : L"generate") +
-            L" --result " + quote(g_resultPath) + arguments;
-        std::vector<wchar_t> writable(command.begin(), command.end());
-        writable.push_back(L'\0');
-
-        STARTUPINFOW startup{};
-        startup.cb = sizeof(startup);
-        PROCESS_INFORMATION process{};
-        if (!CreateProcessW(executable.c_str(), writable.data(), nullptr, nullptr,
-                FALSE, CREATE_NO_WINDOW, nullptr, root.c_str(), &startup, &process))
-        {
-            g_status = "Could not start the installed-accessory helper.";
+    bool assign_unique_dimensions(screen_t& screen,
+        uint32_t suggestedWidth, uint32_t suggestedHeight)
+    {
+        const bool currentValid =
+            screen.override_texture_size_w >= 4 &&
+            screen.override_texture_size_h >= 4 &&
+            screen.override_texture_size_w % 4 == 0 &&
+            screen.override_texture_size_h % 4 == 0 &&
+            !dimensions_used(screen.override_texture_size_w,
+                screen.override_texture_size_h, &screen);
+        if (currentValid)
             return false;
+
+        uint32_t firstSlot{};
+        if (suggestedWidth >= 132 && suggestedWidth <= 384 &&
+            suggestedHeight >= 2052 && suggestedHeight <= 2304)
+        {
+            firstSlot = ((suggestedHeight - 2052) / 4) * 64 +
+                ((suggestedWidth - 132) / 4);
         }
-        CloseHandle(process.hThread);
-        g_process = process.hProcess;
-        g_operation = operation;
-        g_status = operation == operation_t::scan
-            ? "Reading the latest truck save and installed mods..."
-            : "Generating the local display adapter mod...";
-        return true;
+        for (uint32_t attempt = 0; attempt < 4096; ++attempt)
+        {
+            const uint32_t slot = (firstSlot + attempt) % 4096;
+            const uint32_t width = 132 + (slot % 64) * 4;
+            const uint32_t height = 2052 + (slot / 64) * 4;
+            if (!dimensions_used(width, height, &screen))
+            {
+                screen.override_texture_size_w = width;
+                screen.override_texture_size_h = height;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool synchronize_adapters(const std::vector<adapter_t>& adapters)
+    {
+        bool changed{};
+        std::lock_guard<std::mutex> lock(g_screens_mutex);
+        for (const adapter_t& adapter : adapters)
+        {
+            const std::string identity = "auto:" + adapter.id;
+            auto found = std::find_if(g_screens.begin(), g_screens.end(),
+                [&](const screen_t& screen)
+                {
+                    return screen.adapterMode &&
+                        screen.adapterDataPath == identity;
+                });
+            if (found == g_screens.end())
+            {
+                screen_t screen;
+                screen.type = screen_type_t::CUSTOM;
+                screen.enabled = false;
+                screen.adapterMode = true;
+                screen.adapterDataPath = identity;
+                screen.adapterName = adapter.name;
+                screen.original_texture = adapter.uiTexture;
+                screen.override_texture = adapter.mediaTobj;
+                screen.override_texture_size_w = adapter.width;
+                screen.override_texture_size_h = adapter.height;
+                screen.mediaClientId = "adapter-" + adapter.id;
+                screen.targetLiveTextureWidth = 1280;
+                screen.targetLiveTextureHeight = 720;
+                assign_unique_dimensions(screen, adapter.width, adapter.height);
+                g_screens.push_back(std::move(screen));
+                found = g_screens.end() - 1;
+                changed = true;
+            }
+            else
+            {
+                if (found->adapterName != adapter.name ||
+                    found->original_texture != adapter.uiTexture ||
+                    found->override_texture != adapter.mediaTobj)
+                {
+                    found->adapterName = adapter.name;
+                    found->original_texture = adapter.uiTexture;
+                    found->override_texture = adapter.mediaTobj;
+                    changed = true;
+                }
+                changed = assign_unique_dimensions(
+                    *found, adapter.width, adapter.height) || changed;
+            }
+
+            std::string assetStatus;
+            if (!override_assets::write_exact(*found, assetStatus))
+                diagnostic_log::writef("error", "%s", assetStatus.c_str());
+        }
+        return changed;
     }
 
     void load_result()
@@ -161,34 +238,96 @@ namespace
         if (state != "ok")
         {
             if (g_status.empty())
-                g_status = "The accessory helper did not return a result.";
+                g_status = "Automatic adapter discovery did not return a result.";
+            diagnostic_log::writef("adapter", "%s", g_status.c_str());
             return;
         }
-        if (g_operation != operation_t::scan)
-            return;
 
-        g_accessories.clear();
-        const int count = GetPrivateProfileIntW(
-            L"Result", L"Count", 0, g_resultPath.c_str());
+        g_sourceName = read_ini("Result", "Source", g_resultPath);
+        g_modActive = GetPrivateProfileIntW(
+            L"Result", L"Active", 0, g_resultPath.c_str()) != 0;
+        const bool generated = GetPrivateProfileIntW(
+            L"Result", L"Generated", 0, g_resultPath.c_str()) != 0;
+        const int count = (std::min)(GetPrivateProfileIntW(
+            L"Result", L"Count", 0, g_resultPath.c_str()), 64U);
+        std::vector<adapter_t> adapters;
+        adapters.reserve(count);
         for (int index = 0; index < count; ++index)
         {
-            const std::string section = "Accessory" + std::to_string(index);
-            accessory_bridge::accessory_t item;
-            item.name = read_ini(section.c_str(), "Name", g_resultPath);
-            item.dataPath = read_ini(section.c_str(), "DataPath", g_resultPath);
-            item.source = read_ini(section.c_str(), "Source", g_resultPath);
-            item.definition = read_ini(section.c_str(), "Definition", g_resultPath);
-            item.interiorModel = read_ini(section.c_str(), "InteriorModel", g_resultPath);
-            item.exteriorModel = read_ini(section.c_str(), "ExteriorModel", g_resultPath);
-            item.uiTexture = read_ini(section.c_str(), "UiTexture", g_resultPath);
-            if (!item.definition.empty())
-                g_accessories.push_back(std::move(item));
+            const std::string section = "Adapter" + std::to_string(index);
+            adapter_t adapter;
+            adapter.id = read_ini(section.c_str(), "Id", g_resultPath);
+            adapter.name = read_ini(section.c_str(), "Name", g_resultPath);
+            adapter.uiTexture = read_ini(section.c_str(), "UiTexture", g_resultPath);
+            adapter.mediaTobj = read_ini(section.c_str(), "MediaTobj", g_resultPath);
+            adapter.width = GetPrivateProfileIntA(section.c_str(), "Width", 0,
+                std::string(g_resultPath.begin(), g_resultPath.end()).c_str());
+            adapter.height = GetPrivateProfileIntA(section.c_str(), "Height", 0,
+                std::string(g_resultPath.begin(), g_resultPath.end()).c_str());
+            if (!adapter.id.empty() && !adapter.mediaTobj.empty())
+                adapters.push_back(std::move(adapter));
         }
+        g_adapterCount = adapters.size();
+        const bool changed = synchronize_adapters(adapters);
+        if (changed)
+            settings::save();
+
+        if (generated || !g_modActive)
+        {
+            g_toastMessage = g_status;
+            g_toastTick = GetTickCount64();
+        }
+        diagnostic_log::writef(
+            "adapter", "Automatic bridge complete: source='%s', adapters=%zu, "
+            "generated=%d, active=%d.",
+            g_sourceName.c_str(), g_adapterCount,
+            generated ? 1 : 0, g_modActive ? 1 : 0);
     }
 }
 
 namespace accessory_bridge
 {
+    void start_auto()
+    {
+        if (g_process)
+            return;
+        const std::wstring root = module_directory();
+        const std::wstring executable = root + L"\\PrismMedia\\PrismMediaClient.exe";
+        if (GetFileAttributesW(executable.c_str()) == INVALID_FILE_ATTRIBUTES)
+        {
+            g_status = "PrismMediaClient.exe is missing from the PrismMedia folder.";
+            return;
+        }
+
+        wchar_t temporary[MAX_PATH]{};
+        GetTempPathW(MAX_PATH, temporary);
+        g_resultPath = std::wstring(temporary) + L"PrismMediaAccessoryBridge-" +
+            std::to_wstring(GetCurrentProcessId()) + L".ini";
+        DeleteFileW(g_resultPath.c_str());
+        wchar_t gameExe[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, gameExe, MAX_PATH);
+        const std::wstring gameHome = game_home_directory();
+        std::wstring command = quote(executable) +
+            L" --bridge-mode auto --result " + quote(g_resultPath) +
+            L" --game-home " + quote(gameHome) +
+            L" --game-exe " + quote(gameExe);
+        std::vector<wchar_t> writable(command.begin(), command.end());
+        writable.push_back(L'\0');
+
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(executable.c_str(), writable.data(), nullptr, nullptr,
+                FALSE, CREATE_NO_WINDOW, nullptr, root.c_str(), &startup, &process))
+        {
+            g_status = "Could not start automatic accessory discovery.";
+            return;
+        }
+        CloseHandle(process.hThread);
+        g_process = process.hProcess;
+        g_status = "Checking local mods and every Steam Workshop library...";
+    }
+
     void update()
     {
         if (!g_process || WaitForSingleObject(g_process, 0) != WAIT_OBJECT_0)
@@ -197,7 +336,6 @@ namespace accessory_bridge
         g_process = nullptr;
         load_result();
         DeleteFileW(g_resultPath.c_str());
-        g_operation = operation_t::none;
     }
 
     void shutdown()
@@ -207,41 +345,20 @@ namespace accessory_bridge
             CloseHandle(g_process);
             g_process = nullptr;
         }
-        g_operation = operation_t::none;
-    }
-
-    bool start_scan()
-    {
-        wchar_t gameExe[MAX_PATH]{};
-        GetModuleFileNameW(nullptr, gameExe, MAX_PATH);
-        const std::wstring gameHome = game_home_directory();
-        return start_process(operation_t::scan,
-            L" --game-home " + quote(gameHome) +
-            L" --game-exe " + quote(gameExe));
-    }
-
-    bool start_generate(const screen_t& screen, size_t accessoryIndex)
-    {
-        if (accessoryIndex >= g_accessories.size())
-        {
-            g_status = "Select an installed display accessory first.";
-            return false;
-        }
-        const accessory_t& item = g_accessories[accessoryIndex];
-        const std::wstring gameHome = game_home_directory();
-        auto wide = [](const std::string& value)
-        {
-            return std::wstring(value.begin(), value.end());
-        };
-        return start_process(operation_t::generate,
-            L" --game-home " + quote(gameHome) +
-            L" --source " + quote(wide(item.source)) +
-            L" --definition " + quote(wide(item.definition)) +
-            L" --display-id " + quote(wide(screen.mediaClientId)) +
-            L" --media-tobj " + quote(wide(screen.override_texture)));
     }
 
     bool busy() { return g_process != nullptr; }
-    const std::vector<accessory_t>& accessories() { return g_accessories; }
+    bool mod_active() { return g_modActive; }
+    size_t adapter_count() { return g_adapterCount; }
+    const std::string& source_name() { return g_sourceName; }
     const std::string& status() { return g_status; }
+    const std::string& toast_message() { return g_toastMessage; }
+
+    bool should_show_toast()
+    {
+        if (g_toastMessage.empty() || g_toastTick == 0)
+            return false;
+        const uint64_t now = GetTickCount64();
+        return now >= g_toastTick && now - g_toastTick <= 20000;
+    }
 }

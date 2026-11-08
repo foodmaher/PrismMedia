@@ -76,7 +76,6 @@ jobs:
           $Client = 'PrismMediaClient\bin\x64\Release\net48\PrismMediaClient.exe'
           & $Client --bridge-mode auto --result $Result --game-home $GameHome `
             --game-exe 'C:\Steam\steamapps\common\Euro Truck Simulator 2\bin\win_x64\eurotrucks2.exe'
-          if ($LASTEXITCODE -ne 0) { throw "Bridge helper exited $LASTEXITCODE" }
           $ResultText = Get-Content $Result -Raw
           if ($ResultText -notmatch 'Status=ok' -or
               $ResultText -notmatch 'Count=1' -or

@@ -6,7 +6,7 @@ namespace update_checker
 {
     inline constexpr const char* kReleasesUrl =
         "https://github.com/foodmaher/"
-        "PrismTextureStreamerFB-Performance/releases/";
+        "PrismMedia/releases/";
 
     void start();
     void shutdown();

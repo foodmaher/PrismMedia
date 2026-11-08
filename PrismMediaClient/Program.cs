@@ -69,6 +69,9 @@ namespace PrismMediaClient
         [STAThread]
         private static void Main(string[] args)
         {
+            if (AccessoryBridgeService.TryRun(args))
+                return;
+
             try
             {
                 Process.GetCurrentProcess().PriorityClass =

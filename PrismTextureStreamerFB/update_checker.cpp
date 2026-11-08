@@ -21,7 +21,7 @@ namespace
 {
     constexpr wchar_t kApiHost[] = L"api.github.com";
     constexpr wchar_t kLatestReleasePath[] =
-        L"/repos/foodmaher/PrismTextureStreamerFB-Performance/"
+        L"/repos/foodmaher/PrismMedia/"
         L"releases/latest";
 
     std::thread checkThread;

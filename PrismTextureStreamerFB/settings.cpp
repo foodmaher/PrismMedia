@@ -359,7 +359,7 @@ namespace settings {
                 0.0f, 1.0f);
         }
 
-        const int count = (std::min)(GetPrivateProfileIntA("General", "ScreenCount", 0, path.c_str()), 16U);
+        const int count = (std::min)(GetPrivateProfileIntA("General", "ScreenCount", 0, path.c_str()), 64U);
         if (count <= 0)
         {
             std::lock_guard<std::mutex> lock(g_screens_mutex);
@@ -384,36 +384,16 @@ namespace settings {
                 section.c_str(), "Enabled", 1, path.c_str()) != 0;
             screen.original_texture = read_string(path, section.c_str(), "OriginalTexture");
             screen.override_texture = read_string(path, section.c_str(), "OverrideTexture");
-			screen.visualPickerMode = GetPrivateProfileIntA(
-				section.c_str(), "VisualPickerMode",
-				(screen.type == screen_type_t::CUSTOM &&
-				 (screen.original_texture.empty() ||
-				  screen.original_texture == ".tobj")) ? 1 : 0,
+			screen.adapterMode = GetPrivateProfileIntA(
+				section.c_str(), "AdapterMode",
+				screen.type == screen_type_t::CUSTOM ? 1 : 0,
 				path.c_str()) != 0;
+			screen.adapterDataPath = read_string(
+				path, section.c_str(), "AdapterDataPath");
+			screen.adapterName = read_string(
+				path, section.c_str(), "AdapterName");
             screen.override_texture_size_w = GetPrivateProfileIntA(section.c_str(), "OverrideWidth", 0, path.c_str());
             screen.override_texture_size_h = GetPrivateProfileIntA(section.c_str(), "OverrideHeight", 0, path.c_str());
-			screen.finalDrawRouteValid = GetPrivateProfileIntA(
-				section.c_str(), "FinalDrawRouteValid", 0, path.c_str()) != 0;
-			screen.finalDrawRouteKind = GetPrivateProfileIntA(
-				section.c_str(), "FinalDrawRouteKind", 0, path.c_str());
-			screen.finalDrawRouteCount = GetPrivateProfileIntA(
-				section.c_str(), "FinalDrawRouteCount", 0, path.c_str());
-			screen.finalDrawRouteStart = GetPrivateProfileIntA(
-				section.c_str(), "FinalDrawRouteStart", 0, path.c_str());
-			screen.finalDrawRouteBase = static_cast<int32_t>(
-				GetPrivateProfileIntA(
-					section.c_str(), "FinalDrawRouteBase", 0, path.c_str()));
-			screen.finalDrawRouteSlot = GetPrivateProfileIntA(
-				section.c_str(), "FinalDrawRouteSlot", 6, path.c_str());
-			screen.finalDrawRouteCandidate = GetPrivateProfileIntA(
-				section.c_str(), "FinalDrawRouteCandidate", UINT32_MAX,
-				path.c_str());
-			screen.finalDrawRoutePasses = GetPrivateProfileIntA(
-				section.c_str(), "FinalDrawRoutePasses", 0, path.c_str());
-			screen.finalDrawPickerX = read_float(
-				path, section.c_str(), "FinalDrawPickerX", -1.0f);
-			screen.finalDrawPickerY = read_float(
-				path, section.c_str(), "FinalDrawPickerY", -1.0f);
             screen.targetLiveTextureWidth = (std::clamp)(
                 GetPrivateProfileIntA(section.c_str(), "TargetWidth", 1280, path.c_str()), 64U, 7680U);
             screen.targetLiveTextureHeight = (std::clamp)(
@@ -602,13 +582,22 @@ namespace settings {
                         screen.override_texture_size_h);
                 originalTextureConflict = originalTextureConflict ||
                     (screen.enabled && existing.enabled &&
+					 !screen.adapterMode && !existing.adapterMode &&
                      !screen.original_texture.empty() &&
                      existing.original_texture == screen.original_texture);
             }
             std::string overrideStatus;
-            override_assets::ensure(
-                screen, usedDimensions, usedOverridePaths,
-                identityConflict, overrideStatus);
+            if (screen.adapterMode &&
+                screen.adapterDataPath.rfind("auto:", 0) == 0)
+            {
+                override_assets::write_exact(screen, overrideStatus);
+            }
+            else
+            {
+                override_assets::ensure(
+                    screen, usedDimensions, usedOverridePaths,
+                    identityConflict, overrideStatus);
+            }
 
             if (originalTextureConflict)
             {
@@ -786,19 +775,11 @@ namespace settings {
             write_number(temporaryPath, section.c_str(), "Enabled", screen.enabled ? 1 : 0);
             WritePrivateProfileStringA(section.c_str(), "OriginalTexture", screen.original_texture.c_str(), temporaryPath.c_str());
             WritePrivateProfileStringA(section.c_str(), "OverrideTexture", screen.override_texture.c_str(), temporaryPath.c_str());
-			write_number(temporaryPath, section.c_str(), "VisualPickerMode", screen.visualPickerMode ? 1 : 0);
+			write_number(temporaryPath, section.c_str(), "AdapterMode", screen.adapterMode ? 1 : 0);
+			WritePrivateProfileStringA(section.c_str(), "AdapterDataPath", screen.adapterDataPath.c_str(), temporaryPath.c_str());
+			WritePrivateProfileStringA(section.c_str(), "AdapterName", screen.adapterName.c_str(), temporaryPath.c_str());
             write_number(temporaryPath, section.c_str(), "OverrideWidth", screen.override_texture_size_w);
             write_number(temporaryPath, section.c_str(), "OverrideHeight", screen.override_texture_size_h);
-			write_number(temporaryPath, section.c_str(), "FinalDrawRouteValid", screen.finalDrawRouteValid ? 1 : 0);
-			write_number(temporaryPath, section.c_str(), "FinalDrawRouteKind", screen.finalDrawRouteKind);
-			write_number(temporaryPath, section.c_str(), "FinalDrawRouteCount", screen.finalDrawRouteCount);
-			write_number(temporaryPath, section.c_str(), "FinalDrawRouteStart", screen.finalDrawRouteStart);
-			write_number(temporaryPath, section.c_str(), "FinalDrawRouteBase", static_cast<uint32_t>(screen.finalDrawRouteBase));
-			write_number(temporaryPath, section.c_str(), "FinalDrawRouteSlot", screen.finalDrawRouteSlot);
-			write_number(temporaryPath, section.c_str(), "FinalDrawRouteCandidate", screen.finalDrawRouteCandidate);
-			write_number(temporaryPath, section.c_str(), "FinalDrawRoutePasses", screen.finalDrawRoutePasses);
-			write_float(temporaryPath, section.c_str(), "FinalDrawPickerX", screen.finalDrawPickerX);
-			write_float(temporaryPath, section.c_str(), "FinalDrawPickerY", screen.finalDrawPickerY);
             write_number(temporaryPath, section.c_str(), "TargetWidth", screen.targetLiveTextureWidth);
             write_number(temporaryPath, section.c_str(), "TargetHeight", screen.targetLiveTextureHeight);
             write_number(temporaryPath, section.c_str(), "Framerate", screen.framerate);

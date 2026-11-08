@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -38,6 +38,7 @@
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
@@ -51,6 +52,7 @@
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -88,6 +90,7 @@
       <WarningLevel>Level3</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -124,6 +127,7 @@
       <WarningLevel>Level3</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
@@ -141,13 +145,8 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="addon_display_probe.cpp" />
+    <ClCompile Include="accessory_bridge.cpp" />
     <ClCompile Include="camera_bridge_client.cpp" />
-    <ClCompile Include="custom_render_probe.cpp" />
-    <ClCompile Include="diagnostic_console.cpp" />
-    <ClCompile Include="display_picker.cpp" />
-    <ClCompile Include="per_draw_router.cpp" />
-    <ClCompile Include="runtime_draw_probe.cpp" />
     <ClCompile Include="diagnostic_log.cpp" />
     <ClCompile Include="dinput8\dinput8.cpp" />
     <ClCompile Include="dllmain.cpp" />
@@ -170,15 +169,9 @@
     <ClCompile Include="win32\win32.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="addon_display_probe.h" />
+    <ClInclude Include="accessory_bridge.h" />
     <ClInclude Include="bmem.h" />
     <ClInclude Include="camera_bridge_client.h" />
-    <ClInclude Include="custom_render_probe.h" />
-    <ClInclude Include="diagnostic_console.h" />
-    <ClInclude Include="display_picker.h" />
-    <ClInclude Include="per_draw_router.h" />
-    <ClInclude Include="runtime_draw_probe.h" />
-    <ClInclude Include="diagnostic_options.h" />
     <ClInclude Include="diagnostic_log.h" />
     <ClInclude Include="engine_standby.h" />
     <ClInclude Include="dinput8\dinput8.h" />
@@ -213,3 +206,4 @@
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 </Project>
+

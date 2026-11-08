@@ -12,6 +12,7 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="AccessoryBridgeService.cs" />
     <Compile Include="AdaptiveAudioController.cs" />
     <Compile Include="ClientDiagnosticLog.cs" />
     <Compile Include="MainForm.cs" />
@@ -22,6 +23,8 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
     <Reference Include="System.Security" />
     <Reference Include="System.Web" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
   </ItemGroup>
   <ItemGroup>
     <None Remove="www\player.html" />

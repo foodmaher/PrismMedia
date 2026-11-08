@@ -3,9 +3,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <atomic>
-#include <exception>
-#include <intrin.h>
 #include <mutex>
 
 #include <MinHook/MinHook.h>
@@ -14,9 +11,6 @@
 using namespace scs_logging;
 
 #include "../diagnostic_log.h"
-#include "../custom_render_probe.h"
-#include "../runtime_draw_probe.h"
-#include "../per_draw_router.h"
 #include "../engine_standby.h"
 #include "../screens.h"
 #include "../telemetry_state.h"
@@ -24,57 +18,6 @@ using namespace scs_logging;
 
 typedef HRESULT(__stdcall* CreateTexture2D_t)(ID3D11Device*, const D3D11_TEXTURE2D_DESC*, const D3D11_SUBRESOURCE_DATA*, ID3D11Texture2D**);
 static CreateTexture2D_t CreateTexture2D_Original = nullptr;
-typedef HRESULT(__stdcall* CreateShaderResourceView_t)(
-    ID3D11Device*, ID3D11Resource*,
-    const D3D11_SHADER_RESOURCE_VIEW_DESC*, ID3D11ShaderResourceView**);
-typedef void(__stdcall* PSSetShaderResources_t)(
-    ID3D11DeviceContext*, UINT, UINT,
-    ID3D11ShaderResourceView* const*);
-typedef void(__stdcall* DrawIndexed_t)(
-    ID3D11DeviceContext*, UINT, UINT, INT);
-typedef void(__stdcall* Draw_t)(
-    ID3D11DeviceContext*, UINT, UINT);
-typedef void(__stdcall* DrawIndexedInstanced_t)(
-    ID3D11DeviceContext*, UINT, UINT, UINT, INT, UINT);
-typedef void(__stdcall* DrawInstanced_t)(
-    ID3D11DeviceContext*, UINT, UINT, UINT, UINT);
-typedef void(__stdcall* DrawAuto_t)(ID3D11DeviceContext*);
-typedef void(__stdcall* DrawIndexedInstancedIndirect_t)(
-    ID3D11DeviceContext*, ID3D11Buffer*, UINT);
-typedef void(__stdcall* DrawInstancedIndirect_t)(
-    ID3D11DeviceContext*, ID3D11Buffer*, UINT);
-
-static CreateShaderResourceView_t CreateShaderResourceView_Original{};
-static PSSetShaderResources_t PSSetShaderResources_Original{};
-static DrawIndexed_t DrawIndexed_Original{};
-static Draw_t Draw_Original{};
-static DrawIndexedInstanced_t DrawIndexedInstanced_Original{};
-static DrawInstanced_t DrawInstanced_Original{};
-static DrawAuto_t DrawAuto_Original{};
-static DrawIndexedInstancedIndirect_t DrawIndexedInstancedIndirect_Original{};
-static DrawInstancedIndirect_t DrawInstancedIndirect_Original{};
-static void* g_createShaderResourceViewAddress{};
-static void* g_psSetShaderResourcesAddress{};
-static void* g_drawIndexedAddress{};
-static void* g_drawAddress{};
-static void* g_drawIndexedInstancedAddress{};
-static void* g_drawInstancedAddress{};
-static void* g_drawAutoAddress{};
-static void* g_drawIndexedInstancedIndirectAddress{};
-static void* g_drawInstancedIndirectAddress{};
-static bool g_customProbeHooksCreated{};
-static bool g_customProbeHooksEnabled{};
-static bool g_probeHookInstalledState[9]{};
-static std::mutex g_probeHookMutex;
-static bool g_legacyProbeRequested{}, g_liveProbeRequested{},
-    g_perDrawRouterRequested{}, g_perDrawRouterTraining{};
-static unsigned g_perDrawRouterKind{
-    static_cast<unsigned>(per_draw_router::draw_kind_t::none) };
-// Other overlays (notably RTSS and SPF) can chain the same D3D11 entry point.
-// Keep recursive entries out of Prism's mutex-owning router path.
-static thread_local bool g_drawIndexedHookActive{};
-static std::atomic_flag g_drawIndexedHookExceptionLogged = ATOMIC_FLAG_INIT;
-
 namespace
 {
     const char* screen_type_name(screen_type_t type)
@@ -271,264 +214,6 @@ namespace
     }
 }
 
-HRESULT __stdcall HookedCreateShaderResourceView(
-    ID3D11Device* device,
-    ID3D11Resource* resource,
-    const D3D11_SHADER_RESOURCE_VIEW_DESC* description,
-    ID3D11ShaderResourceView** view)
-{
-    const HRESULT result = CreateShaderResourceView_Original(
-        device, resource, description, view);
-    if (SUCCEEDED(result) && view && *view)
-        custom_render_probe::notify_shader_resource_view(resource, *view);
-    return result;
-}
-
-void __stdcall HookedPSSetShaderResources(
-    ID3D11DeviceContext* context,
-    UINT startSlot,
-    UINT viewCount,
-    ID3D11ShaderResourceView* const* views)
-{
-    PSSetShaderResources_Original(
-        context, startSlot, viewCount, views);
-    custom_render_probe::notify_pixel_shader_resources(
-        startSlot, viewCount, views);
-    per_draw_router::notify_pixel_shader_resources(
-        context, startSlot, viewCount, views);
-}
-
-void __stdcall HookedDrawIndexed(
-    ID3D11DeviceContext* context,
-    UINT indexCount,
-    UINT startIndexLocation,
-    INT baseVertexLocation)
-{
-    if (g_drawIndexedHookActive)
-    {
-        // A second entry before the outer trampoline returns means another
-        // overlay has looped the shared hook chain back into Prism. Calling
-        // DrawIndexed_Original again would repeat that cycle and can make the
-        // same thread lock an overlay/router mutex twice. Let the outer call
-        // unwind instead; this path is never used for an ordinary game draw.
-        return;
-    }
-
-    struct reentry_guard_t
-    {
-        reentry_guard_t() { g_drawIndexedHookActive = true; }
-        ~reentry_guard_t() { g_drawIndexedHookActive = false; }
-    } reentryGuard;
-
-    per_draw_router::route_scope_t route;
-    bool routed{};
-    try
-    {
-        custom_render_probe::notify_draw("DrawIndexed");
-        runtime_draw_probe::draw(
-            context, "DrawIndexed",
-            reinterpret_cast<uintptr_t>(_ReturnAddress()), indexCount,
-            startIndexLocation, baseVertexLocation);
-        routed = per_draw_router::begin_draw(
-            context,
-            { per_draw_router::draw_kind_t::indexed, indexCount,
-                startIndexLocation, baseVertexLocation },
-            route);
-    }
-    catch (const std::exception& error)
-    {
-        if (!g_drawIndexedHookExceptionLogged.test_and_set())
-            diagnostic_log::writef(
-                "error",
-                "DrawIndexed routing was bypassed after a C++ synchronization "
-                "exception: %s. Native drawing remains active.",
-                error.what());
-        route = {};
-        routed = false;
-    }
-    catch (...)
-    {
-        if (!g_drawIndexedHookExceptionLogged.test_and_set())
-            diagnostic_log::write(
-                "error",
-                "DrawIndexed routing was bypassed after an unknown plugin "
-                "exception. Native drawing remains active.");
-        route = {};
-        routed = false;
-    }
-
-    DrawIndexed_Original(
-        context, indexCount, startIndexLocation, baseVertexLocation);
-
-    if (routed)
-    {
-        try
-        {
-            per_draw_router::end_draw(context, route);
-        }
-        catch (const std::exception& error)
-        {
-            if (!g_drawIndexedHookExceptionLogged.test_and_set())
-                diagnostic_log::writef(
-                    "error",
-                    "DrawIndexed route cleanup caught a C++ synchronization "
-                    "exception: %s.", error.what());
-        }
-        catch (...)
-        {
-            if (!g_drawIndexedHookExceptionLogged.test_and_set())
-                diagnostic_log::write(
-                    "error",
-                    "DrawIndexed route cleanup caught an unknown plugin "
-                    "exception.");
-        }
-    }
-}
-
-void __stdcall HookedDraw(
-    ID3D11DeviceContext* context,
-    UINT vertexCount,
-    UINT startVertexLocation)
-{
-    custom_render_probe::notify_draw("Draw");
-    runtime_draw_probe::draw(context, "Draw", reinterpret_cast<uintptr_t>(_ReturnAddress()),
-        vertexCount, startVertexLocation, 0);
-    per_draw_router::route_scope_t route;
-    if (per_draw_router::begin_draw(
-            context,
-            { per_draw_router::draw_kind_t::draw, vertexCount,
-                startVertexLocation },
-            route))
-    {
-        Draw_Original(context, vertexCount, startVertexLocation);
-        per_draw_router::end_draw(context, route);
-        return;
-    }
-    Draw_Original(context, vertexCount, startVertexLocation);
-}
-
-void __stdcall HookedDrawIndexedInstanced(
-    ID3D11DeviceContext* context,
-    UINT indexCountPerInstance,
-    UINT instanceCount,
-    UINT startIndexLocation,
-    INT baseVertexLocation,
-    UINT startInstanceLocation)
-{
-    custom_render_probe::notify_draw("DrawIndexedInstanced");
-    runtime_draw_probe::draw(context, "DrawIndexedInstanced", reinterpret_cast<uintptr_t>(_ReturnAddress()),
-        indexCountPerInstance, startIndexLocation, baseVertexLocation, instanceCount, startInstanceLocation);
-    per_draw_router::route_scope_t route;
-    if (per_draw_router::begin_draw(
-            context,
-            { per_draw_router::draw_kind_t::indexed_instanced,
-                indexCountPerInstance, startIndexLocation, baseVertexLocation,
-                instanceCount, startInstanceLocation },
-            route))
-    {
-        DrawIndexedInstanced_Original(
-            context, indexCountPerInstance, instanceCount,
-            startIndexLocation, baseVertexLocation, startInstanceLocation);
-        per_draw_router::end_draw(context, route);
-        return;
-    }
-    DrawIndexedInstanced_Original(
-        context, indexCountPerInstance, instanceCount,
-        startIndexLocation, baseVertexLocation, startInstanceLocation);
-}
-
-void __stdcall HookedDrawInstanced(
-    ID3D11DeviceContext* context,
-    UINT vertexCountPerInstance,
-    UINT instanceCount,
-    UINT startVertexLocation,
-    UINT startInstanceLocation)
-{
-    custom_render_probe::notify_draw("DrawInstanced");
-    runtime_draw_probe::draw(context, "DrawInstanced", reinterpret_cast<uintptr_t>(_ReturnAddress()),
-        vertexCountPerInstance, startVertexLocation, 0, instanceCount, startInstanceLocation);
-    per_draw_router::route_scope_t route;
-    if (per_draw_router::begin_draw(
-            context,
-            { per_draw_router::draw_kind_t::instanced,
-                vertexCountPerInstance, startVertexLocation, 0,
-                instanceCount, startInstanceLocation },
-            route))
-    {
-        DrawInstanced_Original(
-            context, vertexCountPerInstance, instanceCount,
-            startVertexLocation, startInstanceLocation);
-        per_draw_router::end_draw(context, route);
-        return;
-    }
-    DrawInstanced_Original(
-        context, vertexCountPerInstance, instanceCount,
-        startVertexLocation, startInstanceLocation);
-}
-
-void __stdcall HookedDrawAuto(ID3D11DeviceContext* context)
-{
-    custom_render_probe::notify_draw("DrawAuto");
-    runtime_draw_probe::draw(context, "DrawAuto", reinterpret_cast<uintptr_t>(_ReturnAddress()), 0, 0, 0);
-    per_draw_router::route_scope_t route;
-    if (per_draw_router::begin_draw(
-            context, { per_draw_router::draw_kind_t::draw_auto }, route))
-    {
-        DrawAuto_Original(context);
-        per_draw_router::end_draw(context, route);
-        return;
-    }
-    DrawAuto_Original(context);
-}
-
-void __stdcall HookedDrawIndexedInstancedIndirect(
-    ID3D11DeviceContext* context,
-    ID3D11Buffer* arguments,
-    UINT alignedByteOffset)
-{
-    custom_render_probe::notify_draw("DrawIndexedIndirect");
-    runtime_draw_probe::draw(context, "DrawIndexedIndirect", reinterpret_cast<uintptr_t>(_ReturnAddress()),
-        0, alignedByteOffset, 0, 0, 0, reinterpret_cast<uintptr_t>(arguments));
-    per_draw_router::route_scope_t route;
-    if (per_draw_router::begin_draw(
-            context,
-            { per_draw_router::draw_kind_t::indexed_indirect, 0,
-                alignedByteOffset, 0, 0, 0,
-                reinterpret_cast<uintptr_t>(arguments) },
-            route))
-    {
-        DrawIndexedInstancedIndirect_Original(
-            context, arguments, alignedByteOffset);
-        per_draw_router::end_draw(context, route);
-        return;
-    }
-    DrawIndexedInstancedIndirect_Original(
-        context, arguments, alignedByteOffset);
-}
-
-void __stdcall HookedDrawInstancedIndirect(
-    ID3D11DeviceContext* context,
-    ID3D11Buffer* arguments,
-    UINT alignedByteOffset)
-{
-    custom_render_probe::notify_draw("DrawInstancedIndirect");
-    runtime_draw_probe::draw(context, "DrawInstancedIndirect", reinterpret_cast<uintptr_t>(_ReturnAddress()),
-        0, alignedByteOffset, 0, 0, 0, reinterpret_cast<uintptr_t>(arguments));
-    per_draw_router::route_scope_t route;
-    if (per_draw_router::begin_draw(
-            context,
-            { per_draw_router::draw_kind_t::instanced_indirect, 0,
-                alignedByteOffset, 0, 0, 0,
-                reinterpret_cast<uintptr_t>(arguments) },
-            route))
-    {
-        DrawInstancedIndirect_Original(context, arguments, alignedByteOffset);
-        per_draw_router::end_draw(context, route);
-        return;
-    }
-    DrawInstancedIndirect_Original(context, arguments, alignedByteOffset);
-}
-
 HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData, ID3D11Texture2D** ppTexture2D)
 {
     if (!g_screen_source_creation_in_progress.load()) {
@@ -549,7 +234,8 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
             if (pDesc->MipLevels != 1) continue; // Dynamic textures require exactly 1 mip
 
             const uint64_t now = GetTickCount64();
-            if (!screen.textureRouteArmed)
+            const bool privateAdapter = screen.adapterMode;
+            if (!privateAdapter && !screen.textureRouteArmed)
             {
                 if (screen.lastTextureRouteSkipLogTick == 0 ||
                     now - screen.lastTextureRouteSkipLogTick >= 5000)
@@ -565,9 +251,10 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
                 }
                 continue;
             }
-            if (now < screen.textureRouteArmedTick ||
-                now - screen.textureRouteArmedTick >
-                    kTextureRouteArmTimeoutMilliseconds)
+            if (!privateAdapter &&
+                (now < screen.textureRouteArmedTick ||
+                 now - screen.textureRouteArmedTick >
+                    kTextureRouteArmTimeoutMilliseconds))
             {
                 diagnostic_log::writef(
                     "route",
@@ -599,8 +286,10 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
             modifiedDesc.Height = screen.targetLiveTextureHeight;
 
             HRESULT hr = CreateTexture2D_Original(pDevice, &modifiedDesc, pInitialData, ppTexture2D);
-            const uint64_t matchedRoute = screen.textureRouteSequence;
-            screen.textureRouteArmed = false;
+            const uint64_t matchedRoute =
+                privateAdapter ? 0 : screen.textureRouteSequence;
+            if (!privateAdapter)
+                screen.textureRouteArmed = false;
             if (SUCCEEDED(hr) && ppTexture2D && *ppTexture2D)
             {
                 if (screen.liveTexture) screen.liveTexture->Release();
@@ -628,20 +317,13 @@ HRESULT HookedCreateTexture2D(ID3D11Device* pDevice, const D3D11_TEXTURE2D_DESC*
                     screen.original_texture.c_str());
                 diagnostic_log::writef(
                     "route",
-                    "Consumed exact route #%llu for %s display %s (%s); "
-                    "created a %ux%u dynamic BGRA upload target.",
-                    static_cast<unsigned long long>(matchedRoute),
+                    "%s matched for %s display %s (%s); created a %ux%u "
+                    "dynamic BGRA upload target.",
+                    privateAdapter ? "Private adapter identity" : "Exact texture route",
                     screen_type_name(screen.type),
                     screen.mediaClientId.c_str(),
                     screen.original_texture.c_str(),
                     modifiedDesc.Width, modifiedDesc.Height);
-                if (screen.type == screen_type_t::CUSTOM)
-                {
-                    custom_render_probe::request_capture(
-                        screen.mediaClientId.c_str(),
-                        screen.original_texture.c_str(),
-                        screen.liveTexture);
-                }
             }
             else {
                 scs_log(2, "[dx11::create_texture_2d] rewrite of %s FAILED, hr=0x%08X", screen.original_texture.c_str(), hr);
@@ -1113,209 +795,11 @@ namespace dx11::create_texture_2d {
             return false;
         }
 
-        void** contextVtbl = *reinterpret_cast<void***>(pDummyContext);
-        g_createShaderResourceViewAddress = deviceVtbl[7];
-        g_psSetShaderResourcesAddress = contextVtbl[8];
-        g_drawIndexedAddress = contextVtbl[12];
-        g_drawAddress = contextVtbl[13];
-        g_drawIndexedInstancedAddress = contextVtbl[20];
-        g_drawInstancedAddress = contextVtbl[21];
-        g_drawAutoAddress = contextVtbl[38];
-        g_drawIndexedInstancedIndirectAddress = contextVtbl[39];
-        g_drawInstancedIndirectAddress = contextVtbl[40];
-
-        const MH_STATUS createSrvResult = MH_CreateHook(
-            g_createShaderResourceViewAddress,
-            reinterpret_cast<LPVOID>(&HookedCreateShaderResourceView),
-            reinterpret_cast<LPVOID*>(
-                &CreateShaderResourceView_Original));
-        const MH_STATUS psSetResult = MH_CreateHook(
-            g_psSetShaderResourcesAddress,
-            reinterpret_cast<LPVOID>(&HookedPSSetShaderResources),
-            reinterpret_cast<LPVOID*>(
-                &PSSetShaderResources_Original));
-        const MH_STATUS drawIndexedResult = MH_CreateHook(
-            g_drawIndexedAddress,
-            reinterpret_cast<LPVOID>(&HookedDrawIndexed),
-            reinterpret_cast<LPVOID*>(
-                &DrawIndexed_Original));
-        const MH_STATUS drawResult = MH_CreateHook(
-            g_drawAddress,
-            reinterpret_cast<LPVOID>(&HookedDraw),
-            reinterpret_cast<LPVOID*>(
-                &Draw_Original));
-        const MH_STATUS drawIndexedInstancedResult = MH_CreateHook(
-            g_drawIndexedInstancedAddress,
-            reinterpret_cast<LPVOID>(&HookedDrawIndexedInstanced),
-            reinterpret_cast<LPVOID*>(
-                &DrawIndexedInstanced_Original));
-        const MH_STATUS drawInstancedResult = MH_CreateHook(
-            g_drawInstancedAddress,
-            reinterpret_cast<LPVOID>(&HookedDrawInstanced),
-            reinterpret_cast<LPVOID*>(
-                &DrawInstanced_Original));
-        const MH_STATUS drawAutoResult = MH_CreateHook(
-            g_drawAutoAddress,
-            reinterpret_cast<LPVOID>(&HookedDrawAuto),
-            reinterpret_cast<LPVOID*>(&DrawAuto_Original));
-        const MH_STATUS drawIndexedIndirectResult = MH_CreateHook(
-            g_drawIndexedInstancedIndirectAddress,
-            reinterpret_cast<LPVOID>(
-                &HookedDrawIndexedInstancedIndirect),
-            reinterpret_cast<LPVOID*>(
-                &DrawIndexedInstancedIndirect_Original));
-        const MH_STATUS drawIndirectResult = MH_CreateHook(
-            g_drawInstancedIndirectAddress,
-            reinterpret_cast<LPVOID>(&HookedDrawInstancedIndirect),
-            reinterpret_cast<LPVOID*>(
-                &DrawInstancedIndirect_Original));
-        g_customProbeHooksCreated =
-            createSrvResult == MH_OK && psSetResult == MH_OK &&
-            drawIndexedResult == MH_OK && drawResult == MH_OK &&
-            drawIndexedInstancedResult == MH_OK &&
-            drawInstancedResult == MH_OK && drawAutoResult == MH_OK &&
-            drawIndexedIndirectResult == MH_OK &&
-            drawIndirectResult == MH_OK;
-        if (!g_customProbeHooksCreated)
-        {
-            diagnostic_log::writef(
-                "error",
-                "Could not prepare all temporary targeted-test hooks "
-                "(CreateSRV=%d PSSetSRV=%d DrawIndexed=%d Draw=%d "
-                "DrawIndexedInstanced=%d DrawInstanced=%d DrawAuto=%d "
-                "DrawIndexedIndirect=%d DrawIndirect=%d).",
-                static_cast<int>(createSrvResult),
-                static_cast<int>(psSetResult),
-                static_cast<int>(drawIndexedResult),
-                static_cast<int>(drawResult),
-                static_cast<int>(drawIndexedInstancedResult),
-                static_cast<int>(drawInstancedResult),
-                static_cast<int>(drawAutoResult),
-                static_cast<int>(drawIndexedIndirectResult),
-                static_cast<int>(drawIndirectResult));
-        }
-
         pDummyContext->Release();
         pDummyDevice->Release();
 
         return true;
 	}
 
-    static bool apply_probe_hooks(
-        bool legacy, bool live, bool router, bool routerTraining,
-        unsigned routerKind)
-    {
-        const bool diagnostics = legacy || live;
-        const bool any = diagnostics || router;
-        if (!g_customProbeHooksCreated)
-            return !any;
-
-        void* const addresses[] = {
-            g_createShaderResourceViewAddress,
-            g_psSetShaderResourcesAddress,
-            g_drawIndexedAddress,
-            g_drawAddress,
-            g_drawIndexedInstancedAddress,
-            g_drawInstancedAddress,
-            g_drawAutoAddress,
-            g_drawIndexedInstancedIndirectAddress,
-            g_drawInstancedIndirectAddress
-        };
-        // Once enabled, keep DrawIndexed installed until process shutdown.
-        // Rewriting this entry point while RTSS/SPF are also in the hook chain
-        // can leave one overlay calling a stale trampoline. The inactive fast
-        // path is only atomic checks, so keeping this single bridge resident is
-        // safer and still low overhead.
-        const bool desired[] = {
-            diagnostics,
-            diagnostics || (router && routerTraining),
-            true,
-            diagnostics || (router && (routerTraining || routerKind == 1)),
-            diagnostics || (router && (routerTraining || routerKind == 2)),
-            diagnostics || (router && (routerTraining || routerKind == 3)),
-            diagnostics || (router && (routerTraining || routerKind == 4)),
-            diagnostics || (router && (routerTraining || routerKind == 5)),
-            diagnostics || (router && (routerTraining || routerKind == 6))
-        };
-        for (size_t index = 0; index < _countof(addresses); ++index)
-        {
-            // Do not ask MinHook to rewrite or even revalidate an entry point
-            // whose state is already correct. This matters when RTSS/SPF have
-            // chained the same D3D vtable function and one of their wrappers
-            // is currently executing on another thread.
-            if (g_probeHookInstalledState[index] == desired[index])
-                continue;
-            const MH_STATUS result = desired[index]
-                ? MH_EnableHook(addresses[index])
-                : MH_DisableHook(addresses[index]);
-            const bool accepted = desired[index]
-                ? (result == MH_OK || result == MH_ERROR_ENABLED)
-                : (result == MH_OK || result == MH_ERROR_DISABLED);
-            if (!accepted)
-            {
-                diagnostic_log::writef("error",
-                    "Could not update D3D route hook %llu (MinHook status %d).",
-                    static_cast<unsigned long long>(index),
-                    static_cast<int>(result));
-                return false;
-            }
-            g_probeHookInstalledState[index] = desired[index];
-        }
-        if (g_customProbeHooksEnabled != any)
-        {
-            g_customProbeHooksEnabled = any;
-            if (any)
-            {
-            diagnostic_log::write(
-                "probe",
-                    diagnostics
-                        ? "Temporary CreateSRV/PSSetSRV/Draw diagnostic hooks enabled."
-                        : (routerTraining
-                            ? "Bounded all-draw compositor tracing hooks enabled."
-                            : "Low-overhead learned per-display draw hook enabled."));
-            }
-            else
-            {
-                diagnostic_log::write(
-                    "probe", "Temporary high-frequency Direct3D diagnostics "
-                    "disabled; the inert DrawIndexed bridge remains installed "
-                    "for overlay-chain safety.");
-            }
-        }
-        return true;
-    }
-
-    bool set_custom_probe_hooks_enabled(bool enabled)
-    {
-        std::lock_guard<std::mutex> lock(g_probeHookMutex);
-        if (!apply_probe_hooks(enabled, g_liveProbeRequested,
-                g_perDrawRouterRequested, g_perDrawRouterTraining,
-                g_perDrawRouterKind)) return false;
-        g_legacyProbeRequested = enabled;
-        return true;
-    }
-
-    bool set_live_probe_hooks_enabled(bool enabled)
-    {
-        std::lock_guard<std::mutex> lock(g_probeHookMutex);
-        if (!apply_probe_hooks(g_legacyProbeRequested, enabled,
-                g_perDrawRouterRequested, g_perDrawRouterTraining,
-                g_perDrawRouterKind)) return false;
-        g_liveProbeRequested = enabled;
-        return true;
-    }
-
-    bool set_per_draw_router_hooks_enabled(
-        bool enabled, bool training, unsigned activeDrawKind)
-    {
-        std::lock_guard<std::mutex> lock(g_probeHookMutex);
-        if (!apply_probe_hooks(g_legacyProbeRequested, g_liveProbeRequested,
-                enabled, enabled && training, activeDrawKind)) return false;
-        g_perDrawRouterRequested = enabled;
-        g_perDrawRouterTraining = enabled && training;
-        g_perDrawRouterKind = enabled
-            ? activeDrawKind
-            : static_cast<unsigned>(per_draw_router::draw_kind_t::none);
-        return true;
-    }
 }
+

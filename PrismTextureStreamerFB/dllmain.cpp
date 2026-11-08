@@ -19,11 +19,8 @@
 #include "settings.h"
 #include "telemetry_state.h"
 #include "camera_bridge_client.h"
-#include "custom_render_probe.h"
 #include "diagnostic_log.h"
-#include "diagnostic_console.h"
-#include "per_draw_router.h"
-#include "display_picker.h"
+#include "accessory_bridge.h"
 #include "environment_audio.h"
 #include "thread_scheduling.h"
 #include "update_checker.h"
@@ -229,7 +226,6 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
 
     bool has_gps{};
     bool has_dash{};
-    bool has_custom{};
 
     camera_bridge::poll();
 
@@ -470,10 +466,6 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
                 has_gps = true;
             else if (screen.type == screen_type_t::DASHBOARD)
                 has_dash = true;
-            else if (screen.type == screen_type_t::CUSTOM &&
-                screen.liveTexture)
-                has_custom = true;
-
             if (screen.source &&
                 screen.source->SupportsVehiclePowerControl())
             {
@@ -727,12 +719,6 @@ SCSAPI_VOID telemetry_tick(const scs_event_t event, const void* const event_info
         dash_patched = has_dash;
     }
 
-    diagnostic_console::update(
-        g_telemetry_driving.load(std::memory_order_acquire), has_custom);
-    per_draw_router::update(
-        g_telemetry_driving.load(std::memory_order_acquire),
-        g_camera_interior_hint.load(std::memory_order_acquire));
-    custom_render_probe::update(has_custom);
 }
 
 #pragma comment( linker, "/export:scs_telemetry_init=scs_telemetry_init" )
@@ -832,14 +818,12 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
     Gui::init();
 
     settings::load();
+    accessory_bridge::start_auto();
     update_checker::start();
-    diagnostic_console::start();
-
     diagnostic_log::write(
         "session",
-        "Picker deadlock guard revision 3 active; picker input revision 3 active "
-        "(plugin-owned textures are created outside the screen registry lock; "
-        "stable DrawIndexed bridge retained).");
+        "Production accessory-adapter routing active; diagnostic and "
+        "frame-order draw hooks are not installed.");
     diagnostic_log::write("session", "Plugin initialization completed.");
     scs_log(0, "Plugin Started");
     return SCS_RESULT_ok;
@@ -849,10 +833,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
 SCSAPI_VOID scs_telemetry_shutdown()
 {
     diagnostic_log::write("session", "Plugin shutdown started.");
-    diagnostic_console::stop();
-    display_picker::shutdown();
-    per_draw_router::shutdown();
-    custom_render_probe::shutdown();
+    accessory_bridge::shutdown();
     sources::ShutdownMediaClient();
     update_checker::shutdown();
     settings::save();

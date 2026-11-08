@@ -192,6 +192,58 @@ namespace
 
 namespace override_assets
 {
+    bool write_exact(screen_t& screen, std::string& status)
+    {
+        const std::string stem = file_stem(screen.override_texture);
+        if (stem.empty() ||
+            screen.override_texture.rfind(
+                "/home/PrismTextureStreamer/", 0) != 0 ||
+            screen.override_texture_size_w < 4 ||
+            screen.override_texture_size_h < 4 ||
+            screen.override_texture_size_w % 4 != 0 ||
+            screen.override_texture_size_h % 4 != 0)
+        {
+            status = "The generated adapter identity is invalid.";
+            return false;
+        }
+
+        const std::wstring gameHome = game_home_directory();
+        if (gameHome.empty())
+        {
+            status = "Could not locate the ETS2/ATS home directory.";
+            return false;
+        }
+        const std::wstring assetDirectory =
+            gameHome + L"\\PrismTextureStreamer";
+        if (!CreateDirectoryW(assetDirectory.c_str(), nullptr) &&
+            GetLastError() != ERROR_ALREADY_EXISTS)
+        {
+            status = "Could not create the PrismTextureStreamer asset folder.";
+            return false;
+        }
+
+        const std::wstring wideStem(stem.begin(), stem.end());
+        const std::wstring tobjPath = assetDirectory + L"\\" + wideStem + L".tobj";
+        const std::wstring ddsPath = assetDirectory + L"\\" + wideStem + L".dds";
+        const std::string ddsVirtualPath =
+            "/home/PrismTextureStreamer/" + stem + ".dds";
+        if (!write_tobj(tobjPath, ddsVirtualPath) ||
+            !write_dds(ddsPath, screen.override_texture_size_w,
+                screen.override_texture_size_h))
+        {
+            status = "Could not write the generated adapter TOBJ/DDS pair.";
+            return false;
+        }
+
+        status = "Private adapter texture ready: " + screen.override_texture;
+        diagnostic_log::writef(
+            "render", "Generated exact adapter pair %s (%ux%u).",
+            screen.override_texture.c_str(),
+            screen.override_texture_size_w,
+            screen.override_texture_size_h);
+        return true;
+    }
+
     bool ensure(
         screen_t& screen,
         const std::vector<std::pair<uint32_t, uint32_t>>& usedDimensions,

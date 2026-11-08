@@ -20,9 +20,8 @@
 #include <ImGui/imgui_impl_win32.h>
 
 #include "../dinput8/dinput8.h"
-#include "../custom_render_probe.h"
 #include "../diagnostic_log.h"
-#include "../display_picker.h"
+#include "../accessory_bridge.h"
 #include "../dx11/present.h"
 #include "../environment_audio.h"
 #include "../hotkeys.h"
@@ -491,12 +490,12 @@ namespace
             screen.source->SetPaused(screen.paused);
             apply_brightness(screen);
             if (screen.type == screen_type_t::CUSTOM &&
-                screen.visualPickerMode)
+                screen.adapterMode)
             {
                 diagnostic_log::writef(
                     "route",
                     "Media source ready for display %s; the render thread "
-                    "will create its private visual-picker texture.",
+                    "will bind its private accessory-adapter texture.",
                     screen.mediaClientId.c_str());
             }
             else
@@ -780,6 +779,20 @@ namespace
         return (std::max)(1, ordinal);
     }
 
+    std::string screen_display_label(size_t screenIndex)
+    {
+        if (screenIndex >= g_screens.size())
+            return "Display";
+        const screen_t& screen = g_screens[screenIndex];
+        std::string label = screen.adapterMode && !screen.adapterName.empty()
+            ? screen.adapterName
+            : std::string(screen_type_label(screen.type)) + "  " +
+                std::to_string(screen_type_ordinal(screenIndex));
+        if (!screen.enabled)
+            label += "  (off)";
+        return label;
+    }
+
     void draw_home(screen_t& screen)
     {
         const auto stats = screen.source ? screen.source->GetPerformanceStats() : source_performance_stats_t{};
@@ -791,9 +804,9 @@ namespace
         char audioDetail[192]{};
         char brightnessHeadline[64]{};
         char brightnessDetail[192]{};
-        std::snprintf(displayHeadline, sizeof(displayHeadline),
-            "%s %d", screenKind,
-            screen_type_ordinal(static_cast<size_t>(selectedScreen)));
+        std::snprintf(displayHeadline, sizeof(displayHeadline), "%s",
+            screen.adapterMode && !screen.adapterName.empty()
+                ? screen.adapterName.c_str() : screenKind);
         std::snprintf(displayDetail, sizeof(displayDetail),
             "%s\n%ux%u at %u FPS",
             screen.source ? screen.source->GetStatusText().c_str() : "Waiting for source",
@@ -1582,6 +1595,8 @@ namespace
 
     std::string screen_owner_name(const screen_t& screen)
     {
+        if (screen.adapterMode && !screen.adapterName.empty())
+            return screen.adapterName;
         size_t ordinal{};
         for (const auto& candidate : g_screens)
         {
@@ -1594,100 +1609,12 @@ namespace
             std::to_string((std::max)(size_t{ 1 }, ordinal));
     }
 
-    void log_route_snapshot(const screen_t& screen, const char* reason)
-    {
-        diagnostic_log::writef(
-            "route",
-            "Snapshot (%s): display=%s id=%s enabled=%d source=%d "
-            "original='%s' override='%s' identity=%ux%u armed=%d "
-            "route=%llu matched=%llu live=%p redirect_tick=%llu "
-            "match_tick=%llu.",
-            reason ? reason : "manual",
-            screen_owner_name(screen).c_str(),
-            screen.mediaClientId.c_str(),
-            screen.enabled ? 1 : 0,
-            screen.source ? 1 : 0,
-            screen.original_texture.c_str(),
-            screen.override_texture.c_str(),
-            screen.override_texture_size_w,
-            screen.override_texture_size_h,
-            screen.textureRouteArmed ? 1 : 0,
-            static_cast<unsigned long long>(screen.textureRouteSequence),
-            static_cast<unsigned long long>(
-                screen.textureRouteMatchedSequence),
-            static_cast<void*>(screen.liveTexture),
-            static_cast<unsigned long long>(screen.lastTextureRedirectTick),
-            static_cast<unsigned long long>(screen.lastTextureMatchTick));
-    }
-
-    bool run_early_custom_probe_reload(
-        const char* snapshotReason,
-        bool requireNewDiagnostic)
-    {
-        diagnostic_log::write(
-            "route",
-            requireNewDiagnostic
-                ? "Preparing the combined one-cycle targeted test before "
-                  "executing the truck-texture reload command."
-                : "Preparing a normal truck-texture reload without arming "
-                  "the one-shot diagnostic.");
-        for (const auto& candidate : g_screens)
-            log_route_snapshot(candidate, snapshotReason);
-
-        bool diagnosticPrepared = false;
-        if (requireNewDiagnostic)
-        {
-            for (const auto& candidate : g_screens)
-            {
-                if (candidate.enabled &&
-                    candidate.type == screen_type_t::CUSTOM &&
-                    !candidate.original_texture.empty() &&
-                    candidate.liveTexture)
-                {
-                    diagnosticPrepared =
-                        custom_render_probe::prepare_capture(
-                            candidate.mediaClientId.c_str(),
-                            candidate.original_texture.c_str(),
-                            candidate.liveTexture);
-                    if (diagnosticPrepared)
-                        break;
-                }
-            }
-        }
-        if (requireNewDiagnostic && !diagnosticPrepared)
-        {
-            diagnostic_log::write(
-                "probe",
-                "Early capture was not armed (already completed/active, or "
-                "no enabled custom display has an active live texture)." );
-            return false;
-        }
-
-        prism::string command("game");
-        if (!prism::execute_command::call(&command, -1))
-        {
-            diagnostic_log::write(
-                "error",
-                diagnosticPrepared
-                    ? "Game rejected the truck-texture reload command after "
-                      "the list-entry probe was armed. It remains bounded "
-                      "and will restore the branch automatically."
-                    : "Game rejected the normal truck-texture reload "
-                      "command.");
-            return false;
-        }
-
-        diagnostic_log::write(
-            "route",
-            diagnosticPrepared
-                ? "Game accepted the truck-texture reload command; the "
-                  "safe list/Release probe is active before cleanup."
-                : "Game accepted the normal truck-texture reload command.");
-        return true;
-    }
-
     bool prepare_override_assets(screen_t& screen, std::string& status)
     {
+        if (screen.adapterMode &&
+            screen.adapterDataPath.rfind("auto:", 0) == 0)
+            return override_assets::write_exact(screen, status);
+
         std::string originalLower;
         originalLower.reserve(screen.original_texture.size());
         for (const unsigned char character : screen.original_texture)
@@ -1740,592 +1667,137 @@ namespace
 
     void draw_system(screen_t& screen, bool& removeCurrent)
     {
-        ImGui::TextColored(ImVec4(0.20f, 0.88f, 0.94f, 1.0f), "PERFORMANCE + SYSTEM");
+        ImGui::TextColored(
+            ImVec4(0.20f, 0.88f, 0.94f, 1.0f),
+            "PERFORMANCE + SYSTEM");
+
         if (screen.type == screen_type_t::CUSTOM)
         {
-            ImGui::SeparatorText("Truck screen routing");
-            bool visualMode = screen.visualPickerMode;
-            if (ImGui::Checkbox("Use visual truck-screen picker", &visualMode))
-            {
-                if (visualMode != screen.visualPickerMode)
-                {
-                    if (screen.liveTexture) screen.liveTexture->Release();
-                    if (screen.uploadTexture) screen.uploadTexture->Release();
-                    if (screen.liveTextureRenderTarget)
-                        screen.liveTextureRenderTarget->Release();
-                    if (screen.immediateContext)
-                        screen.immediateContext->Release();
-                    screen.liveTexture = nullptr;
-                    screen.uploadTexture = nullptr;
-                    screen.liveTextureRenderTarget = nullptr;
-                    screen.immediateContext = nullptr;
-                    screen.pluginOwnedLiveTexture = false;
-                    screen.liveTextureWidth = 0;
-                    screen.liveTextureHeight = 0;
-                }
-                screen.visualPickerMode = visualMode;
-                screen.finalDrawRouteValid = false;
-                if (screen.visualPickerMode && !screen.source)
-                    rebuild_source(screen);
-                mark_changed(true);
-            }
+            ImGui::SeparatorText("Automatic accessory bridge");
             ImGui::TextWrapped(
-                "Visual mode gives this display a private media texture, "
-                "then binds it only to the truck screen you pick. No TOBJ "
-                "path is required; unmatched screens keep the game's image.");
-            const size_t enabledCustoms = static_cast<size_t>(std::count_if(
-                g_screens.begin(), g_screens.end(),
-                [](const screen_t& candidate) {
-                    return candidate.type == screen_type_t::CUSTOM &&
-                        candidate.enabled && candidate.source;
-                }));
-            ImGui::BeginDisabled(!screen.visualPickerMode ||
-                !screen.enabled || !screen.source || enabledCustoms != 1);
-            if (ImGui::Button("Pick truck screen", ImVec2(-1.0f, 40.0f)))
-            {
-                display_picker::start(screen.mediaClientId);
-                menuVisible = false;
-            }
-            ImGui::EndDisabled();
-            if (!screen.source)
+                "Prism checks the local mod folder and all Steam Workshop "
+                "libraries at startup. Compatible TJS definitions receive "
+                "private model materials and stable GPU identities; no save "
+                "conversion or manual scan is required.");
+            ImGui::TextWrapped("%s", accessory_bridge::status().c_str());
+            if (!accessory_bridge::source_name().empty())
                 ImGui::TextDisabled(
-                    "Select media first; then the picker can create its private texture.");
-            else if (enabledCustoms != 1)
-                ImGui::TextDisabled(
-                    "For calibration, temporarily enable exactly one custom media display.");
-            if (screen.finalDrawRouteValid)
-                ImGui::TextColored(ImVec4(0.35f, 0.92f, 0.42f, 1.0f),
-                    "A visual final-draw route is saved for this display.");
-            const std::string pickerStatus = display_picker::status_text();
-            if (!pickerStatus.empty())
-                ImGui::TextWrapped("Picker: %s", pickerStatus.c_str());
-        }
-        const char* profiles[] = { "Custom", "Economy - 854x480 @ 20", "Balanced - 1280x720 @ 30", "Quality - 1920x1080 @ 30", "Smooth - 1280x720 @ 60" };
-        int profile = static_cast<int>(screen.performanceProfile);
-        if (ImGui::Combo("Performance profile", &profile, profiles, IM_ARRAYSIZE(profiles))) { screen.performanceProfile = static_cast<performance_profile_t>(profile); apply_profile(screen); mark_changed(); }
-        explain_last_item("Performance profile", "Smooth is the recommended 1280x720 at 60 FPS preset from your configuration.", "Varies by preset", "Applies live + auto-save");
-        int width = static_cast<int>(screen.targetLiveTextureWidth);
-        int height = static_cast<int>(screen.targetLiveTextureHeight);
-        int fps = static_cast<int>(screen.framerate);
-        bool dimensionsChanged = false;
-        ImGui::SetNextItemWidth(130.0f);
-        dimensionsChanged |= ImGui::InputInt("Width", &width, 0, 0);
-        ImGui::SameLine(); ImGui::SetNextItemWidth(130.0f);
-        dimensionsChanged |= ImGui::InputInt("Height", &height, 0, 0);
-        ImGui::SameLine(); ImGui::SetNextItemWidth(130.0f);
-        dimensionsChanged |= ImGui::InputInt("FPS", &fps, 0, 0);
-        if (dimensionsChanged)
-        {
-            screen.performanceProfile = performance_profile_t::CUSTOM;
-            screen.targetLiveTextureWidth = static_cast<uint32_t>((std::clamp)(width, 64, 7680));
-            screen.targetLiveTextureHeight = static_cast<uint32_t>((std::clamp)(height, 64, 4320));
-            screen.framerate = static_cast<uint8_t>((std::clamp)(fps, 1, 120));
-            if (screen.source)
+                    "Source: %s | Private displays: %zu",
+                    accessory_bridge::source_name().c_str(),
+                    accessory_bridge::adapter_count());
+            if (!screen.adapterName.empty())
             {
-                screen.source->SetOutputSize(screen.targetLiveTextureWidth, screen.targetLiveTextureHeight);
-                screen.source->SetFramerate(screen.framerate);
+                ImGui::TextColored(
+                    ImVec4(0.48f, 0.95f, 0.38f, 1.0f),
+                    "Selected: %s", screen.adapterName.c_str());
+                ImGui::TextDisabled("Identity: %s", screen.adapterDataPath.c_str());
             }
-            if (screen.visualPickerMode && screen.pluginOwnedLiveTexture)
-            {
-                if (screen.liveTexture) screen.liveTexture->Release();
-                if (screen.immediateContext)
-                    screen.immediateContext->Release();
-                screen.liveTexture = nullptr;
-                screen.immediateContext = nullptr;
-                screen.pluginOwnedLiveTexture = false;
-                screen.liveTextureWidth = 0;
-                screen.liveTextureHeight = 0;
-                screen.hasUploadedFrame = false;
-            }
-            mark_changed();
+            if (!accessory_bridge::busy() && !accessory_bridge::mod_active())
+                ImGui::TextColored(
+                    ImVec4(1.0f, 0.74f, 0.24f, 1.0f),
+                    "Enable PrismMedia Generated Display above the source mod "
+                    "in Mod Manager, then restart the game once.");
         }
-        struct performance_snapshot_t
+        else
         {
-            const screen_t* owner{};
-            source_performance_stats_t stats{};
-            std::string status{ "Waiting for source" };
-            double gameFps{};
-            double uploadCpuMs{};
-            double totalPluginCpuMs{};
-            double deliveredFps{};
-            uint64_t uploadedFrames{};
-            double environmentCpuUs{};
-            DWORD cpu0{ thread_scheduling::kUnassignedProcessor };
-            DWORD cpu1{ thread_scheduling::kUnassignedProcessor };
-            DWORD cpu2{ thread_scheduling::kUnassignedProcessor };
-            DWORD processorCount{};
-            std::array<uint32_t,
-                thread_scheduling::kTrackedProcessors> gameHits{};
-            std::array<uint32_t,
-                thread_scheduling::kTrackedProcessors> pluginHits{};
-            uint64_t lastRefreshTick{};
-            uint64_t lastProcessorRefreshTick{};
+            ImGui::SeparatorText("Legacy built-in display");
+            ImGui::TextWrapped(
+                "GPS and dashboard presets keep their original exact-TOBJ "
+                "redirect. Use a Custom display for accessory isolation.");
+        }
+
+        ImGui::SeparatorText("Performance");
+        const char* profileNames[] = {
+            "Custom", "Economy", "Balanced", "Quality", "Smooth"
         };
-        static performance_snapshot_t snapshot{};
-        const uint64_t monitorNow = GetTickCount64();
-        if (snapshot.owner != &screen)
+        int profile = static_cast<int>(screen.performanceProfile);
+        if (ImGui::Combo(
+                "Profile", &profile, profileNames,
+                IM_ARRAYSIZE(profileNames)))
         {
-            snapshot = performance_snapshot_t{};
-            snapshot.owner = &screen;
-            snapshot.status = "Waiting for source";
-        }
-        // Query live source data at 4 Hz. Rendering the monitor must not turn
-        // source atomics/status calls into game-frame work at 60-144 Hz.
-        if (snapshot.lastRefreshTick == 0 ||
-            monitorNow - snapshot.lastRefreshTick >= 250)
-        {
-            const uint64_t elapsed = snapshot.lastRefreshTick == 0
-                ? 250 : monitorNow - snapshot.lastRefreshTick;
-            snapshot.lastRefreshTick = monitorNow;
-            snapshot.stats = screen.source
-                ? screen.source->GetPerformanceStats()
-                : source_performance_stats_t{};
-            snapshot.status = screen.source
-                ? screen.source->GetStatusText() : "Waiting for source";
-            snapshot.gameFps = ImGui::GetIO().Framerate;
-            snapshot.uploadCpuMs = screen.uploadCpuMs;
-            snapshot.totalPluginCpuMs = screen.totalPluginCpuMs;
-            snapshot.deliveredFps = snapshot.stats.deliveredFps > 0.0
-                ? snapshot.stats.deliveredFps : screen.deliveredFps;
-            snapshot.uploadedFrames = screen.uploadedFrames;
-            snapshot.environmentCpuUs =
-                g_environment_update_cpu_us.load();
-
-            const double observedFrameMs = snapshot.gameFps > 0.1
-                ? 1000.0 / snapshot.gameFps : 0.0;
-            if (observedFrameMs > 0.0)
-            {
-                // Only measured render-thread upload work is allowed into
-                // this estimate. The monitor's own UI draw is not attributed
-                // to texture streaming.
-                const double withoutUploadMs = (std::max)(
-                    0.1, observedFrameMs - snapshot.uploadCpuMs);
-                const double instantaneousLoss = (std::max)(0.0,
-                    1000.0 / withoutUploadMs - snapshot.gameFps);
-                const double smoothing = 1.0 - std::exp(
-                    -static_cast<double>(elapsed) / 2500.0);
-                screen.estimatedFpsLoss = screen.estimatedFpsLoss == 0.0
-                    ? instantaneousLoss
-                    : screen.estimatedFpsLoss * (1.0 - smoothing) +
-                        instantaneousLoss * smoothing;
-            }
-        }
-        if (snapshot.lastProcessorRefreshTick == 0 ||
-            monitorNow - snapshot.lastProcessorRefreshTick >= 500)
-        {
-            snapshot.lastProcessorRefreshTick = monitorNow;
-            snapshot.cpu0 = thread_scheduling::preferred_processor(0);
-            snapshot.cpu1 = thread_scheduling::preferred_processor(1);
-            snapshot.cpu2 = thread_scheduling::preferred_processor(2);
-            snapshot.processorCount =
-                thread_scheduling::tracked_processor_count();
-            for (DWORD processor = 0;
-                processor < snapshot.processorCount; ++processor)
-            {
-                snapshot.gameHits[processor] =
-                    thread_scheduling::sampled_game_hits(processor);
-                snapshot.pluginHits[processor] =
-                    thread_scheduling::sampled_plugin_hits(processor);
-            }
+            screen.performanceProfile =
+                static_cast<performance_profile_t>(profile);
+            apply_profile(screen);
+            mark_changed(false);
         }
 
-        ImGui::Text("Source: %s", snapshot.status.c_str());
-        if (screen.suspiciousBlackFrame)
+        int framerate = static_cast<int>(screen.framerate);
+        if (ImGui::SliderInt(
+                "Media FPS", &framerate, 15, 60, "%d FPS"))
         {
-            ImGui::TextColored(
-                ImVec4(1.0f, 0.34f, 0.24f, 1.0f),
-                "Capture fault: arriving frames are persistently black.");
-            ImGui::TextWrapped(
-                "Restart the selected media source; do not repair the "
-                "display TOBJ because the game texture target is not the "
-                "cause of this fault.");
-        }
-        else if (screen.suspiciousMagentaFrame)
-        {
-            ImGui::TextColored(
-                ImVec4(1.0f, 0.34f, 0.64f, 1.0f),
-                "Capture fault: arriving frames are predominantly magenta.");
-        }
-        else if (screen.sourceFrameStale)
-        {
-            ImGui::TextColored(
-                ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-                "Capture warning: the source is not delivering new frames.");
-        }
-        if (ImGui::CollapsingHeader("Live performance", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            ImGui::Text("Current game FPS: %.1f", snapshot.gameFps);
-            const ImVec4 lossColour = screen.estimatedFpsLoss < 1.0 ? ImVec4(0.35f, 0.90f, 0.40f, 1.0f) :
-                (screen.estimatedFpsLoss < 3.0 ? ImVec4(1.0f, 0.72f, 0.25f, 1.0f) : ImVec4(1.0f, 0.30f, 0.30f, 1.0f));
-            ImGui::TextColored(lossColour,
-                "Estimated game-thread FPS cost: %.2f",
-                screen.estimatedFpsLoss);
-            ImGui::Text("Game-thread texture upload: %.3f ms", snapshot.uploadCpuMs);
-            ImGui::Text("Source worker CPU: %.3f ms/frame", snapshot.stats.workerCpuMs);
-            ImGui::Text("Total measured plugin CPU: %.3f ms/frame", snapshot.totalPluginCpuMs);
-            ImGui::Text("GPU readback portion: %.3f ms/frame", snapshot.stats.readbackMs);
-            ImGui::Text("Delivered source rate: %.1f FPS", snapshot.deliveredFps);
-            ImGui::Text("Dropped/overloaded frames: %llu",
-                static_cast<unsigned long long>(snapshot.stats.droppedFrames));
-            ImGui::Text("Frames uploaded to game: %llu",
-                static_cast<unsigned long long>(snapshot.uploadedFrames));
-            ImGui::Text("Hardware decode requested: %s", snapshot.stats.hardwareDecoded ? "Yes" : "No / external");
-            ImGui::Text("Window capture bypassed: %s", snapshot.stats.directMedia ? "Yes" : "No");
-            ImGui::Text("Monitor refresh: 4 Hz | environment %.1f us/update",
-                snapshot.environmentCpuUs);
-            if (snapshot.cpu0 != thread_scheduling::kUnassignedProcessor)
-            {
-                DWORD cpu1 = snapshot.cpu1 ==
-                    thread_scheduling::kUnassignedProcessor
-                    ? snapshot.cpu0 : snapshot.cpu1;
-                DWORD cpu2 = snapshot.cpu2 ==
-                    thread_scheduling::kUnassignedProcessor
-                    ? cpu1 : snapshot.cpu2;
-                ImGui::Text("Background CPU hints: LP %lu, %lu, %lu",
-                    static_cast<unsigned long>(snapshot.cpu0),
-                    static_cast<unsigned long>(cpu1),
-                    static_cast<unsigned long>(cpu2));
-            }
-            else ImGui::TextDisabled("Background CPU hints: learning render-thread use...");
-
-            if (ImGui::TreeNode("CPU logical-processor activity (sampled)"))
-            {
-                const ImVec4 gameColour(0.92f, 0.20f, 0.20f, 1.0f);
-                const ImVec4 pluginColour(0.20f, 0.85f, 0.30f, 1.0f);
-                const ImVec4 sharedColour(1.0f, 0.78f, 0.12f, 1.0f);
-                const ImVec4 idleColour(0.30f, 0.30f, 0.30f, 1.0f);
-                const ImGuiColorEditFlags colourFlags = ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop;
-                ImGui::ColorButton("##game_cpu", gameColour, colourFlags, ImVec2(12.0f, 12.0f));
-                ImGui::SameLine(); ImGui::TextUnformatted("Game"); ImGui::SameLine();
-                ImGui::ColorButton("##plugin_cpu", pluginColour, colourFlags, ImVec2(12.0f, 12.0f));
-                ImGui::SameLine(); ImGui::TextUnformatted("Plugin"); ImGui::SameLine();
-                ImGui::ColorButton("##shared_cpu", sharedColour, colourFlags, ImVec2(12.0f, 12.0f));
-                ImGui::SameLine(); ImGui::TextUnformatted("Both");
-                for (DWORD processor = 0;
-                    processor < snapshot.processorCount; ++processor)
-                {
-                    const uint32_t gameHits = snapshot.gameHits[processor];
-                    const uint32_t pluginHits = snapshot.pluginHits[processor];
-                    const ImVec4 colour = gameHits && pluginHits ? sharedColour :
-                        (gameHits ? gameColour : (pluginHits ? pluginColour : idleColour));
-                    ImGui::PushID(12000 + static_cast<int>(processor));
-                    ImGui::ColorButton("##processor", colour, colourFlags, ImVec2(14.0f, 14.0f));
-                    ImGui::SameLine(); ImGui::Text("LP %lu   game %u   plugin %u",
-                        static_cast<unsigned long>(processor), gameHits, pluginHits);
-                    ImGui::PopID();
-                }
-                ImGui::TextWrapped("Low-overhead two-second samples; game affinity is unchanged.");
-                ImGui::TreePop();
-            }
-        }
-        if (update_checker::update_available() && !update_checker::is_dismissed())
-        {
-            ImGui::TextColored(ImVec4(0.42f, 0.94f, 0.47f, 1.0f), "Update available: %s", update_checker::latest_tag().c_str());
-            if (ImGui::Button("Open GitHub Releases")) update_checker::open_releases_page();
-            ImGui::SameLine(); if (ImGui::Button("Dismiss")) update_checker::dismiss();
+            screen.framerate = static_cast<uint8_t>(framerate);
+            screen.performanceProfile = performance_profile_t::CUSTOM;
+            if (screen.source)
+                screen.source->SetFramerate(screen.framerate);
+            mark_changed(false);
         }
 
-        if (ImGui::CollapsingHeader(
-                "Display discovery", ImGuiTreeNodeFlags_DefaultOpen))
+        static const std::pair<uint32_t, uint32_t> resolutions[] = {
+            { 640, 360 }, { 854, 480 }, { 1280, 720 },
+            { 1600, 900 }, { 1920, 1080 }
+        };
+        int resolutionIndex = 2;
+        for (int index = 0; index < IM_ARRAYSIZE(resolutions); ++index)
         {
-            static bool showAllLoadedTextures{};
-            static bool discoveryStarted{};
-            static int selectedDiscoveredTexture = -1;
-            static std::string discoveryScreenId;
-            static std::string overrideAssetStatus;
-            static uint64_t lastDiscoveryRefreshTick{};
-            static std::vector<
-                prism::memserver_texture_queue::discovered_texture_t>
-                discoveredTextures;
-
-            if (discoveryScreenId != screen.mediaClientId)
-            {
-                discoveryScreenId = screen.mediaClientId;
-                selectedDiscoveredTexture = -1;
-            }
-
-            const uint64_t discoveryNow = GetTickCount64();
-            if (lastDiscoveryRefreshTick == 0 ||
-                discoveryNow - lastDiscoveryRefreshTick >= 250)
-            {
-                lastDiscoveryRefreshTick = discoveryNow;
-                discoveredTextures = prism::memserver_texture_queue::
-                    discovered_textures();
-                if (selectedDiscoveredTexture >=
-                    static_cast<int>(discoveredTextures.size()))
-                    selectedDiscoveredTexture = -1;
-                if (selectedDiscoveredTexture < 0)
-                {
-                    for (size_t index = 0;
-                        index < discoveredTextures.size(); ++index)
-                    {
-                        if (discoveredTextures[index].path ==
-                            screen.original_texture)
-                        {
-                            selectedDiscoveredTexture =
-                                static_cast<int>(index);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            ImGui::TextWrapped(
-                "Lists TOBJ textures observed from the truck and accessories. "
-                "Observation is passive and never reloads or changes an "
-                "unconfirmed configurator order.");
-            if (ImGui::Button(
-                    "Observe display textures for 30 seconds",
-                    ImVec2(-1.0f, 36.0f)))
-            {
-                prism::memserver_texture_queue::begin_display_discovery();
-                selectedDiscoveredTexture = -1;
-                discoveryStarted = true;
-            }
-            explain_last_item(
-                "Observe current truck displays",
-                "Keeps the existing passive history and marks textures used while you switch the accessory or infotainment display.",
-                "Negligible for 30 seconds", "No game reload");
-
-            if (prism::memserver_texture_queue::display_discovery_active())
-                ImGui::TextColored(
-                    ImVec4(0.20f, 0.88f, 0.94f, 1.0f),
-                    "Observing... switch the installed accessory/display mode");
-
-            size_t likelyCount{};
-            size_t currentCount{};
-            for (const auto& candidate : discoveredTextures)
-            {
-                likelyCount += candidate.likely_display ? 1U : 0U;
-                currentCount += candidate.seen_during_current_scan ? 1U : 0U;
-            }
-            ImGui::TextDisabled(
-                "%zu observed in scan | %zu likely display%s | %zu total TOBJ%s",
-                currentCount,
-                likelyCount, likelyCount == 1 ? "" : "s",
-                discoveredTextures.size(),
-                discoveredTextures.size() == 1 ? "" : "s");
-            ImGui::Checkbox(
-                "Show all loaded TOBJ files", &showAllLoadedTextures);
-
-            if (ImGui::BeginListBox(
-                    "##discovered_tobjs", ImVec2(-1.0f, 174.0f)))
-            {
-                bool anyVisible{};
-                for (size_t index = 0;
-                    index < discoveredTextures.size(); ++index)
-                {
-                    const auto& candidate = discoveredTextures[index];
-                    if (!showAllLoadedTextures &&
-                        ((!candidate.likely_display &&
-                          !candidate.seen_during_current_scan) ||
-                         candidate.unsafe_candidate))
-                        continue;
-                    anyVisible = true;
-                    ImGui::PushID(static_cast<int>(index));
-                    const std::string label =
-                        std::string(candidate.seen_during_current_scan
-                            ? "[SCAN] " : "[HISTORY] ") +
-                        (candidate.unsafe_candidate
-                            ? "[UNSAFE]  "
-                            : candidate.likely_display
-                                ? "[DISPLAY]  " : "[OTHER]  ") +
-                        candidate.path;
-                    if (ImGui::Selectable(
-                            label.c_str(),
-                            selectedDiscoveredTexture ==
-                                static_cast<int>(index)))
-                        selectedDiscoveredTexture = static_cast<int>(index);
-                    ImGui::PopID();
-                }
-                if (!anyVisible)
-                {
-                    ImGui::TextDisabled(
-                        discoveryStarted
-                            ? "No likely display paths yet. Switch the tablet screen, then enable 'Show all' only for expert inspection."
-                            : "Start observation, then switch the installed accessory or its display mode.");
-                }
-                ImGui::EndListBox();
-            }
-
-            const bool validSelection = selectedDiscoveredTexture >= 0 &&
-                selectedDiscoveredTexture <
-                    static_cast<int>(discoveredTextures.size());
-            const auto* selectedCandidate = validSelection
-                ? &discoveredTextures[
-                    static_cast<size_t>(selectedDiscoveredTexture)]
-                : nullptr;
-            const screen_t* prospectiveOwner = selectedCandidate
-                ? texture_owner_other_than(screen, selectedCandidate->path)
-                : nullptr;
-            const bool assignmentSafe = selectedCandidate &&
-                !selectedCandidate->unsafe_candidate && !prospectiveOwner;
-            ImGui::BeginDisabled(!assignmentSafe);
-            if (ImGui::Button(
-                    "Use selected display texture",
-                    ImVec2(-1.0f, 34.0f)) && assignmentSafe)
-            {
-                const std::string& selectedPath =
-                    selectedCandidate->path;
-                if (screen.original_texture != selectedPath)
-                    screen.original_texture = selectedPath;
-                if (prepare_override_assets(screen, overrideAssetStatus) &&
-                    !screen.source && !screen.mediaUrl.empty())
-                    rebuild_source(screen);
-                mark_changed(true);
-            }
-            ImGui::EndDisabled();
-            if (selectedCandidate && selectedCandidate->unsafe_candidate)
-            {
-                ImGui::TextColored(
-                    ImVec4(1.0f, 0.48f, 0.30f, 1.0f),
-                    "Blocked: this is a world/traffic texture, not a safe "
-                    "automatic display target.");
-            }
-            else if (prospectiveOwner)
-            {
-                ImGui::TextColored(
-                    ImVec4(1.0f, 0.48f, 0.30f, 1.0f),
-                    "Shared texture: already owned by %s. Two surfaces that "
-                    "use the same TOBJ can only show the same media.",
-                    screen_owner_name(*prospectiveOwner).c_str());
-            }
-            ImGui::TextDisabled(
-                "PrismMedia verifies or generates the matching TOBJ/DDS pair "
-                "and preserves unique identity dimensions.");
-            if (!overrideAssetStatus.empty())
-                ImGui::TextWrapped("%s", overrideAssetStatus.c_str());
-            if (ImGui::Button(
-                    "Repair active display assets",
-                    ImVec2(-1.0f, 36.0f)))
-            {
-                if (prepare_override_assets(screen, overrideAssetStatus))
-                {
-                    mark_changed(true);
-                }
-            }
-            explain_last_item(
-                "Repair display assets",
-                "Regenerates the active GPS, dashboard or custom display's TOBJ/DDS override pair without touching the current truck state.",
-                "Only while writing assets", "Reload remains a separate critical action");
+            if (resolutions[index].first == screen.targetLiveTextureWidth &&
+                resolutions[index].second == screen.targetLiveTextureHeight)
+                resolutionIndex = index;
+        }
+        const char* resolutionNames[] = {
+            "640 x 360", "854 x 480", "1280 x 720",
+            "1600 x 900", "1920 x 1080"
+        };
+        if (ImGui::Combo(
+                "Media resolution", &resolutionIndex,
+                resolutionNames, IM_ARRAYSIZE(resolutionNames)))
+        {
+            screen.targetLiveTextureWidth =
+                resolutions[resolutionIndex].first;
+            screen.targetLiveTextureHeight =
+                resolutions[resolutionIndex].second;
+            screen.performanceProfile = performance_profile_t::CUSTOM;
+            release_screen(screen);
+            rebuild_source(screen);
+            mark_changed(false);
         }
 
-        if (const screen_t* owner = texture_owner_other_than(
-                screen, screen.original_texture))
-        {
-            ImGui::TextColored(
-                ImVec4(1.0f, 0.32f, 0.24f, 1.0f),
-                "DISPLAY COLLISION: %s also owns %s",
-                screen_owner_name(*owner).c_str(),
-                screen.original_texture.c_str());
-            ImGui::TextWrapped(
-                "This display is isolated for media and audio, but Prism3D "
-                "cannot route two different videos through one shared TOBJ. "
-                "Choose a unique tablet/material TOBJ before reloading.");
-        }
-
-        if (ImGui::CollapsingHeader("Critical texture identity"))
-        {
-            if (ImGui::InputText("Game texture", &screen.original_texture))
-            {
-                if (texture_owner_other_than(
-                        screen, screen.original_texture))
-                {
-                    screen.source.reset();
-                    reset_source_stats(screen);
-                }
-                mark_changed(true);
-            }
-            explain_last_item("Game texture", "Changes which Prism3D texture is intercepted.", "Critical", "Requires texture reload");
-            if (ImGui::InputText("Override texture", &screen.override_texture)) mark_changed(true);
-            if (ImGui::InputScalar("Override width", ImGuiDataType_U32, &screen.override_texture_size_w)) mark_changed(true);
-            if (ImGui::InputScalar("Override height", ImGuiDataType_U32, &screen.override_texture_size_h)) mark_changed(true);
-        }
-        if (criticalReloadPending)
-        {
-            static bool accessoryOrderConfirmed{};
-            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.28f, 1.0f), "Texture identity changed. Reload only when ready.");
-            if (!g_telemetry_driving.load())
-            {
-                ImGui::Checkbox(
-                    "The accessory order is confirmed/installed",
-                    &accessoryOrderConfirmed);
-                ImGui::TextDisabled(
-                    "Reloading from the configurator cannot apply a pending "
-                    "basket; confirm the order first.");
-            }
-            const bool reloadAllowed = g_telemetry_driving.load() ||
-                accessoryOrderConfirmed;
-            ImGui::BeginDisabled(!reloadAllowed);
-            if (ImGui::Button(
-                    "Reload installed truck textures", ImVec2(-1.0f, 34.0f)))
-            {
-                diagnostic_log::write(
-                    "route", "User requested a truck-texture reload.");
-                if (run_early_custom_probe_reload(
-                        "before texture reload", false))
-                {
-                    criticalReloadPending = false;
-                    accessoryOrderConfirmed = false;
-                }
-            }
-            ImGui::EndDisabled();
-            explain_last_item("Reload game textures", "Runs the game reload only after the accessory is installed and the texture identity is saved.", "Brief loading interruption", "Manual critical action");
-        }
-
-        ImGui::SeparatorText("Combined per-instance diagnostic");
-        ImGui::TextWrapped(
-            "Runs the stable list-entry breakpoint, exact COM Release and "
-            "Direct3D draw checks in one reload. Private cleanup functions "
-            "are not detoured; the working fallback returns automatically.");
-        ImGui::BeginDisabled(
-            !g_telemetry_driving.load(std::memory_order_acquire));
-        if (ImGui::Button(
-                "Run combined one-cycle test", ImVec2(-1.0f, 36.0f)))
-        {
-            run_early_custom_probe_reload(
-                "before diagnostic reload", true);
-        }
-        ImGui::EndDisabled();
-        explain_last_item(
-            "Combined custom-render test",
-            "One reload arms the old texture, bounded list-entry probe, "
-            "exact COM Release and Direct3D draw correlation without "
-            "detouring private cleanup functions.",
-            "Temporary loading interruption", "One diagnostic per session");
-        if (!g_telemetry_driving.load(std::memory_order_acquire))
-            ImGui::TextDisabled("Enter the truck before running the diagnostic.");
+        ImGui::Text(
+            "Upload %.2f ms | Worker %.2f ms | Delivered %.1f FPS",
+            screen.uploadCpuMs,
+            (std::max)(0.0, screen.totalPluginCpuMs - screen.uploadCpuMs),
+            screen.deliveredFps);
 
         if (ImGui::CollapsingHeader("Configuration backups"))
         {
             static int backup{};
             const auto history = settings::backup_history();
-            const char* labels[] = { history[0].description.c_str(), history[1].description.c_str(), history[2].description.c_str() };
-            ImGui::Combo("Restore point", &backup, labels, IM_ARRAYSIZE(labels));
+            const char* labels[] = {
+                history[0].description.c_str(),
+                history[1].description.c_str(),
+                history[2].description.c_str()
+            };
+            ImGui::Combo(
+                "Restore point", &backup, labels, IM_ARRAYSIZE(labels));
             if (ImGui::Button("Save configuration now"))
-            {
                 saveNowRequest = true;
-            }
             ImGui::SameLine();
-            ImGui::BeginDisabled(!history[static_cast<size_t>(backup)].available);
+            ImGui::BeginDisabled(
+                !history[static_cast<size_t>(backup)].available);
             if (ImGui::Button("Restore selected backup"))
                 restoreRequest = backup;
-            ImGui::EndDisabled(); if (!restoreStatus.empty()) ImGui::TextWrapped("%s", restoreStatus.c_str());
+            ImGui::EndDisabled();
+            if (!restoreStatus.empty())
+                ImGui::TextWrapped("%s", restoreStatus.c_str());
         }
-        if (ImGui::Button(
-                "Write display routing snapshot to log",
-                ImVec2(-1.0f, 34.0f)))
-        {
-            log_route_snapshot(screen, "manual UI request");
-        }
-        explain_last_item(
-            "Routing snapshot",
-            "Writes this display's selected TOBJ, generated identity, "
-            "pending route token and GPU match state to PrismMedia.log.",
-            "Negligible", "Diagnostic only");
+
         ImGui::Separator();
-        if (ImGui::Button("Remove this screen", ImVec2(-1.0f, 0.0f))) removeCurrent = true;
-        explain_last_item("Remove screen", "Stops its source immediately and removes its saved configuration.", "Reduces resource use");
+        if (ImGui::Button(
+                "Remove this screen", ImVec2(-1.0f, 0.0f)))
+            removeCurrent = true;
+        explain_last_item(
+            "Remove screen",
+            "Stops its source and removes its saved configuration.",
+            "Reduces resource use");
     }
 
     void add_screen(screen_type_t type)
@@ -2339,7 +1811,7 @@ namespace
         { screen.original_texture = "/vehicle/truck/share/dashboard.tobj"; screen.override_texture = "/home/PrismTextureStreamer/dashboard.tobj"; screen.override_texture_size_w = 2048; screen.override_texture_size_h = 64; }
         else
         {
-            screen.visualPickerMode = true;
+            screen.adapterMode = true;
             screen.original_texture.clear();
             screen.override_texture = "/home/PrismTextureStreamer/.tobj";
             screen.targetLiveTextureWidth = 1280;
@@ -2635,35 +2107,24 @@ namespace
                     ImGuiChildFlags_Borders,
                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
                 ImGui::PushFont(ui_font(1)); ImGui::TextDisabled("ACTIVE DISPLAY"); ImGui::PopFont();
-                const char* activeKind = screen_type_label(
-                    g_screens[static_cast<size_t>(selectedScreen)].type);
-                const std::string activeLabel = std::string(activeKind) +
-                    "  " + std::to_string(screen_type_ordinal(
-                        static_cast<size_t>(selectedScreen))) +
-                    (g_screens[static_cast<size_t>(selectedScreen)].enabled
-                        ? "" : "  (off)");
+                const std::string activeLabel = screen_display_label(
+                    static_cast<size_t>(selectedScreen));
                 ImGui::SetNextItemWidth(-1.0f);
                 if (ImGui::BeginCombo("##active_display", activeLabel.c_str()))
                 {
                 for (int i = 0; i < static_cast<int>(g_screens.size()); ++i)
                 {
-                    const char* kind = screen_type_label(
-                        g_screens[static_cast<size_t>(i)].type);
-                    const std::string label = std::string(kind) + "  " +
-                        std::to_string(screen_type_ordinal(
-                            static_cast<size_t>(i))) +
-                        (g_screens[static_cast<size_t>(i)].enabled
-                            ? "" : "  (off)");
+                    const std::string label = screen_display_label(
+                        static_cast<size_t>(i));
                     if (ImGui::Selectable(label.c_str(), selectedScreen == i)) selectedScreen = i;
                 }
                     ImGui::EndCombo();
                 }
-                const float addButtonWidth = (ImGui::GetContentRegionAvail().x - 16.0f) / 3.0f;
+                const float addButtonWidth =
+                    (ImGui::GetContentRegionAvail().x - 8.0f) / 2.0f;
                 if (ImGui::Button("+ GPS", ImVec2(addButtonWidth, 36.0f))) add_screen(screen_type_t::GPS);
                 ImGui::SameLine(0.0f, 8.0f);
-                if (ImGui::Button("+ Dash", ImVec2(addButtonWidth, 36.0f))) add_screen(screen_type_t::DASHBOARD);
-                ImGui::SameLine(0.0f, 8.0f);
-                if (ImGui::Button("+ Custom", ImVec2(-1.0f, 36.0f))) add_screen(screen_type_t::CUSTOM);
+                if (ImGui::Button("+ Dash", ImVec2(-1.0f, 36.0f))) add_screen(screen_type_t::DASHBOARD);
                 ImGui::Dummy(ImVec2(0.0f, 5.0f)); ImGui::Separator(); ImGui::Dummy(ImVec2(0.0f, 5.0f));
                 const char* pages[] = { "Home", "Media", "Audio", "Controls", "Appearance", "System" };
                 const float navButtonHeight = (std::clamp)(
@@ -2736,12 +2197,12 @@ namespace
                     else
                     {
                         std::string enableStatus;
-                        const bool visualReady =
+                        const bool adapterReady =
                             screen.type == screen_type_t::CUSTOM &&
-                            screen.visualPickerMode;
-                        const bool assetsReady = visualReady ||
-                            (!screen.original_texture.empty() &&
-                             prepare_override_assets(screen, enableStatus));
+                            screen.adapterMode;
+                        const bool assetsReady =
+                            (adapterReady || !screen.original_texture.empty()) &&
+                            prepare_override_assets(screen, enableStatus);
                         if (assetsReady)
                             rebuild_source(screen);
                         diagnostic_log::writef(
@@ -2749,13 +2210,11 @@ namespace
                             "Enabled %s (%s): %s.",
                             screen_owner_name(screen).c_str(),
                             screen.mediaClientId.c_str(),
-                            visualReady
-                                ? "private visual-picker texture will be created without a TOBJ reload"
+                            adapterReady && assetsReady
+                                ? "private accessory adapter texture is ready"
                                 : assetsReady ? enableStatus.c_str()
-                                : "waiting for a valid unique game TOBJ");
+                                : "waiting for a valid display route");
                     }
-                    log_route_snapshot(screen, screen.enabled
-                        ? "display enabled" : "display disabled");
                     mark_changed(true);
                 }
                 explain_last_item(
@@ -2799,6 +2258,7 @@ namespace
 
     void on_frame()
     {
+        accessory_bridge::update();
         static bool initialized{};
         if (!initialized && ImGui::GetCurrentContext())
         {
@@ -2826,16 +2286,26 @@ namespace
             ImGui::TextUnformatted("Open the plugin menu (Ctrl+F8) for the download page.");
             ImGui::End();
         }
-        const bool pickerWasActive = display_picker::active();
-        display_picker::draw_overlay();
-        const bool pickerIsActive = display_picker::active();
-        if (pickerWasActive && !pickerIsActive && !menuVisible.load())
+        if (!menuVisible.load() && accessory_bridge::should_show_toast())
         {
-            // Pick truck screen is launched from the menu, but the menu is
-            // hidden without disabling its mouse-unlock hook so the picker
-            // can still be clicked. Restore normal ETS2 mouse handling as
-            // soon as the picker saves, cancels, or otherwise closes.
-            set_visible(false);
+            const ImGuiViewport* viewport = ImGui::GetMainViewport();
+            const float offset = update_checker::should_show_toast() ? 88.0f : 18.0f;
+            ImGui::SetNextWindowPos(
+                ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - 18.0f,
+                    viewport->WorkPos.y + offset),
+                ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+            ImGui::SetNextWindowBgAlpha(0.94f);
+            ImGui::Begin("##prism_adapter_toast", nullptr,
+                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration |
+                ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                ImGuiWindowFlags_NoSavedSettings);
+            ImGui::TextColored(
+                ImVec4(0.35f, 0.95f, 0.45f, 1.0f),
+                "PrismMedia display adapter ready");
+            ImGui::PushTextWrapPos(480.0f);
+            ImGui::TextWrapped("%s", accessory_bridge::toast_message().c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::End();
         }
         if (menuVisible.load()) draw_menu();
         if (saveNowRequest)
@@ -2872,3 +2342,4 @@ namespace Gui
     bool is_visible() { return menuVisible.load(); }
     bool init() { dx11::present::on_frame(on_frame); return true; }
 }
+

@@ -45,6 +45,56 @@ jobs:
           msbuild PrismTextureStreamerFB.sln /m /restore /t:Build
           /p:Configuration=Release /p:Platform=x64
 
+      - name: Smoke-test automatic accessory bridge
+        shell: pwsh
+        run: |
+          $GameHome = Join-Path $env:RUNNER_TEMP 'ETS2-home'
+          $Source = Join-Path $GameHome 'mod\Tjs_Test'
+          $Definition = Join-Path $Source 'def\vehicle\truck\accessory'
+          $Model = Join-Path $Source 'vehicle\test'
+          $Material = Join-Path $Source 'automat\ab'
+          New-Item -ItemType Directory -Force -Path $Definition,$Model,$Material | Out-Null
+          @'
+          SiiNunit
+          {
+          accessory_addon_data : tjs.test {
+            name: "Tjs test display"
+            interior_model: "/vehicle/test/tablet.pmd"
+            exterior_model: "/vehicle/test/tablet.pmd"
+            ui_drawable_texture_path: "/vehicle/test/gps.tobj"
+          }
+          }
+          '@ | Set-Content "$Definition\tablet.sii" -Encoding UTF8
+          [IO.File]::WriteAllBytes("$Model\tablet.pmd",
+            [Text.Encoding]::ASCII.GetBytes('/automat/ab/0123456789abcdef.mat'))
+          [IO.File]::WriteAllBytes("$Model\tablet.pmg", [byte[]](1,2,3,4))
+          'texture : "/vehicle/test/gps.tobj"' |
+            Set-Content "$Material\0123456789abcdef.mat" -Encoding UTF8
+          "00:00:00.000 : Loading Tjs_Test" |
+            Set-Content "$GameHome\game.log.txt" -Encoding UTF8
+          $Result = Join-Path $env:RUNNER_TEMP 'adapter-result.ini'
+          $Client = 'PrismMediaClient\bin\x64\Release\net48\PrismMediaClient.exe'
+          & $Client --bridge-mode auto --result $Result --game-home $GameHome `
+            --game-exe 'C:\Steam\steamapps\common\Euro Truck Simulator 2\bin\win_x64\eurotrucks2.exe'
+          if ($LASTEXITCODE -ne 0) { throw "Bridge helper exited $LASTEXITCODE" }
+          $ResultText = Get-Content $Result -Raw
+          if ($ResultText -notmatch 'Status=ok' -or
+              $ResultText -notmatch 'Count=1' -or
+              $ResultText -notmatch 'MediaTobj=/home/PrismTextureStreamer/adapter_') {
+            throw "Unexpected bridge result:`n$ResultText"
+          }
+          $Generated = Join-Path $GameHome 'mod\PrismMedia_Generated_Display'
+          foreach ($Expected in @(
+            "$Generated\manifest.sii",
+            "$Generated\def\vehicle\truck\accessory\tablet.sii"
+          )) {
+            if (-not (Test-Path $Expected)) { throw "Missing generated file: $Expected" }
+          }
+          if (-not (Get-ChildItem "$Generated\vehicle\prismmedia" -Filter '*.pmd' -Recurse) -or
+              -not (Get-ChildItem "$Generated\automat\pm" -Filter '*.mat')) {
+            throw 'Generated private model or material is missing.'
+          }
+
       - name: Assemble production package
         shell: pwsh
         run: |
